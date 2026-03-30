@@ -1,6 +1,6 @@
 {
   "name": "servicenow-mcp-server",
-  "version": "2.1.9",
+  "version": "2.1.10",
   "description": "Multi-instance ServiceNow MCP server with 40+ tools, natural language search, and local script development",
   "main": "src/server.js",
   "type": "module",
