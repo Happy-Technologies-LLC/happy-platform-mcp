@@ -1,15 +1,11 @@
 name: Security Patch Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'package-lock.json'
   pull_request:
     types: [closed]
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   check-security-update:
