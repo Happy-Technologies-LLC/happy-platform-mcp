@@ -74,7 +74,7 @@ jobs:
         run: npm audit fix --audit-level=moderate
 
       - name: Bump patch version
-        run: npm version patch -m "Security patch: %s"
+        run: 'npm version patch -m "Security patch: %s"'
 
       - name: Run tests
         run: npm test

@@ -82,7 +82,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Deprecate old package name
-        run: npm deprecate servicenow-mcp-server "This package has been renamed to happy-platform-mcp. Please run: npm install happy-platform-mcp"
+        run: 'npm deprecate servicenow-mcp-server "This package has been renamed to happy-platform-mcp. Please run: npm install happy-platform-mcp"'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         continue-on-error: true
