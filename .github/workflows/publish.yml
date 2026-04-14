@@ -147,11 +147,3 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/mcp-servicenow-nodejs:${{ needs.check-version.outputs.version }}
             ${{ secrets.DOCKERHUB_USERNAME }}/mcp-servicenow-nodejs:latest
           cache-from: type=gha
-
-      - name: Update Docker Hub description (new image)
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ secrets.DOCKERHUB_USERNAME }}/happy-platform-mcp
-          readme-filepath: ./README.md
