@@ -31,7 +31,10 @@ jobs:
       - name: Check if version changed
         id: check
         run: |
-          if git diff HEAD^ HEAD -- package.json | grep -q '"version"'; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should-publish=true" >> $GITHUB_OUTPUT
+            echo "Manual dispatch, will publish"
+          elif git diff HEAD^ HEAD -- package.json | grep -q '"version"'; then
             echo "should-publish=true" >> $GITHUB_OUTPUT
             echo "Version changed, will publish"
           else
