@@ -38,6 +38,7 @@ const serviceNowClient = new ServiceNowClient(
     authType: defaultInstance.authType || 'basic',
     clientId: defaultInstance.clientId,
     clientSecret: defaultInstance.clientSecret,
+    grantType: defaultInstance.grantType,
     scope: defaultInstance.scope
   }
 );

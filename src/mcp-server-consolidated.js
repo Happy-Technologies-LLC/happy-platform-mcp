@@ -1284,6 +1284,7 @@ export async function createMcpServer(serviceNowClient) {
             authType: instance.authType || 'basic',
             clientId: instance.clientId,
             clientSecret: instance.clientSecret,
+            grantType: instance.grantType,
             scope: instance.scope
           });
 

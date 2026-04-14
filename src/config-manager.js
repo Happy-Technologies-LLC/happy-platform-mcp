@@ -141,7 +141,7 @@ export class ConfigManager {
    * @returns {boolean} True if valid
    */
   validateInstance(instance) {
-    const required = ['name', 'url', 'username', 'password'];
+    const required = ['name', 'url'];
     for (const field of required) {
       if (!instance[field]) {
         throw new Error(`Instance configuration missing required field: ${field}`);
@@ -154,6 +154,15 @@ export class ConfigManager {
       }
       if (!instance.clientSecret) {
         throw new Error(`OAuth instance '${instance.name}' missing required field: clientSecret`);
+      }
+      // client_credentials grant doesn't need username/password
+      if (instance.grantType !== 'client_credentials' && (!instance.username || !instance.password)) {
+        throw new Error(`OAuth instance '${instance.name}' using password grant requires username and password`);
+      }
+    } else {
+      // Basic auth requires username and password
+      if (!instance.username || !instance.password) {
+        throw new Error(`Instance '${instance.name}' missing required field: username or password`);
       }
     }
 

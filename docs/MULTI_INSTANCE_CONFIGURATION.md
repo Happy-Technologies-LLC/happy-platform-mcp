@@ -22,9 +22,8 @@ Create `config/servicenow-instances.json` with your instance credentials:
     {
       "name": "prod",
       "url": "https://yourinstance.service-now.com",
-      "username": "api_user",
-      "password": "prod_password",
       "authType": "oauth",
+      "grantType": "client_credentials",
       "clientId": "your_oauth_client_id",
       "clientSecret": "your_oauth_client_secret",
       "default": false,
@@ -43,6 +42,7 @@ Create `config/servicenow-instances.json` with your instance credentials:
 | `username` | Yes | — | Username for authentication |
 | `password` | Yes | — | Password for authentication |
 | `authType` | No | `"basic"` | `"basic"` or `"oauth"` |
+| `grantType` | No | auto | `"client_credentials"` or `"password"` (auto-detected if omitted) |
 | `clientId` | OAuth only | — | OAuth Client ID from Application Registry |
 | `clientSecret` | OAuth only | — | OAuth Client Secret |
 | `scope` | No | — | OAuth scope (optional) |
@@ -177,7 +177,10 @@ const instances = configManager.listInstances();
 
 ## OAuth Authentication
 
-Each instance can independently use basic auth or OAuth 2.0. OAuth uses the Resource Owner Password Credentials grant via ServiceNow's `/oauth_token.do` endpoint.
+Each instance can independently use basic auth or OAuth 2.0. Two OAuth grant types are supported:
+
+- **Client Credentials** (recommended) — service-to-service, no user credentials needed. Works with federated identity environments.
+- **Resource Owner Password Credentials** — when user context is required. Requires username/password.
 
 ### ServiceNow Setup
 
@@ -188,14 +191,14 @@ Each instance can independently use basic auth or OAuth 2.0. OAuth uses the Reso
 
 ### Token Lifecycle
 
-- Tokens are requested automatically on the first API call
+- Tokens are requested automatically on the first API call via `/oauth_token.do`
 - Cached in memory and refreshed before expiry (30-second buffer)
 - On 401 response, the token is refreshed and the request retried once
-- If the refresh token is expired, a fresh password grant is issued
+- If the refresh token is expired, a fresh token grant is issued
 
 ### Mixing Auth Types
 
-You can freely mix basic and OAuth instances:
+You can freely mix basic auth, client credentials, and password grant instances:
 
 ```json
 {
@@ -210,15 +213,26 @@ You can freely mix basic and OAuth instances:
     {
       "name": "prod",
       "url": "https://prod456.service-now.com",
-      "username": "integration_user",
-      "password": "password",
       "authType": "oauth",
+      "grantType": "client_credentials",
       "clientId": "abc...",
       "clientSecret": "xyz..."
+    },
+    {
+      "name": "staging",
+      "url": "https://staging789.service-now.com",
+      "authType": "oauth",
+      "grantType": "password",
+      "clientId": "abc...",
+      "clientSecret": "xyz...",
+      "username": "integration_user",
+      "password": "password"
     }
   ]
 }
 ```
+
+If `grantType` is omitted, it defaults to `client_credentials` when no username is provided, or `password` when username is present.
 
 When switching instances via `SN-Set-Instance`, the server automatically uses the correct auth method for the target instance.
 

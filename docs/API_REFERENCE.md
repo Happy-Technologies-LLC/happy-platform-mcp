@@ -929,9 +929,8 @@ Set up multiple instances in `config/servicenow-instances.json`. Each instance c
     {
       "name": "prod",
       "url": "https://prod456.service-now.com",
-      "username": "integration",
-      "password": "password",
       "authType": "oauth",
+      "grantType": "client_credentials",
       "clientId": "your-client-id",
       "clientSecret": "your-client-secret"
     }

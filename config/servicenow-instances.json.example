@@ -27,13 +27,12 @@
     {
       "name": "staging-oauth",
       "url": "https://staging789.service-now.com",
-      "username": "oauth_user",
-      "password": "oauth_password",
       "authType": "oauth",
+      "grantType": "client_credentials",
       "clientId": "your_oauth_client_id",
       "clientSecret": "your_oauth_client_secret",
       "default": false,
-      "description": "Staging instance with OAuth authentication"
+      "description": "Staging instance with OAuth client credentials"
     }
   ]
 }

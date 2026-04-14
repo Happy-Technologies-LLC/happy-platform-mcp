@@ -58,6 +58,7 @@ export class ServiceNowClient {
       this.oauthConfig = {
         clientId: options.clientId,
         clientSecret: options.clientSecret,
+        grantType: options.grantType,
         scope: options.scope
       };
       // Clear any stale token so the next request triggers a fresh grant
@@ -152,14 +153,19 @@ export class ServiceNowClient {
       }
     }
 
-    // Resource Owner Password Credentials grant
+    // Determine grant type: client_credentials if no username/password, otherwise password (ROPC)
+    const grantType = this.oauthConfig.grantType || (this.username ? 'password' : 'client_credentials');
     const params = {
-      grant_type: 'password',
+      grant_type: grantType,
       client_id: this.oauthConfig.clientId,
-      client_secret: this.oauthConfig.clientSecret,
-      username: this.username,
-      password: this.password
+      client_secret: this.oauthConfig.clientSecret
     };
+
+    if (grantType === 'password') {
+      params.username = this.username;
+      params.password = this.password;
+    }
+
     if (this.oauthConfig.scope) {
       params.scope = this.oauthConfig.scope;
     }
@@ -172,7 +178,7 @@ export class ServiceNowClient {
       return this._handleTokenResponse(response.data);
     } catch (error) {
       const detail = error.response?.data?.error_description || error.message;
-      throw new Error(`OAuth token request failed: ${detail}`);
+      throw new Error(`OAuth ${grantType} token request failed: ${detail}`);
     }
   }
 

@@ -100,9 +100,8 @@ Edit `config/servicenow-instances.json`:
     {
       "name": "prod",
       "url": "https://prod789012.service-now.com",
-      "username": "integration_user",
-      "password": "your-password",
       "authType": "oauth",
+      "grantType": "client_credentials",
       "clientId": "your-oauth-client-id",
       "clientSecret": "your-oauth-client-secret"
     }
@@ -284,19 +283,37 @@ No extra configuration needed. Provide `username` and `password`:
 
 ### OAuth 2.0
 
-Uses the ServiceNow [Resource Owner Password Credentials](https://www.servicenow.com/docs/r/platform-security/authentication/oauth-inbound.html) grant type. Tokens are automatically requested, cached, and refreshed.
+Supports both **Client Credentials** (recommended) and **Resource Owner Password Credentials** grant types. Tokens are automatically requested, cached, and refreshed.
+
+**Client Credentials (recommended)** — no user credentials needed, ideal for service-to-service integrations and federated identity environments:
 
 ```json
 {
   "name": "prod",
   "url": "https://prod789012.service-now.com",
-  "username": "integration_user",
-  "password": "your-password",
   "authType": "oauth",
+  "grantType": "client_credentials",
   "clientId": "your-oauth-client-id",
   "clientSecret": "your-oauth-client-secret"
 }
 ```
+
+**Resource Owner Password Credentials** — for cases where user context is required:
+
+```json
+{
+  "name": "staging",
+  "url": "https://staging.service-now.com",
+  "authType": "oauth",
+  "grantType": "password",
+  "clientId": "your-oauth-client-id",
+  "clientSecret": "your-oauth-client-secret",
+  "username": "integration_user",
+  "password": "your-password"
+}
+```
+
+If `grantType` is omitted, it defaults to `client_credentials` when no username is provided, or `password` when username is present.
 
 **ServiceNow setup:**
 
@@ -307,10 +324,10 @@ Uses the ServiceNow [Resource Owner Password Credentials](https://www.servicenow
 
 **How it works:**
 
-- On first API call, requests an access token from `/oauth_token.do` using the password grant
+- On first API call, requests an access token from `/oauth_token.do`
 - Caches the token and automatically refreshes it before expiry (30-second buffer)
 - On 401 responses, transparently refreshes the token and retries the request once
-- Falls back to a fresh password grant if the refresh token is expired
+- Falls back to a fresh token grant if the refresh token is expired
 
 The `scope` field is optional and defaults to ServiceNow's standard scope.
 

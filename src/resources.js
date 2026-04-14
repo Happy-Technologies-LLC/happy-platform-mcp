@@ -172,6 +172,7 @@ export function createResourceHandlers(serviceNowClient, configManager, tableMet
         authType: instance.authType || 'basic',
         clientId: instance.clientId,
         clientSecret: instance.clientSecret,
+        grantType: instance.grantType,
         scope: instance.scope
       });
     }
@@ -323,6 +324,7 @@ export function createResourceHandlers(serviceNowClient, configManager, tableMet
           authType: original.authType || 'basic',
           clientId: original.clientId,
           clientSecret: original.clientSecret,
+          grantType: original.grantType,
           scope: original.scope
         });
       }
