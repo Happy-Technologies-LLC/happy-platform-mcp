@@ -1246,6 +1246,114 @@ export async function createMcpServer(serviceNowClient) {
           },
           required: ['problem_number', 'resolution_notes']
         }
+      },
+      {
+        name: 'SN-Catalog-Get-Item',
+        description: 'Retrieve full form context for a Service Catalog item or record producer. Returns item metadata, all variables with human-readable type names, choice options, variable sets, UI policy conditions/effects, and client script names. Use this before SN-Catalog-Submit to understand exactly which fields to fill and what values are valid.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sys_id: {
+              type: 'string',
+              description: 'Catalog item or record producer sys_id (required)'
+            },
+            instance: {
+              type: 'string',
+              description: 'Instance name (optional, uses default if not specified)'
+            }
+          },
+          required: ['sys_id']
+        }
+      },
+      {
+        name: 'SN-Catalog-Search-Items',
+        description: 'Search or browse Service Catalog items and record producers. Use this to discover available forms before calling SN-Catalog-Get-Item to get full form details.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: {
+              type: 'string',
+              description: 'Keyword to match against item name or short description (optional)'
+            },
+            category: {
+              type: 'string',
+              description: 'Category sys_id to filter results (optional)'
+            },
+            active: {
+              type: 'boolean',
+              description: 'Filter by active status (default: true)',
+              default: true
+            },
+            limit: {
+              type: 'integer',
+              description: 'Maximum number of results to return (default: 25)',
+              default: 25
+            },
+            include_producers: {
+              type: 'boolean',
+              description: 'Also search record producers in addition to catalog items (default: true)',
+              default: true
+            },
+            instance: {
+              type: 'string',
+              description: 'Instance name (optional, uses default if not specified)'
+            }
+          }
+        }
+      },
+      {
+        name: 'SN-Catalog-Submit',
+        description: 'Submit a Service Catalog form (catalog item or record producer). Provide the catalog item sys_id and a map of variable names to values. Use SN-Catalog-Get-Item first to discover required variables, their types, and valid choices. Returns the resulting request/task numbers.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sys_id: {
+              type: 'string',
+              description: 'Catalog item or record producer sys_id (required)'
+            },
+            variables: {
+              type: 'object',
+              description: 'Map of variable name to value, e.g. { "requested_for": "jsmith", "justification": "Need access for project X" } (required)',
+              additionalProperties: true
+            },
+            requested_for: {
+              type: 'string',
+              description: 'User sys_id or username to request on behalf of (optional, defaults to authenticated user)'
+            },
+            quantity: {
+              type: 'integer',
+              description: 'Quantity to order (default: 1)',
+              default: 1
+            },
+            instance: {
+              type: 'string',
+              description: 'Instance name (optional, uses default if not specified)'
+            }
+          },
+          required: ['sys_id', 'variables']
+        }
+      },
+      {
+        name: 'SN-Catalog-Get-Categories',
+        description: 'List Service Catalog categories so you can browse available form families. Use the returned sys_ids with SN-Catalog-Search-Items to filter forms by category.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Encoded query to filter categories (optional, e.g. "active=true")'
+            },
+            limit: {
+              type: 'integer',
+              description: 'Maximum number of results to return (default: 50)',
+              default: 50
+            },
+            instance: {
+              type: 'string',
+              description: 'Instance name (optional, uses default if not specified)'
+            }
+          }
+        }
       }
     ];
 
@@ -2815,6 +2923,67 @@ ${resolution_code ? `Resolution Code: ${resolution_code}` : ''}
 Updated: ${new Date().toISOString()}
 
 The problem has been closed successfully.`
+            }]
+          };
+        }
+
+        case 'SN-Catalog-Get-Item': {
+          const { sys_id } = args;
+
+          console.error(`🗂️  Fetching catalog item detail for: ${sys_id}`);
+          const detail = await serviceNowClient.getCatalogItemDetail(sys_id);
+
+          return {
+            content: [{
+              type: 'text',
+              text: `Catalog item details for ${detail.name}:\n${JSON.stringify(detail, null, 2)}`
+            }]
+          };
+        }
+
+        case 'SN-Catalog-Search-Items': {
+          const { keyword, category, active = true, limit = 25, include_producers = true } = args;
+
+          console.error(`🔍 Searching catalog items (keyword: ${keyword || 'none'}, category: ${category || 'all'})`);
+          const results = await serviceNowClient.searchCatalogItems({ keyword, category, active, limit, include_producers });
+
+          return {
+            content: [{
+              type: 'text',
+              text: `Found ${results.length} catalog item(s):\n${JSON.stringify(results, null, 2)}`
+            }]
+          };
+        }
+
+        case 'SN-Catalog-Submit': {
+          const { sys_id, variables = {}, requested_for, quantity = 1 } = args;
+
+          console.error(`📋 Submitting catalog form: ${sys_id}`);
+          const result = await serviceNowClient.submitCatalogForm(sys_id, variables, { requested_for, quantity });
+
+          const requestNumber = result?.request_number || result?.number || result?.sys_id || 'unknown';
+          return {
+            content: [{
+              type: 'text',
+              text: `✅ Catalog form submitted successfully!\n\nRequest: ${requestNumber}\n\nFull result:\n${JSON.stringify(result, null, 2)}`
+            }]
+          };
+        }
+
+        case 'SN-Catalog-Get-Categories': {
+          const { query, limit = 50 } = args;
+
+          console.error(`📂 Fetching catalog categories`);
+          const results = await serviceNowClient.getCatalogCategories({
+            sysparm_query: query || 'active=true',
+            sysparm_fields: 'sys_id,title,description,parent,active',
+            sysparm_limit: limit
+          });
+
+          return {
+            content: [{
+              type: 'text',
+              text: `Found ${results.length} catalog categorie(s):\n${JSON.stringify(results, null, 2)}`
             }]
           };
         }
