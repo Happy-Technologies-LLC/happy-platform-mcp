@@ -654,6 +654,267 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
     return this.updateRecord('sc_category', sysId, data);
   }
 
+  // Service Catalog — AI-submission helpers
+
+  // Maps ServiceNow variable type codes to human-readable names
+  static VARIABLE_TYPE_MAP = {
+    '1': 'single_line_text',
+    '2': 'multi_line_text',
+    '3': 'multiple_choice',
+    '4': 'checkbox',
+    '5': 'select_box',
+    '6': 'reference',
+    '7': 'date',
+    '8': 'date_time',
+    '9': 'label',
+    '10': 'break',
+    '11': 'macro',
+    '12': 'ui_page',
+    '14': 'wide_single_line_text',
+    '15': 'masked',
+    '16': 'container_start',
+    '17': 'container_end',
+    '18': 'list_collector',
+    '19': 'lookup_select_box',
+    '20': 'lookup_multiple_choice',
+    '21': 'html',
+    '22': 'split_attachments',
+    '23': 'macro_with_label',
+    '24': 'email',
+    '25': 'url',
+    '26': 'ip_address',
+    '27': 'duration',
+    '28': 'number_scale',
+    '29': 'template',
+    '30': 'custom_table'
+  };
+
+  /**
+   * Retrieve full form context for a catalog item or record producer,
+   * including enriched variables, choice options, variable sets,
+   * UI policy effects, and client script names.
+   * @param {string} sysId - Catalog item sys_id
+   * @returns {object} Full form context object
+   */
+  async getCatalogItemDetail(sysId) {
+    // Fetch the catalog item record
+    const item = await this.getRecord('sc_cat_item', sysId, {
+      sysparm_fields: 'sys_id,name,short_description,description,category,sc_catalogs,active,order,price,recurring_price,delivery_time,sys_class_name',
+      sysparm_display_value: 'false'
+    });
+
+    // Fetch all active variables ordered by display order
+    const variables = await this.getRecords('item_option_new', {
+      sysparm_query: `cat_item=${sysId}^active=true^ORDERBYorder`,
+      sysparm_fields: 'sys_id,name,question_text,type,mandatory,order,default_value,help_text,reference,reference_qual,cat_item,variable_set',
+      sysparm_limit: 500
+    });
+
+    // Collect sys_ids of choice-bearing variable types
+    const CHOICE_TYPES = new Set(['3', '5', '19', '20']);
+    const choiceVarIds = variables
+      .filter(v => CHOICE_TYPES.has(String(v.type)))
+      .map(v => v.sys_id);
+
+    // Parallel fetch: choices, variable set links, UI policies, client scripts
+    const [allChoicesRaw, varSetLinks, uiPolicies, clientScripts] = await Promise.all([
+      choiceVarIds.length > 0
+        ? this.getRecords('question_choice', {
+            sysparm_query: `question=IN${choiceVarIds.join(',')}^ORDERBYorder`,
+            sysparm_fields: 'sys_id,question,text,value,order',
+            sysparm_limit: 2000
+          })
+        : Promise.resolve([]),
+      this.getRecords('io_set_item', {
+        sysparm_query: `sc_cat_item=${sysId}`,
+        sysparm_fields: 'sys_id,variable_set',
+        sysparm_limit: 50
+      }),
+      this.getRecords('catalog_ui_policy', {
+        sysparm_query: `catalog_item=${sysId}^active=true`,
+        sysparm_fields: 'sys_id,short_description,conditions,run_scripts,reverse_if_false',
+        sysparm_limit: 100
+      }),
+      this.getRecords('catalog_script_client', {
+        sysparm_query: `cat_item=${sysId}^active=true`,
+        sysparm_fields: 'sys_id,name,script_name,type,applies_to',
+        sysparm_limit: 100
+      })
+    ]);
+
+    // Index choices by variable sys_id
+    const choicesByVar = {};
+    allChoicesRaw.forEach(c => {
+      const varId = typeof c.question === 'object' ? c.question.value : c.question;
+      if (!choicesByVar[varId]) choicesByVar[varId] = [];
+      choicesByVar[varId].push({ text: c.text, value: c.value });
+    });
+
+    // Fetch UI policy actions if there are policies
+    let policyActions = [];
+    if (uiPolicies.length > 0) {
+      const policyIds = uiPolicies.map(p => p.sys_id);
+      policyActions = await this.getRecords('catalog_ui_policy_action', {
+        sysparm_query: `ui_policy=IN${policyIds.join(',')}`,
+        sysparm_fields: 'sys_id,ui_policy,catalog_variable,mandatory,visible,read_only',
+        sysparm_limit: 500
+      });
+    }
+
+    // Build enriched variable list
+    const enrichedVariables = variables.map(v => {
+      const typeCode = String(v.type);
+      const typeName = ServiceNowClient.VARIABLE_TYPE_MAP[typeCode] || `unknown_${typeCode}`;
+      const varChoices = choicesByVar[v.sys_id];
+      return {
+        sys_id: v.sys_id,
+        name: v.name,
+        label: v.question_text,
+        type: typeName,
+        type_code: typeCode,
+        mandatory: v.mandatory === 'true' || v.mandatory === true,
+        order: parseInt(v.order, 10) || 0,
+        default_value: v.default_value || null,
+        help_text: v.help_text || null,
+        reference_table: v.reference || null,
+        ...(varChoices ? { choices: varChoices } : {})
+      };
+    });
+
+    return {
+      sys_id: item.sys_id,
+      name: item.name,
+      short_description: item.short_description,
+      description: item.description,
+      category: item.category,
+      active: item.active,
+      item_type: item.sys_class_name === 'sc_cat_item_producer' ? 'record_producer' : 'catalog_item',
+      variables: enrichedVariables,
+      variable_sets: varSetLinks.map(l => ({
+        sys_id: typeof l.variable_set === 'object' ? l.variable_set.value : l.variable_set,
+        display_value: typeof l.variable_set === 'object' ? l.variable_set.display_value : l.variable_set
+      })),
+      ui_policies: uiPolicies.map(p => ({
+        sys_id: p.sys_id,
+        description: p.short_description,
+        conditions: p.conditions,
+        actions: policyActions
+          .filter(a => {
+            const pId = typeof a.ui_policy === 'object' ? a.ui_policy.value : a.ui_policy;
+            return pId === p.sys_id;
+          })
+          .map(a => ({
+            variable: typeof a.catalog_variable === 'object'
+              ? (a.catalog_variable.display_value || a.catalog_variable.value)
+              : a.catalog_variable,
+            mandatory: a.mandatory,
+            visible: a.visible,
+            read_only: a.read_only
+          }))
+      })),
+      client_scripts: clientScripts.map(s => ({
+        name: s.name || s.script_name,
+        type: s.type,
+        applies_to: s.applies_to
+      }))
+    };
+  }
+
+  /**
+   * Search catalog items and record producers by keyword and/or category.
+   * @param {object} query - { keyword, category, active, limit, include_producers }
+   * @returns {Array} Matching catalog items/record producers
+   */
+  async searchCatalogItems(query = {}) {
+    const {
+      keyword,
+      category,
+      active = true,
+      limit = 25,
+      include_producers = true
+    } = query;
+
+    const conditions = [];
+    if (active !== null && active !== undefined) {
+      conditions.push(`active=${active}`);
+    }
+    if (category) {
+      conditions.push(`category=${category}`);
+    }
+    if (keyword) {
+      conditions.push(`nameLIKE${keyword}^ORshort_descriptionLIKE${keyword}`);
+    }
+
+    // Default to active=true when no conditions were specified
+    const sysparmQuery = conditions.length > 0 ? conditions.join('^') : 'active=true';
+    const fields = 'sys_id,name,short_description,category,active,sys_class_name';
+
+    const fetchParams = {
+      sysparm_query: sysparmQuery,
+      sysparm_fields: fields,
+      sysparm_limit: limit
+    };
+
+    const items = await this.getRecords('sc_cat_item', fetchParams);
+
+    // Optionally also fetch record producers (separate table in some SN versions)
+    let producers = [];
+    if (include_producers) {
+      try {
+        producers = await this.getRecords('sc_cat_item_producer', {
+          sysparm_query: sysparmQuery,
+          sysparm_fields: fields,
+          sysparm_limit: limit
+        });
+      } catch (e) {
+        // sc_cat_item_producer may not exist or be accessible in all SN versions
+        console.error(`⚠️  Could not query sc_cat_item_producer: ${e.message}`);
+      }
+    }
+
+    const normalize = (record, defaultType) => ({
+      sys_id: record.sys_id,
+      name: record.name,
+      short_description: record.short_description,
+      category: record.category,
+      active: record.active,
+      item_type: record.sys_class_name === 'sc_cat_item_producer' ? 'record_producer' : defaultType
+    });
+
+    return [
+      ...items.map(i => normalize(i, 'catalog_item')),
+      ...producers.map(p => normalize(p, 'record_producer'))
+    ];
+  }
+
+  /**
+   * Submit a catalog item or record producer form via the Service Catalog REST API.
+   * Works for both catalog items and record producers — the sn_sc endpoint handles both.
+   * @param {string} sysId - Catalog item sys_id
+   * @param {object} variables - Map of { variable_name: value }
+   * @param {object} options - { requested_for, quantity }
+   * @returns {object} Submission result including request/task numbers
+   */
+  async submitCatalogForm(sysId, variables = {}, options = {}) {
+    const { requested_for, quantity = 1 } = options;
+
+    const payload = {
+      sysparm_quantity: quantity,
+      variables
+    };
+
+    if (requested_for) {
+      payload.requested_for = requested_for;
+    }
+
+    const response = await this.client.post(
+      `/api/sn_sc/servicecatalog/items/${sysId}/order_now`,
+      payload
+    );
+
+    return response.data.result;
+  }
+
   // Add comments/work notes to any table
   async addComment(table, recordId, comment, isWorkNote = false) {
     const field = isWorkNote ? 'work_notes' : 'comments';

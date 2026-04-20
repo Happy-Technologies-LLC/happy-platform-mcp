@@ -231,6 +231,32 @@ SN-Get-Current-Instance()
 
 ---
 
+## 🛒 Service Catalog AI-Submission (4)
+
+```javascript
+// 1. Browse categories to find a form family
+SN-Catalog-Get-Categories({ limit: 50 })
+
+// 2. Search for the right form by keyword or category
+SN-Catalog-Search-Items({ keyword: "VPN access", active: true, include_producers: true })
+
+// 3. Read full form context (field types, choices, mandatory rules, UI policies)
+SN-Catalog-Get-Item({ sys_id: "<catalog_item_sys_id>" })
+
+// 4. Submit with a variable map
+SN-Catalog-Submit({
+  sys_id: "<catalog_item_sys_id>",
+  variables: {
+    requested_for: "jsmith",
+    justification: "Need VPN for project X",
+    start_date: "2026-05-01"
+  },
+  quantity: 1
+})
+```
+
+---
+
 ## 📊 Tool Count Summary
 
 | Category | Tools | Notes |
@@ -239,9 +265,10 @@ SN-Get-Current-Instance()
 | **Update Sets** | 6 | Automated set management |
 | **Workflows** | 4 | Complete workflow creation |
 | **Batch Ops** | 2 | Multi-record operations |
-| **ITSM Convenience** | 10 | **NEW!** Incident/Change/Problem |
+| **ITSM Convenience** | 10 | Incident/Change/Problem |
+| **Service Catalog** | 4 | **NEW!** Browse/inspect/submit catalog forms |
 | **Specialized** | 16 | Users, schema, validation, scripts |
-| **TOTAL** | **44** | Up from 34 |
+| **TOTAL** | **48** | Up from 44 |
 
 ---
 
@@ -307,6 +334,25 @@ SN-Inspect-Update-Set({ update_set: "..." })
 
 // 5. Clone for backup
 SN-Clone-Update-Set({ source_update_set_id: "...", new_name: "Backup" })
+```
+
+### Catalog Form Submission
+```javascript
+// 1. Find the right form
+SN-Catalog-Search-Items({ keyword: "laptop", active: true })
+
+// 2. Read full form context
+SN-Catalog-Get-Item({ sys_id: "<catalog_item_sys_id>" })
+// → Review variables[].name, variables[].type, variables[].choices
+
+// 3. Submit
+SN-Catalog-Submit({
+  sys_id: "<catalog_item_sys_id>",
+  variables: {
+    requested_for: "jsmith",
+    justification: "New hire onboarding"
+  }
+})
 ```
 
 ---
@@ -390,6 +436,6 @@ Error: 403 Forbidden
 
 ---
 
-**Version:** 2.0
-**Total Tools:** 44
-**Last Updated:** 2025-10-06
+**Version:** 2.2
+**Total Tools:** 48
+**Last Updated:** 2026-04-19

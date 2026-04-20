@@ -1,8 +1,8 @@
 # ServiceNow MCP Server - API Reference
 
-**Version:** 2.1
-**Last Updated:** 2025-10-06
-**Total Tools:** 44
+**Version:** 2.2
+**Last Updated:** 2026-04-19
+**Total Tools:** 48
 
 Complete reference for all MCP tools and resources available in the ServiceNow server.
 
@@ -20,8 +20,9 @@ Complete reference for all MCP tools and resources available in the ServiceNow s
 8. [Workflow Operations](#workflow-operations)
 9. [Schema & Discovery](#schema--discovery)
 10. [Batch Operations](#batch-operations)
-11. [MCP Resources](#mcp-resources)
-12. [Multi-Instance Support](#multi-instance-support)
+11. [Service Catalog AI-Submission Tools](#service-catalog-ai-submission-tools)
+12. [MCP Resources](#mcp-resources)
+13. [Multi-Instance Support](#multi-instance-support)
 
 ---
 
@@ -53,6 +54,9 @@ Table introspection and metadata
 
 ### ⚡ **Batch Operations** (2 tools)
 Efficient multi-record operations
+
+### 🛒 **Service Catalog AI-Submission** (4 tools)
+Browse, inspect, and submit Service Catalog forms programmatically
 
 ### 🔌 **Instance Management** (2 tools)
 Multi-instance configuration and switching
@@ -1110,6 +1114,168 @@ ServiceNow enforces rate limits on API calls:
 ### Application Scope (1 tool)
 - `SN-Set-Current-Application` - Set current application scope
 
+### Service Catalog AI-Submission (4 tools)
+- `SN-Catalog-Get-Categories` - List catalog categories
+- `SN-Catalog-Search-Items` - Search/browse catalog items and record producers
+- `SN-Catalog-Get-Item` - Full form context for a catalog item or record producer
+- `SN-Catalog-Submit` - Submit a completed catalog form
+
+---
+
+## Service Catalog AI-Submission Tools
+
+These four tools give an AI agent a complete browse → inspect → submit workflow for ServiceNow Service Catalog forms and record producers.
+
+**Recommended workflow:**
+```
+SN-Catalog-Get-Categories       # discover form families
+  → SN-Catalog-Search-Items     # find the right form
+    → SN-Catalog-Get-Item       # read field types, choices, mandatory rules
+      → SN-Catalog-Submit       # submit with { variable_name: value } map
+```
+
+---
+
+### SN-Catalog-Get-Categories
+
+Lists Service Catalog categories (`sc_category`) so the AI can browse available form families before searching for specific items.
+
+**Parameters:**
+```javascript
+{
+  "query":    "active=true",   // Optional: encoded query to filter categories
+  "limit":    50,              // Optional: max results (default: 50)
+  "instance": "dev"            // Optional: instance name
+}
+```
+
+**Returns:** Array of `{ sys_id, title, description, parent, active }`.
+
+---
+
+### SN-Catalog-Search-Items
+
+Searches catalog items and record producers by keyword and/or category. Use this to discover available forms before calling `SN-Catalog-Get-Item`.
+
+**Parameters:**
+```javascript
+{
+  "keyword":          "VPN access",  // Optional: matched against name/short_description
+  "category":         "<sys_id>",    // Optional: category sys_id
+  "active":           true,          // Optional: filter by active status (default: true)
+  "limit":            25,            // Optional: max results (default: 25)
+  "include_producers": true,         // Optional: also search record producers (default: true)
+  "instance":         "dev"          // Optional: instance name
+}
+```
+
+**Returns:** Array of `{ sys_id, name, short_description, category, active, item_type }` where `item_type` is `"catalog_item"` or `"record_producer"`.
+
+---
+
+### SN-Catalog-Get-Item
+
+Retrieves full form context for a single catalog item or record producer. This is the **"read before you fill"** tool — call this before `SN-Catalog-Submit` to understand which fields exist, what format each expects, and which choices are valid.
+
+**Parameters:**
+```javascript
+{
+  "sys_id":   "<catalog_item_sys_id>",  // Required: catalog item or record producer sys_id
+  "instance": "dev"                     // Optional: instance name
+}
+```
+
+**Returns:**
+```javascript
+{
+  sys_id: "...",
+  name: "Request VPN Access",
+  short_description: "...",
+  description: "...",
+  category: "...",
+  active: "true",
+  item_type: "catalog_item",  // or "record_producer"
+  variables: [
+    {
+      sys_id: "...",
+      name: "requested_for",        // Variable name used in SN-Catalog-Submit
+      label: "Requested For",       // Display label
+      type: "reference",            // Human-readable type (see Variable Types below)
+      type_code: "6",
+      mandatory: true,
+      order: 100,
+      default_value: null,
+      help_text: "...",
+      reference_table: "sys_user",  // Present for reference type variables
+      choices: [                    // Present for choice/select/radio/checkbox types
+        { text: "Yes", value: "yes" },
+        { text: "No",  value: "no"  }
+      ]
+    }
+  ],
+  variable_sets: [ { sys_id: "...", display_value: "Common Variables" } ],
+  ui_policies: [
+    {
+      sys_id: "...",
+      description: "Make justification mandatory for high-cost items",
+      conditions: "...",
+      actions: [
+        { variable: "justification", mandatory: "true", visible: "true", read_only: "false" }
+      ]
+    }
+  ],
+  client_scripts: [
+    { name: "Auto-populate department", type: "onChange", applies_to: "..." }
+  ]
+}
+```
+
+**Variable Types** — the `type` field is always a human-readable string:
+
+| `type` | Description | Expected value format |
+|---|---|---|
+| `single_line_text` | Single-line string | `"string value"` |
+| `multi_line_text` | Multi-line string | `"long text..."` |
+| `wide_single_line_text` | Wide single-line | `"string value"` |
+| `masked` | Password / masked | `"secret"` |
+| `email` | Email address | `"user@example.com"` |
+| `url` | URL | `"https://..."` |
+| `ip_address` | IP address | `"10.0.0.1"` |
+| `integer` / `number_scale` | Numeric | `42` |
+| `boolean` / `checkbox` | Boolean | `"true"` or `"false"` |
+| `date` | Date | `"2026-01-15"` |
+| `date_time` | Date + time | `"2026-01-15 09:00:00"` |
+| `duration` | Duration | `"1 00:00:00"` (days HH:MM:SS) |
+| `reference` | Reference to another table | sys_id string or display value |
+| `choice` / `select_box` / `multiple_choice` | Dropdown / radio | one of the `choices[].value` strings |
+| `lookup_select_box` / `lookup_multiple_choice` | Table-backed choice | sys_id of the referenced record |
+| `multi_select` / `list_collector` | Multi-select | comma-separated values |
+| `html` | HTML content | HTML string |
+
+---
+
+### SN-Catalog-Submit
+
+Submits a completed Service Catalog form via the ServiceNow Service Catalog REST API. Works for both catalog items and record producers.
+
+**Parameters:**
+```javascript
+{
+  "sys_id":        "<catalog_item_sys_id>",  // Required
+  "variables": {                             // Required: variable_name → value map
+    "requested_for":  "jsmith",
+    "justification":  "Need VPN for project X",
+    "start_date":     "2026-05-01",
+    "duration_months": "3"
+  },
+  "requested_for": "<user_sys_id>",          // Optional: order on behalf of another user
+  "quantity":      1,                        // Optional (default: 1)
+  "instance":      "dev"                     // Optional: instance name
+}
+```
+
+**Returns:** The `result` object from ServiceNow's `/api/sn_sc/servicecatalog/items/{sys_id}/order_now` response, which includes the resulting `sc_request` number and related record sys_ids.
+
 ---
 
 ## MCP Resources (2 resources)
@@ -1131,7 +1297,7 @@ ServiceNow enforces rate limits on API calls:
 
 ## Summary
 
-**Total Tools:** 44
+**Total Tools:** 48
 **Total Resources:** 2
 **Supported Tables:** 160+
 **Instance Support:** Unlimited (via config)
@@ -1144,3 +1310,4 @@ ServiceNow enforces rate limits on API calls:
 - Batch operations with progress notifications
 - MCP resources for metadata discovery
 - Comprehensive schema introspection
+- Full Service Catalog AI-submission workflow (browse → inspect → submit)
