@@ -1,6 +1,6 @@
 {
   "name": "happy-platform-mcp",
-  "version": "5.2.1",
+  "version": "5.2.2",
   "description": "Happy MCP Server — Model Context Protocol server for the ServiceNow platform with 480+ auto-generated tools, multi-instance support, and natural language search",
   "main": "src/server.js",
   "type": "module",
@@ -53,7 +53,7 @@
     "glob": "13.0.6",
     "minimatch": "10.2.6",
     "test-exclude": "8.0.0",
-    "fast-uri": "4.2.1",
+    "fast-uri": "3.1.8",
     "qs": "6.16.0"
   },
   "author": "Happy Technologies LLC",
