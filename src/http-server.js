@@ -17,6 +17,11 @@ installProcessCrashGuards('http-server');
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
+function isLoopbackRemote(req) {
+  const remote = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  return LOOPBACK_HOSTS.has(remote);
+}
+
 export function validateHttpTransportSecurity({ host = '127.0.0.1', apiToken } = {}) {
   if (!LOOPBACK_HOSTS.has(host) && !apiToken) {
     throw new Error('HAPPY_MCP_API_TOKEN is required when HAPPY_MCP_BIND_HOST is not loopback');
@@ -127,6 +132,9 @@ export function createHttpApp({
   });
 
   app.get('/instances', (req, res) => {
+    if (!apiToken && !isLoopbackRemote(req)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     res.json({ instances: listInstances() });
   });
 
