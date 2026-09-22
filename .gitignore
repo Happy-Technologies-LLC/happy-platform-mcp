@@ -15,6 +15,7 @@ scripts/*
 !scripts/release.sh
 !scripts/bundle-sdk-manifest.mjs
 !scripts/verify-package.mjs
+!scripts/usage-stats.mjs
 
 # Logs
 logs/
