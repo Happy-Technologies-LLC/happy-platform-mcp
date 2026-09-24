@@ -208,11 +208,18 @@ export async function performAuthorizationCodeFlow(
 async function defaultOpenBrowser(authUrl) {
   console.error(`\nOpen this URL to sign in:\n  ${authUrl}\n`);
   const { spawn } = await import('node:child_process');
+  // Never launch through a shell. On Windows the previous `shell: true` + `start`
+  // ran `cmd.exe /d /s /c "start <authUrl>"` with the URL unquoted, and cmd treats
+  // `&` as a command separator — the browser received only the first query
+  // parameter and ServiceNow answered "Missing parameters: client_id".
+  // `cmd /c start "" "<url>"` is not a fix either: Node auto-quotes an argument
+  // only when it contains whitespace or quotes, not `&`. explorer.exe takes the
+  // URL as a single argv entry with no shell in the path.
   const opener = process.platform === 'darwin' ? 'open'
-    : process.platform === 'win32' ? 'start'
+    : process.platform === 'win32' ? 'explorer.exe'
     : 'xdg-open';
   try {
-    spawn(opener, [authUrl], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' }).unref();
+    spawn(opener, [authUrl], { stdio: 'ignore', detached: true, shell: false }).unref();
   } catch {
     // Non-fatal: the URL was printed above for manual paste.
   }
