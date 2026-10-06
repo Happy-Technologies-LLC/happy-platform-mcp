@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, jest, test, afterEach } from '@jest/globals';
+import * as verifier from '../scripts/verify-package.mjs';
 import {
   closeListener,
   createVerifierCleanupTasks,
@@ -18,6 +19,27 @@ import {
 
 afterEach(() => {
   jest.useRealTimers();
+});
+describe('published artifact boundaries', () => {
+  const entry = { filename: 'happy-platform-mcp-5.2.2.tgz', files: [{ path: 'package.json' }] };
+  test.each([[entry], { 'happy-platform-mcp': entry }].map((output) => ({ output })))('accepts a single npm pack record in either output shape', ({ output }) => {
+    expect(verifier.parsePackOutput(JSON.stringify(output))).toEqual(entry);
+  });
+  test.each([null, [], {}, [entry, entry], { a: entry, b: entry }, [{ ...entry, filename: '../escape.tgz' }], [{ ...entry, files: null }]].map((output) => ({ output })))('rejects ambiguous or unsafe npm pack output %#', ({ output }) => {
+    expect(() => verifier.parsePackOutput(JSON.stringify(output))).toThrow(/npm pack/);
+  });
+  test('accepts runtime source and bundled dependency files', () => {
+    expect(() => verifier.assertPackageFiles([{ path: 'src/server.js' }, { path: 'node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js' }])).not.toThrow();
+  });
+  test.each(['src/.env', 'src/secret.pem', 'src/config/instance-config.json', 'config/servicenow-instances.json', 'setup/setup-report.json', 'docs/plans/private.md', 'scripts/bundle-sdk-manifest.mjs', 'src/server.js.backup', 'node_modules/.cache/x', '../src/server.js', 'src/../secret.js', 'src\\server.js', 'node_modules/sdk/.env', 'node_modules/sdk/private.key'])('rejects disallowed packed file %s', (path) => {
+    expect(() => verifier.assertPackageFiles([{ path }])).toThrow(/packed tarball/);
+  });
+  test('rejects a dependency outside the SDK bundle closure', () => {
+    expect(() => verifier.assertPackageFiles([{ path: 'node_modules/unexpected/index.js' }])).toThrow(/packed tarball/);
+  });
+  test('rejects an unlisted nested dependency under the SDK directory', () => {
+    expect(() => verifier.assertPackageFiles([{ path: 'node_modules/@modelcontextprotocol/sdk/node_modules/unexpected/index.js' }])).toThrow(/packed tarball/);
+  });
 });
 
 describe('package verifier subprocess diagnostics', () => {
