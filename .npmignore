@@ -11,6 +11,14 @@ npm-debug.log*
 
 # Config with credentials (keep example only)
 config/servicenow-instances.json
+src/config/instance-config.json
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.backup*
+**/.cache/
+**/*.tmp
 
 # Test files
 tests/
@@ -26,11 +34,11 @@ __tests__/
 
 # Documentation (keep only essential)
 docs/research/
+docs/plans/
 
 # Examples and scripts
 examples/
 scripts/*
-!scripts/bundle-sdk-manifest.mjs
 !scripts/verify-package.mjs
 
 # Claude Code / Claude Flow

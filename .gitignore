@@ -13,7 +13,6 @@ config/servicenow-instances.json
 # Generated fix scripts (should not be committed)
 scripts/*
 !scripts/release.sh
-!scripts/bundle-sdk-manifest.mjs
 !scripts/verify-package.mjs
 !scripts/usage-stats.mjs
 

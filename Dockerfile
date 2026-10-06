@@ -3,19 +3,6 @@
 # Copyright 2025 Happy Technologies LLC
 # Licensed under Apache License 2.0
 
-# Stage 1: Dependencies
-FROM node:24-alpine AS dependencies
-
-WORKDIR /app
-
-# Copy package files
-COPY package*.json ./
-
-# Install all dependencies (including dev for build)
-RUN npm install && \
-    npm cache clean --force
-
-# Stage 2: Production
 FROM node:24-alpine AS production
 
 # Set working directory
@@ -26,13 +13,10 @@ RUN apk update && \
     apk upgrade --no-cache && \
     rm -rf /var/cache/apk/*
 
-# Copy package.json only (not package-lock to avoid dev dependency references)
-COPY package.json ./
+# Install the exact production dependency graph from the committed lockfile
+COPY package.json package-lock.json ./
 
-# Install only production dependencies and generate clean lockfile
-RUN npm install --package-lock-only --omit=dev && \
-    npm ci --omit=dev && \
-    npm cache clean --force
+RUN npm ci --omit=dev
 
 # Runtime doesn't need package managers; remove them to reduce attack surface
 RUN rm -rf /usr/local/lib/node_modules/npm && \

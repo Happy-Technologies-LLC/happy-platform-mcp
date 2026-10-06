@@ -23,6 +23,16 @@
 
 ## Unreleased
 
+### Security
+
+- Pin MCP SDK 1.32.1 and Axios 1.20.0, refresh affected transitive dependencies, and retain only development-tool overrides. The bundled SDK now supports Hono 2 natively, without a prepack manifest rewrite.
+- Restrict npm releases to an explicit runtime, configuration-example, documentation, asset, and consumer-verification allow-list. Docker installs production dependencies from the committed lockfile instead of re-resolving versions.
+
+### Changed
+
+- Replace nodemon with the built-in Node.js watcher for `npm run dev`.
+- Native SQLite indexing requires dependency install scripts. Use the supported npm 10/11 CI install policy; npm 12 blocks unapproved native install scripts by default and needs explicit operator approval before SQLite can load.
+
 ## 5.1.0 - 2026-07-27
 
 ### Added
