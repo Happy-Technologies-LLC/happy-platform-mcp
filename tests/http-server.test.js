@@ -1,5 +1,6 @@
 import { jest } from '@jest/globals';
 import crypto from 'node:crypto';
+import express from 'express';
 import { createDefaultClient, createHttpApp, validateHttpTransportSecurity } from '../src/http-server.js';
 
 describe('validateHttpTransportSecurity', () => {
@@ -21,12 +22,23 @@ async function requestHealth(app, headers = {}) {
   }
 }
 
-async function requestInstances(app) {
+// Test sockets are always loopback, so spoof the peer address in front of the app.
+function withRemoteAddress(app, remoteAddress) {
+  const outer = express();
+  outer.use((req, res, next) => {
+    Object.defineProperty(req.socket, 'remoteAddress', { value: remoteAddress, configurable: true });
+    next();
+  });
+  outer.use(app);
+  return outer;
+}
+
+async function requestInstances(app, headers = {}) {
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address();
   try {
-    return await fetch(`http://127.0.0.1:${port}/instances`);
+    return await fetch(`http://127.0.0.1:${port}/instances`, { headers });
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -138,6 +150,60 @@ test('passes canonical config manager and registry to every HTTP MCP session', a
     configManager,
     instanceRegistry,
     credentialStore
+  });
+});
+
+describe('GET /instances embedded access guard', () => {
+  const instances = [{ name: 'dev', url: 'https://dev.example.service-now.com', default: true }];
+  const createApp = (options = {}) => createHttpApp({
+    defaultInstance: instances[0],
+    listInstances: () => instances,
+    ...options
+  });
+
+  test.each([
+    ['remote IPv4', '203.0.113.5'],
+    ['remote IPv6', '2001:db8::1'],
+    ['unknown (undefined)', undefined],
+    ['unknown (empty)', '']
+  ])('rejects %s without a token', async (_label, remoteAddress) => {
+    const response = await requestInstances(withRemoteAddress(createApp(), remoteAddress));
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  test.each([
+    ['IPv4 loopback', '127.0.0.1'],
+    ['IPv6 loopback', '::1'],
+    ['IPv4-mapped IPv6 loopback', '::ffff:127.0.0.1']
+  ])('still allows %s without a token', async (_label, remoteAddress) => {
+    const response = await requestInstances(withRemoteAddress(createApp(), remoteAddress));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ instances });
+  });
+
+  describe('with a configured token', () => {
+    const apiToken = 'release-secret';
+
+    test.each([
+      ['no credentials', {}],
+      ['a wrong token', { Authorization: 'Bearer wrong-secret' }]
+    ])('rejects %s', async (_label, headers) => {
+      const response = await requestInstances(createApp({ apiToken }), headers);
+
+      expect(response.status).toBe(401);
+    });
+
+    test('accepts the bearer token, including from a non-loopback address', async () => {
+      const app = withRemoteAddress(createApp({ apiToken }), '203.0.113.5');
+
+      const response = await requestInstances(app, { Authorization: `Bearer ${apiToken}` });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ instances });
+    });
   });
 });
 
