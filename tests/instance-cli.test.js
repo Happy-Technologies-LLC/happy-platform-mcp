@@ -888,6 +888,35 @@ describe('OAuth refresh-token identity cleanup', () => {
     expect(store.deleteSecret).not.toHaveBeenCalled();
   });
 
+  // @napi-rs/keyring >= 2.1 rejects a delete or read on a locked/inaccessible
+  // store; only an absent credential yields false/null. Drive the real
+  // KeychainTokenStore with such an entry through remove and identity-changing
+  // update and prove the registry file and credentials are untouched.
+  function lockedKeychain() {
+    const locked = () => { throw new Error("Couldn't access platform storage: keychain locked"); };
+    return new KeychainTokenStore({ createEntry: () => ({ getPassword: locked, setPassword: locked, deletePassword: locked }) });
+  }
+
+  test.each([
+    ['remove', ['instance', 'remove', 'code']],
+    ['identity-changing update', ['instance', 'update', 'code', '--client-id', 'rotated-client']]
+  ])('%s on a locked keychain fails closed with zero registry mutation', async (_label, argv) => {
+    const { out, err } = streams();
+    const registryPath = path.join(tempConfigHome(), 'instances.json');
+    const registry = new InstanceRegistry({ readPath: registryPath, writePath: registryPath });
+    await registry.register(codeInstance);
+    const before = fs.readFileSync(registryPath);
+    const store = credentialStore();
+    const fileTokenStore = new FileTokenStore({ baseDir: path.join(tempConfigHome(), 'tokens') });
+
+    expect(await runInstanceCli(argv, {
+      registry, credentialStore: store, keychainTokenStore: lockedKeychain(), fileTokenStore,
+      prompts: prompts({ confirm: true }), stdout: out, stderr: err
+    })).toBe(1);
+    expect(fs.readFileSync(registryPath).equals(before)).toBe(true);
+    expect(store.deleteSecret).not.toHaveBeenCalled();
+  });
+
   test('on Windows the file store is skipped only when its directory does not exist', async () => {
     const platform = Object.getOwnPropertyDescriptor(process, 'platform');
     Object.defineProperty(process, 'platform', { value: 'win32' });
