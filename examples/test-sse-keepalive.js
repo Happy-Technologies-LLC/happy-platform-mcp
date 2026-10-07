@@ -7,6 +7,10 @@
  * - Sends keepalive comments every 15 seconds
  * - Disables timeouts
  * - Sets proper headers
+ *
+ * It is a standalone, unauthenticated demo (not the Happy MCP HTTP server),
+ * so it only listens on loopback. The real server requires
+ * `Authorization: Bearer $HAPPY_MCP_API_TOKEN` on every request.
  */
 
 import express from 'express';
@@ -58,10 +62,10 @@ app.get('/sse-test', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`🚀 SSE Test Server listening on port ${PORT}`);
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`🚀 SSE Test Server listening on http://127.0.0.1:${PORT}`);
   console.log(`💓 Keepalive interval: ${SSE_KEEPALIVE_INTERVAL}ms`);
   console.log('\n📋 Test commands:');
-  console.log(`   curl -N http://localhost:${PORT}/sse-test`);
+  console.log(`   curl -N http://127.0.0.1:${PORT}/sse-test`);
   console.log(`   # Watch for keepalive comments every ${SSE_KEEPALIVE_INTERVAL / 1000} seconds\n`);
 });

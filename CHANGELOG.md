@@ -23,8 +23,19 @@
 
 ## Unreleased
 
+### Breaking
+
+- The HTTP/SSE transport now requires `HAPPY_MCP_API_TOKEN` for every listener, loopback and embedded `createHttpApp` use included. The token must be 32 random bytes encoded as 64 hex characters (`openssl rand -hex 32`) or 43 base64url characters; startup or app creation fails when it's missing or malformed. Stdio is unchanged.
+- `/health`, `/instances`, `GET /mcp` and `POST /mcp` all require `Authorization: Bearer <token>`. Update curl scripts, monitoring probes, Docker and Kubernetes health checks, and MCP SSE clients (both the event stream and message POSTs). The Docker image now listens on `0.0.0.0` inside the container and authenticates its `HEALTHCHECK`. `docker-compose.yml` requires the token, publishes on `127.0.0.1:3000` and authenticates its health check.
+- `Host` must name the listener or match `HAPPY_MCP_ALLOWED_HOSTS`, and a present `Origin` must exactly match `HAPPY_MCP_ALLOWED_ORIGINS`. Containers and reverse proxies must list the authority clients use, for example `HAPPY_MCP_ALLOWED_HOSTS=localhost:3000,127.0.0.1:3000`.
+- `validateHttpTransportSecurity` is removed from `src/http-server.js`. Use `loadHttpSecurityConfig(env)` and pass `apiToken`, `allowedHosts` and `allowedOrigins` to `createHttpApp`.
+- The supported HTTP deployment is one trusted operator. Shared multi-user hosting behind one server or token is unsupported; ServiceNow ACLs remain the authority for what the configured accounts can do.
+
 ### Security
 
+- Compare the bearer token in constant time and reject missing, duplicate or malformed `Authorization` headers before routing, body parsing or session setup. After 10 failed attempts from one peer within a minute, that peer receives `429` with `Retry-After`, even with the right token. The budget is in-process with bounded state, so it resets on restart and isn't shared between processes. Behind a proxy or Docker port publishing, clients can share one address and therefore one budget, so restrict access and rate-limit at the proxy.
+- Validate `Host` and `Origin` before parsing or allocating anything (DNS-rebinding protection). `null`, wildcard, malformed and duplicate values are rejected, and `X-Forwarded-*`/`Forwarded` headers are never trusted.
+- Bound the SSE lifecycle: 16 pending and 32 active sessions; 30-second setup, 30-minute idle and 12-hour lifetime limits; 8 MiB JSON bodies; one POST at a time per session with up to 8 queued; 8 concurrent POSTs per process; and 16 unanswered JSON-RPC requests per session and 64 per process. A cancelled request keeps its slot until its handler finishes, and its late result is discarded. `HEAD /mcp` is answered with `405` instead of opening a session. Cleanup is registered before setup awaits, so a client that disconnects mid-setup can't leave a ghost session. Unknown or closed session IDs are refused before the SDK sees them, and `src/server.js` closes every session on `SIGTERM`/`SIGINT`.
 - Pin MCP SDK 1.32.1 and Axios 1.20.0, refresh affected transitive dependencies, and retain only development-tool overrides. The bundled SDK now supports Hono 2 natively, without a prepack manifest rewrite.
 - Restrict npm releases to an explicit runtime, configuration-example, documentation, asset, and consumer-verification allow-list. Docker installs production dependencies from the committed lockfile instead of re-resolving versions.
 

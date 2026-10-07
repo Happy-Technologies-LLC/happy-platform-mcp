@@ -7,7 +7,7 @@
 
 import dotenv from 'dotenv';
 import { configManager } from './config-manager.js';
-import { createHttpApp, validateHttpTransportSecurity } from './http-server.js';
+import { createHttpApp, loadHttpSecurityConfig } from './http-server.js';
 import { InstanceCredentialStore } from './instance-credential-store.js';
 import { installProcessCrashGuards } from './process-guards.js';
 
@@ -24,27 +24,41 @@ installProcessCrashGuards('server');
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HAPPY_MCP_BIND_HOST || '127.0.0.1';
-const apiToken = process.env.HAPPY_MCP_API_TOKEN;
 const credentialStore = new InstanceCredentialStore();
 const keepaliveIntervalMs = Number(process.env.SSE_KEEPALIVE_INTERVAL || 15000);
 
-validateHttpTransportSecurity({ host, apiToken });
+function refuseStartup(error) {
+  console.error(`Happy MCP Server HTTP startup refused: ${error.message}`);
+  process.exit(1);
+}
+
+let securityConfig;
+try {
+  securityConfig = loadHttpSecurityConfig(process.env);
+} catch (error) {
+  refuseStartup(error);
+}
 
 const defaultInstance = configManager.getDefaultInstance();
 console.log(`Default ServiceNow instance: ${defaultInstance.name} (${defaultInstance.url})`);
 
-const app = createHttpApp({
-  defaultInstance,
-  apiToken,
-  configManager,
-  instanceRegistry: configManager.registry,
-  credentialStore,
-  keepaliveIntervalMs,
-  listInstances: () => configManager.listInstances()
-});
+let app;
+try {
+  app = createHttpApp({
+    defaultInstance,
+    ...securityConfig,
+    configManager,
+    instanceRegistry: configManager.registry,
+    credentialStore,
+    keepaliveIntervalMs,
+    listInstances: () => configManager.listInstances()
+  });
+} catch (error) {
+  refuseStartup(error);
+}
 
-app.listen(port, host, () => {
-  console.log(`Happy MCP Server listening on http://${host}:${port}`);
+const httpServer = app.listen(port, host, () => {
+  console.log(`Happy MCP Server listening on http://${host}:${port} (bearer authentication required)`);
   console.log(`Health check: http://${host}:${port}/health`);
   console.log(`MCP SSE endpoint: http://${host}:${port}/mcp`);
   console.log(`Available instances: http://${host}:${port}/instances`);
@@ -53,3 +67,19 @@ app.listen(port, host, () => {
     console.log(`Active ServiceNow instance: ${defaultInstance.name} - ${defaultInstance.url}`);
   }
 });
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`Received ${signal}; closing MCP sessions`);
+  httpServer.close();
+  await app.closeAllSessions();
+  httpServer.closeAllConnections();
+  process.exit(0);
+}
+
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));
