@@ -12,6 +12,20 @@ import { performAuthorizationCodeFlow } from './oauth-authorization-code.js';
 import { assertApprovedOAuthEndpoint, resolveOAuthEndpoints } from './oauth-endpoint-policy.js';
 import { createDefaultTokenStore, isValidTokenAccount } from './token-store.js';
 import { InstanceCredentialStore, parseCredentialRef } from './instance-credential-store.js';
+import { MAX_URL_LENGTH, exceedsUrlLength, trimLeadingSlashes, trimTrailingSlashes } from './url-limits.js';
+import {
+  BulkInputError,
+  MAX_UPDATE_SET_QUERY_RECORDS,
+  isSysId,
+  UPDATE_SET_ID_CHUNK_SIZE,
+  UPDATE_SET_QUERY_PAGE_SIZE,
+  resolveBatchPlaceholders,
+  validateBatchCreateOperations,
+  validateBatchUpdates,
+  validateUpdateSetClone,
+  validateUpdateSetMove,
+  validateWorkflowSpec
+} from './bulk-limits.js';
 
 const CREDENTIAL_ERROR_CODES = new Set([
   'CREDENTIAL_NOT_FOUND',
@@ -403,12 +417,38 @@ function sanitizeServiceNowError(error, credentialSource, messageOverride) {
 }
 
 function normalizeInstanceUrl(value) {
-  return typeof value === 'string' ? value.replace(/\/+$/, '') : value;
+  return typeof value === 'string' ? trimTrailingSlashes(value) : value;
 }
 
 function normalizePathname(pathname) {
-  const normalized = pathname.replace(/\/+$/, '');
-  return normalized || '/';
+  return trimTrailingSlashes(pathname) || '/';
+}
+
+/**
+ * Validate a direct client instance URL and strip trailing slashes linearly.
+ * Path prefixes are preserved; credentials, queries and fragments are refused
+ * so request scoping can compare against an exact origin + path prefix.
+ */
+function normalizeClientInstanceUrl(instanceUrl) {
+  if (typeof instanceUrl !== 'string' || !instanceUrl) {
+    throw new Error('ServiceNow instance URL must be a non-empty string');
+  }
+  if (exceedsUrlLength(instanceUrl)) {
+    throw new Error(`ServiceNow instance URL must be at most ${MAX_URL_LENGTH} characters`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(instanceUrl);
+  } catch {
+    throw new Error('ServiceNow instance URL is not a valid URL');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('ServiceNow instance URL must use http or https');
+  }
+  if (parsed.username || parsed.password || instanceUrl.includes('?') || instanceUrl.includes('#')) {
+    throw new Error('ServiceNow instance URL must not include credentials, a query or a fragment');
+  }
+  return trimTrailingSlashes(instanceUrl);
 }
 
 function requestBelongsToInstance(config, instanceUrl) {
@@ -436,7 +476,7 @@ function requestBelongsToInstance(config, instanceUrl) {
       const pathEnd = requestUrl.search(/[?#]/);
       const rawPath = pathEnd === -1 ? requestUrl : requestUrl.slice(0, pathEnd);
       const suffix = pathEnd === -1 ? '' : requestUrl.slice(pathEnd);
-      const relativePath = rawPath.replace(/^\/+/, '');
+      const relativePath = trimLeadingSlashes(rawPath);
       const joinedPath = basePath === '/' ? `/${relativePath}` : `${basePath}/${relativePath}`;
       resolved = new URL(`${base.origin}${joinedPath}${suffix}`);
     }
@@ -470,9 +510,7 @@ const REFRESH_TOKEN_IDENTITY_PREFIX = 'identity-v1-';
 
 function canonicalIdentityInstanceUrl(url) {
   const parsed = new URL(url);
-  let end = parsed.pathname.length;
-  while (end > 0 && parsed.pathname.charCodeAt(end - 1) === 47) end -= 1;
-  return `${parsed.origin}${parsed.pathname.slice(0, end)}`;
+  return `${parsed.origin}${trimTrailingSlashes(parsed.pathname)}`;
 }
 
 /**
@@ -655,6 +693,7 @@ export class ServiceNowClient {
    * @param {object} options - Optional config (authType, clientId, clientSecret)
    */
   setInstance(instanceUrl, username, password, instanceName = null, options = {}) {
+    const normalizedInstanceUrl = normalizeClientInstanceUrl(instanceUrl);
     this._instanceGeneration = (this._instanceGeneration || 0) + 1;
     this._oauthCacheGeneration = this._instanceGeneration;
     this._resolvedCredentialSecrets = new Map();
@@ -662,7 +701,7 @@ export class ServiceNowClient {
     this._oauthTokenPromise = null;
     this._credentialStore = options.credentialStore || null;
     this.credentialRef = options.credentialRef;
-    this.instanceUrl = instanceUrl.replace(/\/$/, ''); // Remove trailing slash
+    this.instanceUrl = normalizedInstanceUrl;
     this.username = username;
     this.password = password;
     this.authType = options.authType || 'basic';
@@ -2255,10 +2294,13 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
 
   // Batch operations
   async batchCreate(operations, transaction = true, reportProgress = true) {
+    // Validate the whole batch before the first write.
+    const serializedData = validateBatchCreateOperations(operations);
+    const savedIds = new Map();
     const results = {
       success: true,
       created_count: 0,
-      sys_ids: {},
+      sys_ids: Object.create(null),
       errors: [],
       execution_time_ms: 0
     };
@@ -2278,18 +2320,15 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
       for (let i = 0; i < operations.length; i++) {
         const op = operations[i];
         try {
-          // Replace variable references from previous operations
-          let processedData = JSON.stringify(op.data);
-          Object.keys(results.sys_ids).forEach(key => {
-            processedData = processedData.replace(`\${${key}}`, results.sys_ids[key]);
-          });
-          const data = JSON.parse(processedData);
+          // Resolve ${name} references to IDs saved by earlier operations in one pass.
+          const data = JSON.parse(resolveBatchPlaceholders(serializedData[i], savedIds));
 
           const result = await this.createRecord(op.table, data);
 
           // Save sys_id with the save_as key or operation index
           const key = op.save_as || `operation_${i}`;
           results.sys_ids[key] = result.sys_id;
+          if (typeof result.sys_id === 'string') savedIds.set(key, result.sys_id);
           results.created_count++;
 
           // Report progress
@@ -2332,6 +2371,8 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
   }
 
   async batchUpdate(updates, stopOnError = false, reportProgress = true) {
+    // Validate the whole batch before the first write.
+    validateBatchUpdates(updates);
     const results = {
       success: true,
       updated_count: 0,
@@ -2505,11 +2546,20 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
   }
 
   async createCompleteWorkflow(workflowSpec, reportProgress = true) {
+    // Validate every activity and transition before the first write.
+    const activityReferences = validateWorkflowSpec(workflowSpec);
+    const createdActivityIds = [];
+    // Endpoints were validated as an index, a declared id/name, or an existing sys_id.
+    const resolveActivity = (reference) => {
+      if (typeof reference === 'number') return createdActivityIds[reference];
+      const index = activityReferences.get(reference);
+      return index === undefined ? reference : createdActivityIds[index];
+    };
     // Create complete workflow with activities and transitions in one call
     const results = {
       workflow_sys_id: '',
       version_sys_id: '',
-      activity_sys_ids: {},
+      activity_sys_ids: Object.create(null),
       transition_sys_ids: [],
       published: false
     };
@@ -2568,6 +2618,7 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
 
         const key = actSpec.id || `activity_${i}`;
         results.activity_sys_ids[key] = activity.activity_sys_id;
+        createdActivityIds.push(activity.activity_sys_id);
       }
 
       // 4. Create transitions
@@ -2581,13 +2632,8 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
         }
 
         // Resolve activity references
-        const fromId = typeof transSpec.from === 'number'
-          ? results.activity_sys_ids[`activity_${transSpec.from}`]
-          : results.activity_sys_ids[transSpec.from] || transSpec.from;
-
-        const toId = typeof transSpec.to === 'number'
-          ? results.activity_sys_ids[`activity_${transSpec.to}`]
-          : results.activity_sys_ids[transSpec.to] || transSpec.to;
+        const fromId = resolveActivity(transSpec.from);
+        const toId = resolveActivity(transSpec.to);
 
         // Create condition if specified
         let conditionId = transSpec.condition_sys_id;
@@ -2618,9 +2664,9 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
       if (workflowSpec.publish && activities.length > 0) {
         if (reportProgress) this.notifyProgress('Publishing workflow');
 
-        const startActivityId = workflowSpec.start_activity
-          ? (results.activity_sys_ids[workflowSpec.start_activity] || workflowSpec.start_activity)
-          : results.activity_sys_ids['activity_0'] || results.activity_sys_ids[Object.keys(results.activity_sys_ids)[0]];
+        const startActivityId = workflowSpec.start_activity !== undefined
+          ? resolveActivity(workflowSpec.start_activity)
+          : createdActivityIds[0];
 
         await this.publishWorkflow(version.version_sys_id, startActivityId);
         results.published = true;
@@ -2637,15 +2683,61 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
     }
   }
 
+  /**
+   * Fetch every record matching an encoded query in stable sys_id order, page
+   * by page. Fails rather than silently truncating when more than
+   * MAX_UPDATE_SET_QUERY_RECORDS match.
+   */
+  async _getAllRecordsBounded(table, query) {
+    const records = [];
+    // Keyset pagination on sys_id: stable even if matching records change between pages.
+    let cursor = null;
+    for (;;) {
+      const page = await this.getRecords(table, {
+        sysparm_query: `${query}${cursor ? `^sys_id>${cursor}` : ''}^ORDERBYsys_id`,
+        sysparm_limit: UPDATE_SET_QUERY_PAGE_SIZE
+      });
+      if (!Array.isArray(page)) throw new Error(`Unexpected ${table} query response`);
+      for (const record of page) records.push(record);
+      if (records.length > MAX_UPDATE_SET_QUERY_RECORDS) {
+        throw new BulkInputError(
+          `More than ${MAX_UPDATE_SET_QUERY_RECORDS} ${table} records match; narrow the selection`
+        );
+      }
+      if (page.length < UPDATE_SET_QUERY_PAGE_SIZE) return records;
+      const last = page[page.length - 1]?.sys_id;
+      if (!isSysId(last) || (cursor !== null && last <= cursor)) {
+        throw new Error(`Unexpected ${table} pagination response`);
+      }
+      cursor = last;
+    }
+  }
+
+  /** Fetch records by sys_id with at most UPDATE_SET_ID_CHUNK_SIZE IDs per encoded query. */
+  async _getRecordsBySysIds(table, sysIds) {
+    const records = [];
+    for (let start = 0; start < sysIds.length; start += UPDATE_SET_ID_CHUNK_SIZE) {
+      const chunk = sysIds.slice(start, start + UPDATE_SET_ID_CHUNK_SIZE);
+      const page = await this.getRecords(table, {
+        sysparm_query: `sys_idIN${chunk.join(',')}`,
+        sysparm_limit: chunk.length
+      });
+      if (!Array.isArray(page)) throw new Error(`Unexpected ${table} query response`);
+      for (const record of page) records.push(record);
+    }
+    return records;
+  }
+
   // Move records to update set
   async moveRecordsToUpdateSet(updateSetId, options = {}) {
     const {
-      record_sys_ids = [],
       time_range = null,
       source_update_set = null,
       table = 'sys_update_xml',
       reportProgress = true
     } = options;
+    // Validate every input before the first request.
+    const recordSysIds = validateUpdateSetMove(updateSetId, options);
 
     try {
       const results = {
@@ -2658,13 +2750,9 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
       let recordsToMove = [];
 
       // Get records by sys_ids
-      if (record_sys_ids.length > 0) {
-        if (reportProgress) this.notifyProgress(`Fetching ${record_sys_ids.length} records to move`);
-        const sysIdsQuery = record_sys_ids.map(id => `sys_id=${id}`).join('^OR');
-        recordsToMove = await this.getRecords(table, {
-          sysparm_query: sysIdsQuery,
-          sysparm_limit: 1000
-        });
+      if (recordSysIds.length > 0) {
+        if (reportProgress) this.notifyProgress(`Fetching ${recordSysIds.length} records to move`);
+        recordsToMove = await this._getRecordsBySysIds(table, recordSysIds);
       }
       // Get records by time range
       else if (time_range) {
@@ -2673,10 +2761,7 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
         if (source_update_set) {
           query += `^update_set.name=${source_update_set}`;
         }
-        recordsToMove = await this.getRecords(table, {
-          sysparm_query: query,
-          sysparm_limit: 1000
-        });
+        recordsToMove = await this._getAllRecordsBounded(table, query);
       }
 
       const total = recordsToMove.length;
@@ -2743,10 +2828,16 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
 
   // Clone update set
   async cloneUpdateSet(sourceUpdateSetId, newName, reportProgress = true) {
+    validateUpdateSetClone(sourceUpdateSetId, newName);
     try {
       // Get source update set
       if (reportProgress) this.notifyProgress('Fetching source update set');
       const sourceSet = await this.getRecord('sys_update_set', sourceUpdateSetId);
+
+      // Fetch every source record before creating anything, so an over-cap
+      // source fails without leaving an empty clone behind.
+      if (reportProgress) this.notifyProgress('Fetching update records from source');
+      const updateRecords = await this._getAllRecordsBounded('sys_update_xml', `update_set=${sourceUpdateSetId}`);
 
       // Create new update set
       if (reportProgress) this.notifyProgress(`Creating new update set: ${newName}`);
@@ -2755,13 +2846,6 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
         description: `Clone of: ${sourceSet.name}\n\n${sourceSet.description || ''}`,
         application: sourceSet.application,
         state: 'in progress'
-      });
-
-      // Get all update XML records from source
-      if (reportProgress) this.notifyProgress('Fetching update records from source');
-      const updateRecords = await this.getRecords('sys_update_xml', {
-        sysparm_query: `update_set=${sourceUpdateSetId}`,
-        sysparm_limit: 5000
       });
 
       const total = updateRecords.length;

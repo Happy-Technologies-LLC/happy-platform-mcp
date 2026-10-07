@@ -548,9 +548,9 @@ Move sys_update_xml records between update sets.
 **Parameters:**
 ```javascript
 {
-  "update_set_id": "target_sys_id",
-  "source_update_set": "Default",  // Optional: filter by source
-  "record_sys_ids": ["id1", "id2"], // Optional: specific records
+  "update_set_id": "0123456789abcdef0123456789abcdef", // 32 lowercase hex characters
+  "source_update_set": "Default",  // Optional: filter by source (≤255 chars, no '^' or control characters)
+  "record_sys_ids": ["<sys_id>", "<sys_id>"], // Optional: at most 200 sys_ids
   "time_range": {                   // Optional: time filter
     "start": "2025-09-29 20:00:00",
     "end": "2025-09-29 20:03:31"
@@ -561,6 +561,8 @@ Move sys_update_xml records between update sets.
 
 **Use Case:** Fix records that went to wrong update set
 
+**Limits:** at most 200 `record_sys_ids`, each a 32-character lowercase hex sys_id; `time_range` values must match `YYYY-MM-DD HH:MM:SS`; `table` must be a table name (letters, digits, underscores, ≤80 characters). All inputs are validated before any request. IDs are looked up in `sys_idIN` queries of at most 100 IDs; time-range selections are paginated in `sys_id` order and fail, before any write, if more than 10,000 records match (narrow the range rather than receiving a silently truncated move).
+
 ---
 
 ### SN-Clone-Update-Set
@@ -570,11 +572,13 @@ Clone an entire update set with all records.
 **Parameters:**
 ```javascript
 {
-  "source_update_set_id": "abc123...",
-  "new_name": "Clone of Original",
+  "source_update_set_id": "0123456789abcdef0123456789abcdef",
+  "new_name": "Clone of Original",  // 1-255 characters
   "instance": "dev"
 }
 ```
+
+**Limits:** the source sys_id must be 32 lowercase hex characters. Every source `sys_update_xml` record is fetched (paginated) before the clone is created; a source with more than 10,000 records fails without creating an empty clone.
 
 ---
 
@@ -599,6 +603,8 @@ Inspect update set contents and dependencies.
 ### SN-Create-Workflow
 
 Create a complete workflow with activities and transitions.
+
+**Limits (validated as a whole before the first write):** at most 100 activities and 200 transitions; workflow, activity and condition names ≤255 characters; each script/condition field ≤256 KiB (UTF-8); the whole input ≤4 MiB as JSON; `table` must be a table name; optional `activity_definition_sys_id`/`condition_sys_id` must be 32-character lowercase hex sys_ids. Transition `from`/`to` and `start_activity` must be an activity index, a declared (unique) activity `id`, an activity `name` that is unique among the activities, or an existing 32-character lowercase hex activity sys_id; any other string is rejected.
 
 **Parameters:**
 ```javascript
@@ -746,6 +752,10 @@ Get detailed explanation of a specific field.
 
 Create multiple records in a single operation.
 
+**Limits (validated as a whole before the first write):** at most 100 operations; `table` must be a table name (letters, digits, underscores, ≤80 characters); `data` must be an object of at most 64 KiB as JSON; `save_as` must match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`, be unique within the batch, and not be `__proto__`, `constructor`, `prototype` or a reserved `operation_N` name.
+
+**References:** every `${name}` in an operation's data that names an ID saved by an *earlier* operation (`save_as`, or `operation_N` when `save_as` is omitted) is replaced with that sys_id in a single pass. Unknown, later, malformed (`${name`) or spaced (`${ name }`) references stay literal text, and substituted IDs are never re-scanned.
+
 **Parameters:**
 ```javascript
 {
@@ -763,7 +773,7 @@ Create multiple records in a single operation.
       }
     }
   ],
-  "transaction": true,  // All-or-nothing
+  "transaction": true,  // Stop at the first failed create (earlier records are not rolled back)
   "instance": "dev"
 }
 ```
@@ -774,18 +784,20 @@ Create multiple records in a single operation.
 
 Update multiple records efficiently.
 
+**Limits (validated as a whole before the first write):** at most 100 updates; each `sys_id` must be 32 lowercase hex characters; `table` must be a table name; `data` must be an object of at most 64 KiB as JSON.
+
 **Parameters:**
 ```javascript
 {
   "updates": [
     {
       "table": "incident",
-      "sys_id": "abc123...",
+      "sys_id": "0123456789abcdef0123456789abcdef",
       "data": { "state": 6 }
     },
     {
       "table": "incident",
-      "sys_id": "def456...",
+      "sys_id": "fedcba9876543210fedcba9876543210",
       "data": { "state": 6 }
     }
   ],
@@ -988,6 +1000,8 @@ Set up multiple instances in `config/servicenow-instances.json`. Each instance c
 ```
 
 OAuth instances support Client Credentials, Resource Owner Password Credentials, and per-user Authorization Code with PKCE. Tokens are refreshed before expiry and retried once on 401. See `docs/MULTI_INSTANCE_CONFIGURATION.md` for configuration and migration details.
+
+**URL limits:** instance `url`, `authorizeUrl`, `tokenUrl` and `callbackPath` are capped at 4096 characters wherever they enter — the registry file, `SERVICENOW_INSTANCE_URL`/`SERVICENOW_OAUTH_*` environment variables, `SN-Register-Instance`, `SERVICENOW_OAUTH_TRUSTED_ORIGINS` entries, and direct `ServiceNowClient` construction. Longer values are rejected before parsing. Trailing slashes are trimmed with a linear scan (`https://x.service-now.com/tenant///` → `https://x.service-now.com/tenant`); the origin and any path prefix are preserved, and credentials are only attached to requests within that origin and prefix. Instance URLs must be `http(s)` without embedded credentials, query or fragment.
 
 At stdio startup, `SERVICENOW_INSTANCE` selects a named JSON entry when set; otherwise the configured `"default": true` entry is selected, or the first configured entry if none is marked. HTTP sessions use the configured default or first entry. If the JSON file is missing, ServiceNow environment credentials can supply the single fallback instance. `SN-Set-Instance` changes only the current session client's implicit target in memory; it does not modify startup configuration, and a new MCP session or server starts from startup selection again.
 
