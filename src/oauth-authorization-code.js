@@ -57,11 +57,14 @@ export function buildAuthorizationUrl({ authorizeUrl, clientId, redirectUri, cod
  * Start a loopback HTTP server on 127.0.0.1 to catch the OAuth redirect.
  *
  * Binds before returning so the caller can read the actual `port` (pass
- * `port: 0` for an ephemeral one) and build the redirect URI. The first
- * request to `callbackPath` resolves the `waitForCode()` promise with the
- * authorization code, after validating the returned `state` against
- * `expectedState`. Provider errors (e.g. `?error=access_denied`) and state
- * mismatches reject.
+ * `port: 0` for an ephemeral one) and build the redirect URI. The `state`
+ * query parameter is compared to `expectedState` (constant time) before the
+ * provider `error` or `code` is examined. Requests with a wrong, missing or
+ * duplicated state, and requests to any other path, get a generic response
+ * and never settle the pending flow, so a foreign request cannot abort or
+ * hijack a legitimate sign-in. A valid-state provider error rejects once with
+ * the fixed code `OAUTH_AUTHORIZATION_DENIED`; provider text is never echoed.
+ * The flow settles exactly once: by code, denial, timeout or `close()`.
  *
  * @param {object} params
  * @param {number} [params.port=0] - Port to bind (0 = OS-assigned)
@@ -70,65 +73,104 @@ export function buildAuthorizationUrl({ authorizeUrl, clientId, redirectUri, cod
  * @returns {Promise<{ port: number, waitForCode: (opts?: {timeoutMs?: number}) => Promise<{code: string}>, close: () => Promise<void> }>}
  */
 export function createCallbackServer({ port = 0, callbackPath = '/callback', expectedState }) {
+  let settled = false;
   let resolveCode;
   let rejectCode;
   const codePromise = new Promise((resolve, reject) => {
     resolveCode = resolve;
     rejectCode = reject;
   });
+  // Settlement by timeout/close may happen with no waiter attached.
+  codePromise.catch(() => {});
+
+  const settle = (fn, value) => {
+    if (settled) return false;
+    settled = true;
+    fn(value);
+    return true;
+  };
 
   const server = http.createServer((req, res) => {
-    const requestUrl = new URL(req.url, 'http://127.0.0.1');
-    if (requestUrl.pathname !== callbackPath) {
-      res.writeHead(404).end('Not found');
+    let requestUrl;
+    try {
+      requestUrl = new URL(req.url, 'http://127.0.0.1');
+    } catch {
+      respond(res, 400, 'Bad request.');
+      return;
+    }
+    if (req.method !== 'GET' || requestUrl.pathname !== callbackPath) {
+      respond(res, 404, 'Not found.');
       return;
     }
 
     const params = requestUrl.searchParams;
-    const error = params.get('error');
-    const state = params.get('state');
-    const code = params.get('code');
+    const states = params.getAll('state');
+    if (states.length !== 1 || !stateMatches(states[0], expectedState)) {
+      respond(res, 400, 'Invalid sign-in request.');
+      return;
+    }
+    if (settled) {
+      respond(res, 409, 'This sign-in request has already been handled.');
+      return;
+    }
 
-    if (error) {
-      respond(res, 400, `Authentication failed: ${escapeHtml(error)}`);
-      rejectCode(new Error(`OAuth authorization error: ${error}`));
+    if (params.has('error')) {
+      respond(res, 400, 'Authentication was not completed. Return to the terminal for details.');
+      settle(rejectCode, oauthError('OAUTH_AUTHORIZATION_DENIED', 'OAuth authorization was denied or failed at the provider.'));
       return;
     }
-    if (state !== expectedState) {
-      respond(res, 400, 'Authentication failed: state mismatch.');
-      rejectCode(new Error('OAuth state mismatch — possible CSRF; aborting.'));
-      return;
-    }
-    if (!code) {
+    const codes = params.getAll('code');
+    if (codes.length !== 1 || !codes[0]) {
       respond(res, 400, 'Authentication failed: no authorization code in the redirect.');
-      rejectCode(new Error('OAuth callback missing authorization code.'));
+      settle(rejectCode, oauthError('OAUTH_MISSING_CODE', 'OAuth callback missing authorization code.'));
       return;
     }
     respond(res, 200, 'Authentication complete. You can close this tab and return to the terminal.');
-    resolveCode({ code });
+    settle(resolveCode, { code: codes[0] });
   });
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
       const address = server.address();
-      const close = () =>
-        new Promise((res) => {
-          server.close(() => res());
-        });
+      let closing;
+      const close = () => {
+        settle(rejectCode, oauthError('OAUTH_CALLBACK_CLOSED', 'OAuth callback server closed before sign-in completed.'));
+        if (!closing) {
+          closing = new Promise((res) => {
+            server.close(() => res());
+            server.closeAllConnections?.();
+          });
+        }
+        return closing;
+      };
 
       const waitForCode = ({ timeoutMs } = {}) => {
-        if (timeoutMs == null) return codePromise;
-        let timer;
-        const timeout = new Promise((_, rej) => {
-          timer = setTimeout(() => rej(new Error(`Timed out waiting for OAuth redirect after ${timeoutMs}ms`)), timeoutMs);
-        });
-        return Promise.race([codePromise, timeout]).finally(() => clearTimeout(timer));
+        if (timeoutMs == null || settled) return codePromise;
+        const timer = setTimeout(() => {
+          settle(rejectCode, oauthError('OAUTH_CALLBACK_TIMEOUT', `Timed out waiting for OAuth redirect after ${timeoutMs}ms`));
+        }, timeoutMs);
+        return codePromise.finally(() => clearTimeout(timer));
       };
 
       resolve({ port: address.port, waitForCode, close });
     });
   });
+}
+
+/** Constant-time state comparison (hash first so lengths never leak or throw). */
+function stateMatches(received, expected) {
+  if (typeof expected !== 'string' || expected.length === 0) return false;
+  const a = crypto.createHash('sha256').update(String(received)).digest();
+  const b = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+function oauthError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
 }
 
 /**
@@ -237,14 +279,4 @@ async function defaultFormPost(url, params) {
 function respond(res, status, message) {
   res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`<!doctype html><html><body style="font-family:system-ui;padding:2rem"><p>${message}</p></body></html>`);
-}
-
-/** Escape HTML special characters so provider-supplied values can't inject markup. */
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
