@@ -14,7 +14,9 @@ const SET_DEFAULT = 'd'.repeat(32);
 const APP_X = 'b'.repeat(32);
 
 async function fakeServiceNow({ ignorePickerWrites = false, failPickerWrites = false, batchFailAt = null } = {}) {
-  const sessions = new Map();
+  // Like ServiceNow, picker choices are per-user preferences: they persist
+  // across UI sessions, so a later call in a fresh session sees them.
+  const user = { updateSet: { sysId: SET_DEFAULT, name: 'Default' }, app: 'global' };
   const requests = [];
   let nextSession = 0;
   let created = 0;
@@ -28,12 +30,10 @@ async function fakeServiceNow({ ignorePickerWrites = false, failPickerWrites = f
         res.writeHead(status, { 'content-type': 'application/json', ...headers });
         res.end(JSON.stringify(payload));
       };
-      const sid = /JSESSIONID=([^;]+)/.exec(req.headers.cookie || '')?.[1];
-      const session = (sid && sessions.get(sid)) || { updateSet: { sysId: SET_DEFAULT, name: 'Default' }, app: 'global' };
+      const session = user;
 
       if (req.method === 'GET' && url.pathname === '/') {
         const id = `s${++nextSession}`;
-        sessions.set(id, { updateSet: { sysId: SET_DEFAULT, name: 'Default' }, app: 'global' });
         res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': `JSESSIONID=${id}; Path=/; HttpOnly` });
         res.end('<html></html>');
         return;
@@ -128,17 +128,23 @@ describe('current update set', () => {
 });
 
 describe('set current update set', () => {
-  test('keeps the session cookie across read, write and verification and reports the previous set', async () => {
+  test('reports the previous set and verifies the change', async () => {
     const f = await fake();
     const result = await f.client.setCurrentUpdateSet(SET_A);
     expect(result).toMatchObject({
       success: true, sys_id: SET_A, update_set: 'Story set', verified: true, method: 'ui_api',
       previous_update_set: { sys_id: SET_DEFAULT, name: 'Default' }
     });
-    const pickerCalls = f.requests.filter((r) => r.path === '/api/now/ui/concoursepicker/updateset');
-    expect(pickerCalls.map((r) => r.method)).toEqual(['GET', 'PUT', 'GET']);
-    expect(new Set(pickerCalls.map((r) => r.cookie)).size).toBe(1);
-    expect(pickerCalls[0].cookie).toMatch(/^JSESSIONID=s\d+$/);
+  });
+
+  test('a verified change is what later calls see', async () => {
+    const f = await fake();
+    await f.client.setCurrentUpdateSet(SET_A);
+    const later = await f.client.getCurrentUpdateSet();
+    expect(later.result.sys_id).toBe(SET_A);
+    await f.client.setCurrentApplication(APP_X);
+    const next = await f.client.setCurrentApplication('global');
+    expect(next.previous_scope).toEqual({ sys_id: APP_X, name: 'App X' });
   });
 
   test('fails instead of reporting success when the change does not take effect', async () => {
