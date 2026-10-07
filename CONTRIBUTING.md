@@ -64,6 +64,7 @@ If you are contributing on behalf of your employer, please ensure you have autho
 - **Tests:** Add tests for new features. Update tests for changed behavior.
 - **Commits:** Write clear commit messages. One logical change per commit.
 - **No secrets:** Never commit credentials, API keys, or instance URLs.
+  CI runs `scripts/secret-scan.sh history` and `scripts/secret-scan.sh package` with gitleaks; run them locally (gitleaks 8.30.1 on `PATH`, full clone) before opening a PR. Fix false positives with a narrowly scoped `.gitleaks.toml` allowlist; never allowlist or baseline a live credential — rotate it first.
 
 ## Development Setup
 

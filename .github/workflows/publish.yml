@@ -128,6 +128,14 @@ jobs:
       - name: Verify published package
         run: npm run test:package
 
+      - name: Install pinned gitleaks
+        run: |
+          scripts/secret-scan.sh install "$RUNNER_TEMP/gitleaks"
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      - name: Scan packed npm tarball for secrets
+        run: scripts/secret-scan.sh package
+
       - name: Publish to npm with trusted publishing
         if: needs.check-version.outputs.npm_publish_mode == 'trusted'
         run: npm publish --access public
