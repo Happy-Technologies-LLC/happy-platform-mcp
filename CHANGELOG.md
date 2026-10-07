@@ -27,6 +27,7 @@
 
 - Pin MCP SDK 1.32.1 and Axios 1.20.0, refresh affected transitive dependencies, and retain only development-tool overrides. The bundled SDK now supports Hono 2 natively, without a prepack manifest rewrite.
 - Restrict npm releases to an explicit runtime, configuration-example, documentation, asset, and consumer-verification allow-list. Docker installs production dependencies from the committed lockfile instead of re-resolving versions.
+- CI scans the full git history and the exact packed npm tarball (including bundled dependencies) with a pinned, checksum-verified gitleaks before merge and before npm publish. A `servicenow-env-credential` rule detects literal `SERVICENOW_PASSWORD`/`SERVICENOW_CLIENT_SECRET` values; only owner-confirmed rotated historical findings from #67 are baselined by exact fingerprint, so any new occurrence fails.
 
 ### Changed
 

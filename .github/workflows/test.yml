@@ -66,3 +66,32 @@ jobs:
 
       - name: Verify published package
         run: npm run test:package
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install pinned gitleaks
+        run: |
+          scripts/secret-scan.sh install "$RUNNER_TEMP/gitleaks"
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      - name: Scan full git history for secrets
+        run: scripts/secret-scan.sh history
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Scan packed npm tarball for secrets
+        run: scripts/secret-scan.sh package

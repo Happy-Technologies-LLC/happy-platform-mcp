@@ -1,0 +1,18 @@
+# Exact gitleaks fingerprints for verified historical findings only.
+# Each entry must be a credential that was already rotated/revoked and removed from
+# the current tree. History is intentionally not rewritten (rewriting cannot revoke
+# copies); any new occurrence of the same secret in another commit/file/line still fails.
+# Never add a current-tree finding or an unverified credential here.
+
+# Issue #67 VULN-030: historical ServiceNow admin password from the first commit
+# (removed from the tree in 4be0aca/b8bcc95/0791a45). Rotation confirmed by the
+# repository owner on 2026-10-06.
+cb34fd46342479bf788ccef79b488ad2cfea1efb:.env.backup:servicenow-env-credential:3
+cb34fd46342479bf788ccef79b488ad2cfea1efb:docs/SETUP_GUIDE.md:servicenow-env-credential:33
+cb34fd46342479bf788ccef79b488ad2cfea1efb:docs/SETUP_GUIDE.md:servicenow-env-credential:101
+cb34fd46342479bf788ccef79b488ad2cfea1efb:start-mcp.sh:servicenow-env-credential:5
+
+# Issue #67 (outside VULN-030 scope): historical Google/Gemini API key from the first
+# commit (removed from the tree in 4be0aca). Revocation/rotation confirmed by the
+# repository owner on 2026-10-06.
+cb34fd46342479bf788ccef79b488ad2cfea1efb:.env.backup:gcp-api-key:11

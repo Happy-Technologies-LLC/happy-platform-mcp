@@ -15,6 +15,7 @@ scripts/*
 !scripts/release.sh
 !scripts/verify-package.mjs
 !scripts/usage-stats.mjs
+!scripts/secret-scan.sh
 
 # Logs
 logs/
