@@ -6,12 +6,12 @@
     "url": "https://github.com/Happy-Technologies-LLC/happy-platform-mcp",
     "source": "github"
   },
-  "version": "6.0.1",
+  "version": "6.0.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "happy-platform-mcp",
-      "version": "6.0.1",
+      "version": "6.0.2",
       "transport": {
         "type": "stdio"
       },
