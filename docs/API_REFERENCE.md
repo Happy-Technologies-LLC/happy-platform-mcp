@@ -853,6 +853,10 @@ Generate a script file for manual execution (fallback).
 }
 ```
 
+The file is written as a new direct child of `./scripts` in the server's working directory, named `<script_name>_<UTC timestamp>.js`, with mode 0600 on POSIX systems (Windows ignores the mode). `script_name` must be 1-100 letters, digits, `.`, `_` or `-`, starting with a letter or digit; path separators, `.`/`..`, drive or absolute paths, control characters and Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, alone or followed by `.`, case-insensitive) are rejected before anything is written. The write is refused if `./scripts` is a symlink or not a directory, or if the target already exists. `description` and `script_name` are stored in the file as a `fixScriptMetadata` JavaScript data literal, never inside the header comment; `script_content` is written verbatim as the script body.
+
+**Residual limit:** `./scripts` is checked (`lstat`) and then the file is opened in a separate step, with `O_EXCL` and, where available, `O_NOFOLLOW`. `O_NOFOLLOW` only protects the final path component, and Node.js has no `openat`, so someone able to replace `./scripts` with a symlink between those two steps could redirect the new file. That requires write access to the server's working directory, which the operator controls; run the server from a working directory that other users cannot write to.
+
 **Use Case:** When automated execution is not available
 
 ---
