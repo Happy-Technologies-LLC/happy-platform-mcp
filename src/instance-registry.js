@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { credentialRefFor, parseCredentialRef } from './instance-credential-store.js';
 import { resolveConfigPaths } from './config-path.js';
+import { assertApprovedOAuthEndpoint } from './oauth-endpoint-policy.js';
+import { MAX_URL_LENGTH, exceedsUrlLength, trimTrailingSlashes } from './url-limits.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -166,13 +168,20 @@ function invalid(message, details = {}) {
   throw new InstanceRegistryError('INVALID_INSTANCE_CONFIG', message, details);
 }
 
+function assertUrlLength(value, name, field) {
+  if (exceedsUrlLength(value)) {
+    invalid(`Instance '${name || 'unknown'}' ${field} must be at most ${MAX_URL_LENGTH} characters`, { field });
+  }
+}
+
 export function canonicalizeInstanceUrl(url) {
+  assertUrlLength(url, undefined, 'url');
   const parsed = new URL(url);
-  const pathname = parsed.pathname.replace(/\/+$/, '');
-  return `${parsed.origin}${pathname || ''}`;
+  return `${parsed.origin}${trimTrailingSlashes(parsed.pathname)}`;
 }
 
 function validateUrl(url, name) {
+  assertUrlLength(url, name, 'url');
   if (typeof url !== 'string' || !url.trim()) {
     invalid(`Instance '${name || 'unknown'}' requires a URL`, { field: 'url' });
   }
@@ -199,6 +208,7 @@ function validateUrl(url, name) {
 }
 
 function validateOptionalUrl(value, name, field) {
+  assertUrlLength(value, name, field);
   if (typeof value !== 'string' || !value.trim()) {
     invalid(`Instance '${name}' ${field} must be a non-empty URL`, { field });
   }
@@ -231,6 +241,7 @@ function validateNonEmptyString(value, name, field) {
 }
 
 function validateCallbackPath(value, name) {
+  assertUrlLength(value, name, 'callbackPath');
   if (typeof value !== 'string' || !value.trim() || !value.startsWith('/') || value.startsWith('//') || value.includes('?') || value.includes('#')) {
     invalid(`Instance '${name}' callbackPath must be a valid absolute path`, { field: 'callbackPath' });
   }
@@ -292,6 +303,14 @@ function validateNewInstance(instance, { allowSecrets = false } = {}) {
   if (instance.description !== undefined) validateOptionalString(instance.description, name, 'description');
   if (instance.authorizeUrl !== undefined) validateOptionalUrl(instance.authorizeUrl, name, 'authorizeUrl');
   if (instance.tokenUrl !== undefined) validateOptionalUrl(instance.tokenUrl, name, 'tokenUrl');
+  for (const field of ['authorizeUrl', 'tokenUrl']) {
+    if (instance[field] === undefined) continue;
+    try {
+      assertApprovedOAuthEndpoint(instance[field], instance.url, field);
+    } catch (error) {
+      invalid(`Instance '${name}' ${error.message}`, { field });
+    }
+  }
   if (instance.callbackPath !== undefined) validateCallbackPath(instance.callbackPath, name);
   if (instance.redirectPort !== undefined && (!Number.isInteger(instance.redirectPort) || instance.redirectPort < 0 || instance.redirectPort > 65535)) {
     invalid(`Instance '${name}' redirectPort must be an integer from 0 to 65535`, { field: 'redirectPort' });

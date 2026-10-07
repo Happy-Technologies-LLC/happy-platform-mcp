@@ -277,6 +277,20 @@ describe('ConfigManager.loadFromEnv()', () => {
       expect(instance.redirectPort).toBe(8455);
       expect(instance.callbackPath).toBe('/callback');
     });
+
+    it('rejects an external IdP endpoint from the environment unless the operator approved its origin', () => {
+      process.env.SERVICENOW_INSTANCE_URL = 'https://example.service-now.com';
+      process.env.SERVICENOW_AUTH_TYPE = 'oauth';
+      process.env.SERVICENOW_OAUTH_GRANT_TYPE = 'authorization_code';
+      process.env.SERVICENOW_CLIENT_ID = 'cid';
+      process.env.SERVICENOW_OAUTH_TOKEN_URL = 'https://login.example.com/token';
+      delete process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS;
+      expect(() => new ConfigManager().loadFromEnv()).toThrow(/SERVICENOW_OAUTH_TRUSTED_ORIGINS/);
+
+      process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS = 'https://login.example.com';
+      const [instance] = new ConfigManager().loadFromEnv();
+      expect(instance.tokenUrl).toBe('https://login.example.com/token');
+    });
     it.each(['12junk', '12.5', '1e2', '0x10', '+12', '-1', '   '])(
       'rejects non-decimal redirect port value %j',
       (value) => {

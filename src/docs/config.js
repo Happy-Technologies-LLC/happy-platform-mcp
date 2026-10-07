@@ -41,31 +41,73 @@ export function getDocsConfig(env = process.env, systemProperties = readSystemDo
     enableVector: envHas(env, 'HAPPY_DOCS_ENABLE_VECTOR')
       ? booleanProperty(env.HAPPY_DOCS_ENABLE_VECTOR)
       : booleanProperty(systemProperties.enableVector, false),
-    embeddingProvider: env.HAPPY_DOCS_EMBEDDING_PROVIDER || systemProperties.embeddingProvider || 'none',
-    githubToken: env.GITHUB_TOKEN || systemProperties.githubToken || ''
+    embeddingProvider: env.HAPPY_DOCS_EMBEDDING_PROVIDER || systemProperties.embeddingProvider || 'none'
   };
 }
 
-export function normalizeSafeRelativePath(relativePath) {
-  if (!relativePath || typeof relativePath !== 'string') {
-    throw new Error('Unsafe docs path: path is required');
-  }
+const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const SEGMENT_PATTERN = /^[A-Za-z0-9_~+=,@()-][A-Za-z0-9._~+=,@()-]{0,254}$/;
+export const MAX_DOCS_PATH_LENGTH = 1024;
+export const MAX_DOCS_PATH_DEPTH = 32;
 
-  const normalized = path.posix.normalize(relativePath.replaceAll('\\', '/'));
-  if (normalized.startsWith('../') || normalized === '..' || path.isAbsolute(relativePath)) {
-    throw new Error(`Unsafe docs path: ${relativePath}`);
-  }
-
-  return normalized;
+function isSafeName(value) {
+  return typeof value === 'string' && NAME_PATTERN.test(value) && !value.includes('..');
 }
 
-export function resolveDocsCachePath(cacheDir, relativePath) {
-  const safePath = normalizeSafeRelativePath(relativePath);
-  const resolved = path.resolve(cacheDir, safePath);
-  const root = path.resolve(cacheDir);
+/** Family names and git refs share one conservative single-segment syntax. */
+export function assertDocsFamilyName(family) {
+  if (!isSafeName(family)) {
+    throw new Error('Invalid ServiceNow docs family: expected 1-100 letters, digits, ".", "_" or "-"');
+  }
+  return family;
+}
 
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new Error(`Unsafe docs path: ${relativePath}`);
+export function assertDocsBranchName(branch) {
+  if (!isSafeName(branch)) {
+    throw new Error('Invalid ServiceNow docs branch: expected 1-100 letters, digits, ".", "_" or "-"');
+  }
+  return branch;
+}
+
+/**
+ * Canonical relative markdown path inside a docs branch. Rejects instead of
+ * normalizing: no percent-encoding, dot segments, empty segments, separators
+ * other than "/", controls, query/fragment markers, or drive/scheme colons.
+ */
+export function normalizeDocsDocumentPath(documentPath) {
+  if (typeof documentPath !== 'string' || documentPath.length === 0) {
+    throw new Error('Unsafe docs path: a relative markdown path is required');
+  }
+  if (documentPath.length > MAX_DOCS_PATH_LENGTH) {
+    throw new Error(`Unsafe docs path: longer than ${MAX_DOCS_PATH_LENGTH} characters`);
+  }
+  const segments = documentPath.split('/');
+  if (segments.length > MAX_DOCS_PATH_DEPTH) {
+    throw new Error(`Unsafe docs path: deeper than ${MAX_DOCS_PATH_DEPTH} segments`);
+  }
+  if (!segments.every((segment) => SEGMENT_PATTERN.test(segment))) {
+    throw new Error('Unsafe docs path: only relative paths of letters, digits and ._~+=,@()- segments are allowed');
+  }
+  if (!documentPath.endsWith('.md')) {
+    throw new Error('Unsafe docs path: only .md documents are allowed');
+  }
+  return documentPath;
+}
+
+// Family markdown lives under its own subdirectory so no family name can
+// address the index database (index.sqlite, -wal, -shm) in cacheDir.
+export const DOCS_FILES_DIR = 'files';
+
+export function resolveDocsCachePath(cacheDir, family, documentPath) {
+  const parts = [assertDocsFamilyName(family)];
+  if (documentPath !== undefined) {
+    parts.push(...normalizeDocsDocumentPath(documentPath).split('/'));
+  }
+  const root = path.resolve(cacheDir, DOCS_FILES_DIR);
+  const resolved = path.resolve(root, ...parts);
+
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error('Unsafe docs path: resolves outside the docs cache');
   }
 
   return resolved;

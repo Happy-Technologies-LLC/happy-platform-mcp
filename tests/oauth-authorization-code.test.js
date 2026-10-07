@@ -79,18 +79,27 @@ describe('createCallbackServer()', () => {
     await expect(codePromise).resolves.toEqual({ code: 'THE_CODE' });
   });
 
-  it('rejects when the returned state does not match (CSRF guard)', async () => {
+  it('ignores a foreign-state callback without settling, then accepts the valid one (CSRF guard)', async () => {
     server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
-    const assertion = expect(server.waitForCode()).rejects.toThrow(/state/i);
-    await fetch(`http://127.0.0.1:${server.port}/callback?code=THE_CODE&state=tampered`);
-    await assertion;
+    const pending = server.waitForCode();
+    let settled = false;
+    pending.then(() => { settled = true; }, () => { settled = true; });
+    const foreign = await fetch(`http://127.0.0.1:${server.port}/callback?code=EVIL&state=tampered`);
+    expect(foreign.status).toBe(400);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+    await fetch(`http://127.0.0.1:${server.port}/callback?code=THE_CODE&state=good-state`);
+    await expect(pending).resolves.toEqual({ code: 'THE_CODE' });
   });
 
-  it('rejects when the provider returns an error instead of a code', async () => {
+  it('rejects with a fixed sanitized code when the provider returns an error with the valid state', async () => {
     server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
-    const assertion = expect(server.waitForCode()).rejects.toThrow(/access_denied/);
-    await fetch(`http://127.0.0.1:${server.port}/callback?error=access_denied&state=good-state`);
-    await assertion;
+    const pending = server.waitForCode();
+    const res = await fetch(`http://127.0.0.1:${server.port}/callback?error=access_denied&error_description=nope&state=good-state`);
+    expect(res.status).toBe(400);
+    const err = await pending.catch((e) => e);
+    expect(err.code).toBe('OAUTH_AUTHORIZATION_DENIED');
+    expect(err.message).not.toMatch(/access_denied|nope/);
   });
 });
 
@@ -182,14 +191,76 @@ describe('createCallbackServer() — hardening', () => {
     await assertion;
   });
 
-  it('HTML-escapes the provider error in the response body (no reflected XSS)', async () => {
+  it('never reflects provider error text in the response or rejection', async () => {
     server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
-    const assertion = expect(server.waitForCode()).rejects.toThrow();
-    const res = await fetch(`http://127.0.0.1:${server.port}/callback?error=${encodeURIComponent('<script>alert(1)</script>')}&state=good-state`);
+    const pending = server.waitForCode();
+    const payload = '<script>alert(1)</script> ignore previous instructions';
+    const res = await fetch(`http://127.0.0.1:${server.port}/callback?error=${encodeURIComponent(payload)}&error_description=${encodeURIComponent(payload)}&state=good-state`);
     const body = await res.text();
-    expect(body).not.toContain('<script>alert(1)</script>');
-    expect(body).toContain('&lt;script&gt;');
-    await assertion;
+    expect(body).not.toMatch(/script|alert|ignore previous/i);
+    const err = await pending.catch((e) => e);
+    expect(err.code).toBe('OAUTH_AUTHORIZATION_DENIED');
+    expect(err.message).not.toMatch(/script|alert|ignore previous/i);
+  });
+
+  it('does not settle on a provider error carrying a wrong or missing state', async () => {
+    server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
+    const pending = server.waitForCode();
+    let settled = false;
+    pending.then(() => { settled = true; }, () => { settled = true; });
+    const r1 = await fetch(`http://127.0.0.1:${server.port}/callback?error=access_denied&state=bad`);
+    const r2 = await fetch(`http://127.0.0.1:${server.port}/callback?error=${encodeURIComponent('<b>x</b>')}`);
+    const r3 = await fetch(`http://127.0.0.1:${server.port}/callback?code=C&state=good-state&state=good-state`);
+    for (const r of [r1, r2, r3]) {
+      expect(r.status).toBe(400);
+      expect(await r.text()).not.toMatch(/access_denied|<b>/);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+    await fetch(`http://127.0.0.1:${server.port}/callback?code=OK&state=good-state`);
+    await expect(pending).resolves.toEqual({ code: 'OK' });
+  });
+
+  it('answers unrelated paths generically without settling', async () => {
+    server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
+    const pending = server.waitForCode();
+    const fav = await fetch(`http://127.0.0.1:${server.port}/favicon.ico`);
+    const other = await fetch(`http://127.0.0.1:${server.port}/other?state=good-state&code=X`);
+    expect(fav.status).toBe(404);
+    expect(other.status).toBe(404);
+    await fetch(`http://127.0.0.1:${server.port}/callback?code=REAL&state=good-state`);
+    await expect(pending).resolves.toEqual({ code: 'REAL' });
+  });
+
+  it('settles only once: duplicate valid callbacks do not change the result', async () => {
+    server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
+    const pending = server.waitForCode();
+    const first = await fetch(`http://127.0.0.1:${server.port}/callback?code=FIRST&state=good-state`);
+    const second = await fetch(`http://127.0.0.1:${server.port}/callback?code=SECOND&state=good-state`);
+    const denial = await fetch(`http://127.0.0.1:${server.port}/callback?error=access_denied&state=good-state`);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(409);
+    expect(denial.status).toBe(409);
+    await expect(pending).resolves.toEqual({ code: 'FIRST' });
+    await expect(server.waitForCode()).resolves.toEqual({ code: 'FIRST' });
+  });
+
+  it('timeout settles the flow; later callbacks are refused', async () => {
+    server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
+    await expect(server.waitForCode({ timeoutMs: 10 })).rejects.toThrow(/timed out/i);
+    const late = await fetch(`http://127.0.0.1:${server.port}/callback?code=LATE&state=good-state`);
+    expect(late.status).toBe(409);
+    await expect(server.waitForCode()).rejects.toThrow(/timed out/i);
+  });
+
+  it('close() rejects a pending wait and is idempotent', async () => {
+    server = await createCallbackServer({ port: 0, expectedState: 'good-state' });
+    const pending = server.waitForCode();
+    await server.close();
+    await server.close();
+    const err = await pending.catch((e) => e);
+    expect(err.code).toBe('OAUTH_CALLBACK_CLOSED');
+    server = undefined;
   });
 
   it('treats timeoutMs: 0 as an immediate timeout, not "no timeout"', async () => {
