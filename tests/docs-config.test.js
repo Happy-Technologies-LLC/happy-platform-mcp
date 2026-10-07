@@ -3,9 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import { describe, expect, test, beforeEach, afterEach } from '@jest/globals';
 import {
+  assertDocsFamilyName,
   getDocsConfig,
-  resolveDocsCachePath,
-  normalizeSafeRelativePath
+  normalizeDocsDocumentPath,
+  resolveDocsCachePath
 } from '../src/docs/config.js';
 
 const originalEnv = { ...process.env };
@@ -46,30 +47,47 @@ describe('docs config', () => {
         localIndexEnabled: true,
         enableVector: true,
         embeddingProvider: 'local',
-        githubToken: 'from-config'
+        githubToken: 'ghp_from_config'
       }
     }));
     process.env.HAPPY_CONFIG_PATH = configPath;
 
+    process.env.GITHUB_TOKEN = 'ghp_ambient';
     const config = getDocsConfig();
 
-    expect(config).toMatchObject({
+    expect(config).toEqual({
       cacheDir: '/tmp/from-config',
       localIndexEnabled: true,
       enableVector: true,
-      embeddingProvider: 'local',
-      githubToken: 'from-config'
+      embeddingProvider: 'local'
     });
   });
 
-  test('rejects path traversal for relative docs paths', () => {
-    expect(() => normalizeSafeRelativePath('../secret.md')).toThrow(/Unsafe docs path/);
-    expect(() => normalizeSafeRelativePath('/absolute.md')).toThrow(/Unsafe docs path/);
-    expect(normalizeSafeRelativePath('docs/platform/foo.md')).toBe('docs/platform/foo.md');
+  test('never surfaces ambient GitHub credentials in docs config', () => {
+    process.env.GITHUB_TOKEN = 'ghp_ambient';
+    expect(JSON.stringify(getDocsConfig())).not.toContain('ghp_');
   });
 
-  test('resolves safe cache paths inside the cache directory', () => {
-    const fullPath = resolveDocsCachePath('/tmp/cache', 'australia/foo/bar.md');
-    expect(fullPath).toBe(path.join('/tmp/cache', 'australia/foo/bar.md'));
+  test('normalizes safe nested document paths and rejects unsafe ones', () => {
+    expect(normalizeDocsDocumentPath('markdown/pub/nested/foo.md')).toBe('markdown/pub/nested/foo.md');
+    for (const unsafe of ['../secret.md', '/absolute.md', 'a/./b.md', 'a/%2e%2e/b.md', 'a\\b.md', 'C:/x.md', 'a/b.md?x', 'a b.md', '', 42]) {
+      expect(() => normalizeDocsDocumentPath(unsafe)).toThrow(/Unsafe docs path/);
+    }
+    expect(() => normalizeDocsDocumentPath(`${'x'.repeat(1100)}.md`)).toThrow(/Unsafe docs path/);
+  });
+
+  test('validates family names', () => {
+    expect(assertDocsFamilyName('australia')).toBe('australia');
+    for (const unsafe of ['', '../x', 'a/b', 'a..b', '.hidden', 'x'.repeat(101), null]) {
+      expect(() => assertDocsFamilyName(unsafe)).toThrow(/Invalid ServiceNow docs family/);
+    }
+  });
+
+  test('resolves family cache paths under a dedicated files directory, never the index database', () => {
+    const fullPath = resolveDocsCachePath('/tmp/cache', 'australia', 'foo/bar.md');
+    expect(fullPath).toBe(path.join('/tmp/cache', 'files', 'australia', 'foo', 'bar.md'));
+    expect(resolveDocsCachePath('/tmp/cache', 'australia')).toBe(path.join('/tmp/cache', 'files', 'australia'));
+    expect(resolveDocsCachePath('/tmp/cache', 'index.sqlite')).toBe(path.join('/tmp/cache', 'files', 'index.sqlite'));
+    expect(() => resolveDocsCachePath('/tmp/cache', '..', 'x.md')).toThrow(/Invalid ServiceNow docs family/);
   });
 });

@@ -27,74 +27,135 @@ export async function getSqliteAvailability() {
   }
 }
 
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS families (
+    name TEXT PRIMARY KEY,
+    branch TEXT NOT NULL,
+    synced_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    family TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    path TEXT NOT NULL,
+    sha TEXT,
+    title TEXT,
+    markdown TEXT NOT NULL,
+    UNIQUE(family, path)
+  );
+  CREATE TABLE IF NOT EXISTS chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    family TEXT NOT NULL,
+    path TEXT NOT NULL,
+    title TEXT,
+    heading TEXT,
+    start_line INTEGER,
+    end_line INTEGER,
+    body TEXT NOT NULL,
+    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+  );
+  CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    title,
+    heading,
+    body,
+    content='chunks',
+    content_rowid='id'
+  );
+`;
+
 export async function createDocsStore(dbPath, { Database = null, vectorConfig = null } = {}) {
   const DatabaseCtor = Database || await loadBetterSqlite3();
   const db = new DatabaseCtor(dbPath);
-  const vectorIndex = await createVectorIndex({
-    ...(vectorConfig || {}),
-    db
-  });
+  let vectorIndex;
+  try {
+    vectorIndex = await createVectorIndex({
+      ...(vectorConfig || {}),
+      db
+    });
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+
+  function hasTable(name) {
+    return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+  }
+
+  // Caches written before branch provenance existed cannot prove which ref
+  // their content came from; discard them instead of serving them. Rows are
+  // deleted (not tables dropped) so AUTOINCREMENT ids are never reused by
+  // any vector rows left behind.
+  function discardLegacyCache() {
+    if (!hasTable('documents')) return;
+    const columns = db.prepare('PRAGMA table_info(documents)').all().map((column) => column.name);
+    if (columns.includes('branch')) return;
+    db.transaction(() => {
+      if (hasTable('chunks_fts')) db.exec("INSERT INTO chunks_fts(chunks_fts) VALUES('delete-all')");
+      if (hasTable('chunks')) db.exec('DELETE FROM chunks');
+      db.exec('DELETE FROM documents');
+      db.exec("ALTER TABLE documents ADD COLUMN branch TEXT NOT NULL DEFAULT ''");
+      if (hasTable('families')) db.exec('DELETE FROM families');
+      vectorIndex.clear();
+    })();
+  }
+
+  function removeDocument(documentId) {
+    const chunkIds = db.prepare('SELECT id FROM chunks WHERE document_id = ?').all(documentId).map((row) => row.id);
+    db.prepare('DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)').run(documentId);
+    vectorIndex.removeChunks(chunkIds);
+    db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
+  }
+
+  function deleteDocument(documentId) {
+    removeDocument(documentId);
+    db.prepare('DELETE FROM documents WHERE id = ?').run(documentId);
+  }
 
   return {
     initialize() {
       db.exec(`
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
-        CREATE TABLE IF NOT EXISTS families (
-          name TEXT PRIMARY KEY,
-          branch TEXT NOT NULL,
-          synced_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS documents (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          family TEXT NOT NULL,
-          path TEXT NOT NULL,
-          sha TEXT,
-          title TEXT,
-          markdown TEXT NOT NULL,
-          UNIQUE(family, path)
-        );
-        CREATE TABLE IF NOT EXISTS chunks (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          document_id INTEGER NOT NULL,
-          family TEXT NOT NULL,
-          path TEXT NOT NULL,
-          title TEXT,
-          heading TEXT,
-          start_line INTEGER,
-          end_line INTEGER,
-          body TEXT NOT NULL,
-          FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
-        );
-        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-          title,
-          heading,
-          body,
-          content='chunks',
-          content_rowid='id'
-        );
       `);
+      discardLegacyCache();
+      db.exec(SCHEMA);
     },
 
-    upsertFamily({ name, branch, syncedAt }) {
-      db.prepare(`
-        INSERT INTO families (name, branch, synced_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET branch=excluded.branch, synced_at=excluded.synced_at
-      `).run(name, branch, syncedAt);
+    /**
+     * Records the approved ref for a family before any document is written.
+     * Content cached from any other ref is purged; returns whether it was.
+     */
+    beginFamilySync({ name, branch }) {
+      return db.transaction(() => {
+        const existing = db.prepare('SELECT branch FROM families WHERE name = ?').get(name);
+        const stale = db.prepare('SELECT id FROM documents WHERE family = ? AND branch <> ?').all(name, branch);
+        for (const row of stale) deleteDocument(row.id);
+        db.prepare(`
+          INSERT INTO families (name, branch, synced_at)
+          VALUES (?, ?, NULL)
+          ON CONFLICT(name) DO UPDATE SET
+            branch = excluded.branch,
+            synced_at = CASE WHEN families.branch = excluded.branch THEN families.synced_at ELSE NULL END
+        `).run(name, branch);
+        return { invalidated: stale.length > 0 || Boolean(existing && existing.branch !== branch) };
+      })();
     },
 
     replaceDocument(document, chunks) {
       const tx = db.transaction(() => {
+        const family = db.prepare('SELECT branch FROM families WHERE name = ?').get(document.family);
+        if (!family || family.branch !== document.branch) {
+          throw new Error(`Docs cache provenance mismatch for family ${document.family}`);
+        }
         const existing = db.prepare('SELECT id FROM documents WHERE family = ? AND path = ?').get(document.family, document.path);
         if (existing) {
-          db.prepare('DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)').run(existing.id);
-          db.prepare('DELETE FROM chunks WHERE document_id = ?').run(existing.id);
-          db.prepare('UPDATE documents SET sha = ?, title = ?, markdown = ? WHERE id = ?')
-            .run(document.sha, document.title, document.markdown, existing.id);
+          removeDocument(existing.id);
+          db.prepare('UPDATE documents SET branch = ?, sha = ?, title = ?, markdown = ? WHERE id = ?')
+            .run(document.branch, document.sha, document.title, document.markdown, existing.id);
         } else {
-          db.prepare('INSERT INTO documents (family, path, sha, title, markdown) VALUES (?, ?, ?, ?, ?)')
-            .run(document.family, document.path, document.sha, document.title, document.markdown);
+          db.prepare('INSERT INTO documents (family, branch, path, sha, title, markdown) VALUES (?, ?, ?, ?, ?, ?)')
+            .run(document.family, document.branch, document.path, document.sha, document.title, document.markdown);
         }
 
         const row = db.prepare('SELECT id FROM documents WHERE family = ? AND path = ?').get(document.family, document.path);
@@ -129,6 +190,24 @@ export async function createDocsStore(dbPath, { Database = null, vectorConfig = 
       tx();
     },
 
+    /**
+     * Marks a completed sync and removes documents no longer listed by the
+     * family index. Returns the removed document paths.
+     */
+    completeFamilySync({ name, branch, syncedAt, keepPaths }) {
+      return db.transaction(() => {
+        const keep = new Set(keepPaths);
+        const removed = [];
+        for (const row of db.prepare('SELECT id, path FROM documents WHERE family = ?').all(name)) {
+          if (keep.has(row.path)) continue;
+          deleteDocument(row.id);
+          removed.push(row.path);
+        }
+        db.prepare('UPDATE families SET synced_at = ? WHERE name = ? AND branch = ?').run(syncedAt, name, branch);
+        return removed;
+      })();
+    },
+
     search({ query, family, limit = 10 }) {
       const ftsResults = () => db.prepare(`
         SELECT c.id, c.family, c.path, c.title, c.heading, c.start_line AS startLine,
@@ -156,8 +235,14 @@ export async function createDocsStore(dbPath, { Database = null, vectorConfig = 
       return merged.slice(0, limit);
     },
 
+    // Only content whose recorded ref still equals the family's approved ref.
     getDocument({ family, path }) {
-      return db.prepare('SELECT family, path, title, markdown FROM documents WHERE family = ? AND path = ?').get(family, path);
+      return db.prepare(`
+        SELECT d.family, d.branch, d.path, d.title, d.markdown
+        FROM documents d
+        JOIN families f ON f.name = d.family AND f.branch = d.branch
+        WHERE d.family = ? AND d.path = ?
+      `).get(family, path);
     },
 
     status() {
