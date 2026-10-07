@@ -181,32 +181,51 @@ describe('SN-Batch-Create runtime bounds', () => {
     expect(state.writes).toHaveLength(1);
   });
 
-  test('100 placeholder-dense operations resolve in linear time', async () => {
-    const client = new ServiceNowClient('https://dev.service-now.com', 'admin', 'pw');
-    let next = 0;
-    const posted = [];
-    client.createRecord = async (_table, data) => {
-      posted.push(data);
-      next += 1;
-      return { sys_id: hex(next) };
-    };
-    // Each op references every earlier saved ID many times, up to ~64 KiB.
-    const operations = Array.from({ length: 100 }, (_, i) => {
+  test('placeholder-dense operations resolve correctly and scale linearly', async () => {
+    // Each op references every earlier saved ID many times, padded to the same
+    // ~50 KiB per operation, so total input grows linearly with N.
+    const placeholderOps = count => Array.from({ length: count }, (_, i) => {
       const refs = [];
       for (let k = 0; k < i; k += 1) refs.push(`\${k${k}}`);
       const unit = refs.length ? refs.join(',') : 'none';
       const repeat = Math.max(1, Math.floor((50 * 1024) / (unit.length + 1)));
       return { table: 'incident', save_as: `k${i}`, data: { refs: Array(repeat).fill(unit).join('|'), stray: '${'.repeat(5000) } };
     });
-    const start = performance.now();
-    const result = await client.batchCreate(operations, true, false);
-    const elapsed = performance.now() - start;
+    const run = async count => {
+      const client = new ServiceNowClient('https://dev.service-now.com', 'admin', 'pw');
+      let next = 0;
+      const posted = [];
+      client.createRecord = async (_table, data) => {
+        posted.push(data);
+        next += 1;
+        return { sys_id: hex(next) };
+      };
+      const operations = placeholderOps(count);
+      const start = performance.now();
+      const result = await client.batchCreate(operations, true, false);
+      return { elapsed: performance.now() - start, result, posted };
+    };
+    const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+    const sample = async count => {
+      const runs = [];
+      for (let r = 0; r < 3; r += 1) runs.push(await run(count));
+      return { runs, time: median(runs.map(entry => entry.elapsed)) };
+    };
+
+    await run(50); // warm-up
+    const small = await sample(50);
+    const large = await sample(100);
+
+    const { result, posted } = large.runs[0];
     expect(result.created_count).toBe(100);
     expect(posted[99].refs.startsWith(`${hex(1)},${hex(2)}`)).toBe(true);
     expect(posted[99].refs).not.toContain('${k');
     expect(posted[99].stray).toBe('${'.repeat(5000));
-    expect(elapsed).toBeLessThan(1500);
-  });
+    // Linear work doubles (~2x); a quadratic rescan would quadruple (~4x).
+    expect(large.time / small.time).toBeLessThan(3);
+    // Catastrophic guard only; not a performance budget.
+    expect(large.time).toBeLessThan(15_000);
+  }, 120_000);
 });
 
 describe('SN-Batch-Update runtime bounds', () => {
