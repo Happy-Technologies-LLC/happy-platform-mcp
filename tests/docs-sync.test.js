@@ -311,7 +311,7 @@ describe('syncDocsFamily', () => {
       [doc('b.md')]: '# B'
     });
     await syncDocsFamily({ family: 'australia', cacheDir, client });
-    fake.routes[FAMILY_LLMS] = '- [a](a.md)';
+    fake.routes.set(FAMILY_LLMS, '- [a](a.md)');
 
     await syncDocsFamily({
       family: 'australia', cacheDir, client: createServiceNowDocsClient({ fetchImpl: fake.fetchImpl })
