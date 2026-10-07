@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { createRequire } from 'node:module';
@@ -780,7 +780,9 @@ async function verifyPackage(resources) {
       return fakeRecords;
     },
   };
+  const installedHttpToken = randomBytes(32).toString('hex');
   const installedHttpApp = installedHttpModule.createHttpApp({
+    apiToken: installedHttpToken,
     defaultInstance: {
       name: 'package-verifier',
       url: 'https://package-verifier.invalid',
@@ -789,8 +791,30 @@ async function verifyPackage(resources) {
   });
   resources.httpListener = createServer(installedHttpApp);
   const installedHttpPort = await listenOnLoopback(resources.httpListener);
+  const installedHealthUrl = `http://127.0.0.1:${installedHttpPort}/health`;
+  const unauthenticatedHealth = await withDeadline(
+    () => fetch(installedHealthUrl),
+    initializeTimeoutMs,
+    'installed HTTP unauthenticated health',
+  );
+  await unauthenticatedHealth.body?.cancel();
+  assert(
+    unauthenticatedHealth.status === 401,
+    `installed HTTP /health without a bearer returned ${unauthenticatedHealth.status}, expected 401`,
+  );
+  const authenticatedHealth = await withDeadline(
+    () => fetch(installedHealthUrl, { headers: { authorization: `Bearer ${installedHttpToken}` } }),
+    initializeTimeoutMs,
+    'installed HTTP authenticated health',
+  );
+  await authenticatedHealth.body?.cancel();
+  assert(
+    authenticatedHealth.status === 200,
+    `installed HTTP /health with the bearer returned ${authenticatedHealth.status}, expected 200`,
+  );
   resources.httpTransport = new sseClientTransportModule.SSEClientTransport(
     new URL(`http://127.0.0.1:${installedHttpPort}/mcp`),
+    { requestInit: { headers: { authorization: `Bearer ${installedHttpToken}` } } },
   );
   resources.httpClient = new clientModule.Client({
     name: 'installed-package-http-verifier',
@@ -946,6 +970,7 @@ async function verifyPackage(resources) {
       resultText: httpResult.content[0].text,
       serverName: resources.httpClient.getServerVersion().name,
       toolCount: httpTools.tools.length,
+      unauthenticatedStatus: unauthenticatedHealth.status,
     },
     initialize: {
       clientName: server.getClientVersion().name,
@@ -983,7 +1008,7 @@ async function main() {
     `PASS installed stdio ${summary.stdio.serverName}, ${summary.stdio.toolCount} tools, SN-Docs-Status`,
   );
   console.log(
-    `PASS installed HTTP ${summary.http.serverName}, ${summary.http.toolCount} tools, SN-Query-Table fake result ${JSON.stringify(summary.http.resultText)}`,
+    `PASS installed HTTP ${summary.http.serverName}, unauthenticated /health HTTP ${summary.http.unauthenticatedStatus}, bearer-authenticated ${summary.http.toolCount} tools, SN-Query-Table fake result ${JSON.stringify(summary.http.resultText)}`,
   );
   console.log(summary.treeOutput);
   console.log(summary.auditOutput);

@@ -8,12 +8,24 @@
  * flow and the refresh HTTP POST are injected so the path is testable offline.
  */
 import axios from 'axios';
-import { jest } from '@jest/globals';
+import { afterAll, beforeAll, jest } from '@jest/globals';
 import { userInfo } from 'node:os';
-import { ServiceNowClient, StaleInstanceError } from '../src/servicenow-client.js';
+import { oauthRefreshTokenAccount, ServiceNowClient, StaleInstanceError } from '../src/servicenow-client.js';
 import { InMemoryTokenStore } from '../src/token-store.js';
 
-const DEFAULT_ACCOUNT = `${userInfo().username}@default`;
+const DEFAULT_ACCOUNT = oauthRefreshTokenAccount({ url: 'https://ex.service-now.com', clientId: 'cid' });
+const NEW_ACCOUNT = oauthRefreshTokenAccount({ url: 'https://new.service-now.com', clientId: 'new-cid' });
+
+// Several grant tests use an external IdP; approve it the way an operator would.
+let savedTrustedOrigins;
+beforeAll(() => {
+  savedTrustedOrigins = process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS;
+  process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS = 'https://oauth.example.com';
+});
+afterAll(() => {
+  if (savedTrustedOrigins === undefined) delete process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS;
+  else process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS = savedTrustedOrigins;
+});
 
 function makeClient({ store, flow, postToken, clientSecret } = {}) {
   return new ServiceNowClient('https://ex.service-now.com', null, null, {
@@ -84,7 +96,7 @@ describe('ServiceNowClient authorization_code grant', () => {
     expect(await store.getRefreshToken(DEFAULT_ACCOUNT)).toBe('rt1');
   });
 
-  it('scopes persisted refresh tokens to the local OS user and instance name', async () => {
+  it('binds persisted refresh tokens to the OAuth identity, not the instance name', async () => {
     const store = new InMemoryTokenStore();
     const client = makeClient({
       store,
@@ -94,7 +106,8 @@ describe('ServiceNowClient authorization_code grant', () => {
 
     await client._getOAuthToken();
 
-    expect(await store.getRefreshToken(`${userInfo().username}@dev`)).toBe('rt1');
+    expect(await store.getRefreshToken(DEFAULT_ACCOUNT)).toBe('rt1');
+    expect(await store.getRefreshToken(`${userInfo().username}@dev`)).toBeNull();
     expect(await store.getRefreshToken('dev')).toBeNull();
   });
 
@@ -619,8 +632,8 @@ describe('ServiceNowClient authorization_code grant', () => {
     expect(client.oauthToken).toBeNull();
     expect(client.oauthRefreshToken).toBeNull();
     expect(client.oauthTokenExpiry).toBeNull();
-    expect(await oldStore.getRefreshToken(`${userInfo().username}@new`)).toBeNull();
-    expect(await newStore.getRefreshToken(`${userInfo().username}@new`)).toBeNull();
+    expect(await oldStore.getRefreshToken(NEW_ACCOUNT)).toBeNull();
+    expect(await newStore.getRefreshToken(NEW_ACCOUNT)).toBeNull();
   });
 
   it('rejects when a stale refresh-token read resolves after instance switch', async () => {
@@ -651,7 +664,7 @@ describe('ServiceNowClient authorization_code grant', () => {
     expect(client.oauthToken).toBeNull();
     expect(client.oauthRefreshToken).toBeNull();
     expect(oldStore.setRefreshToken).not.toHaveBeenCalled();
-    expect(await newStore.getRefreshToken(`${userInfo().username}@new`)).toBeNull();
+    expect(await newStore.getRefreshToken(NEW_ACCOUNT)).toBeNull();
   });
 
   it('rejects when a stale refresh-token write settles after instance switch', async () => {

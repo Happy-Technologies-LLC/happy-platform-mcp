@@ -34,7 +34,7 @@ npm run dev
 ### Testing:
 ```bash
 # Test HTTP server
-curl http://localhost:3000/health
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/health
 
 # Test STDIO server (manual)
 node src/stdio-server.js

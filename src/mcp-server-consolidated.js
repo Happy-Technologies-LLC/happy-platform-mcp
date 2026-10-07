@@ -14,6 +14,20 @@ import { configManager, instanceToClientOptions } from './config-manager.js';
 import { ServiceNowClient } from './servicenow-client.js';
 import { syncScript, syncAllScripts, SCRIPT_TYPES } from './script-sync.js';
 import { parseNaturalLanguage, getSupportedPatterns } from './natural-language.js';
+import {
+  DATE_TIME_PATTERN,
+  MAX_BATCH_OPERATIONS,
+  MAX_NAME_LENGTH,
+  MAX_OPERATION_DATA_BYTES,
+  MAX_SCRIPT_BYTES,
+  MAX_UPDATE_SET_RECORD_IDS,
+  MAX_WORKFLOW_ACTIVITIES,
+  MAX_WORKFLOW_INPUT_BYTES,
+  MAX_WORKFLOW_TRANSITIONS,
+  SAVE_AS_PATTERN,
+  SYS_ID_PATTERN,
+  TABLE_NAME_PATTERN
+} from './bulk-limits.js';
 import { docsToolDefinitions } from './docs/tool-definitions.js';
 import { handleDocsTool } from './docs/tool-handlers.js';
 import { InstanceCredentialStore } from './instance-credential-store.js';
@@ -644,7 +658,8 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           properties: {
             query: {
               type: 'string',
-              description: 'Natural language query (e.g., "high priority incidents assigned to me", "recent problems about database") (required)'
+              maxLength: 2048,
+              description: 'Natural language query, at most 2048 characters (e.g., "high priority incidents assigned to me", "recent problems about database") (required)'
             },
             table: {
               type: 'string',
@@ -675,7 +690,7 @@ export async function createMcpServer(serviceNowClient, options = {}) {
       },
       {
         name: 'SN-Execute-Background-Script',
-        description: 'Executes server-side JavaScript by creating a sys_trigger scheduled job that runs in ~1 second and auto-deletes after execution. Use for: setting update sets, complex GlideRecord operations, GlideUpdateSet API calls, etc. By default this waits for the script to finish and returns its outcome — "completed" (with captured output and gs.info/gs.print logs), "failed" (with the thrown error and any logs emitted before it), or "timeout" (marker never appeared within the budget; not a success) — by polling syslog for a correlation marker. Pass wait: false to skip polling and get back only trigger scheduling metadata immediately (see issue #40).',
+        description: 'Executes server-side JavaScript by creating a sys_trigger scheduled job that runs in ~1 second and auto-deletes after execution. Use for complex GlideRecord operations the CRUD tools cannot express. The job runs in the scheduler\'s own session, not the caller\'s, so it ignores the caller\'s current update set: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), and GlideUpdateSet calls in it cannot change the update set other tools or the UI use (use SN-Set-Update-Set). By default this waits for the script to finish and returns its outcome — "completed" (with captured output and gs.info/gs.print logs), "failed" (with the thrown error and any logs emitted before it), or "timeout" (marker never appeared within the budget; not a success) — by polling syslog for a correlation marker. Pass wait: false to skip polling and get back only trigger scheduling metadata immediately (see issue #40).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -775,14 +790,16 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           properties: {
             operations: {
               type: 'array',
-              description: 'Array of create operations. Each operation can reference previous operations via ${save_as_name}',
+              maxItems: MAX_BATCH_OPERATIONS,
+              description: `Array of at most ${MAX_BATCH_OPERATIONS} create operations, validated as a whole before any write. Each operation can reference IDs saved by earlier operations via \${save_as_name} (or \${operation_N}); unknown or later names stay literal.`,
               items: {
                 type: 'object',
                 properties: {
-                  table: { type: 'string', description: 'Table name' },
-                  data: { type: 'object', description: 'Record data' },
-                  save_as: { type: 'string', description: 'Variable name to save sys_id as (optional)' }
-                }
+                  table: { type: 'string', pattern: TABLE_NAME_PATTERN, description: 'Table name' },
+                  data: { type: 'object', description: `Record data (at most ${MAX_OPERATION_DATA_BYTES} bytes as JSON)` },
+                  save_as: { type: 'string', pattern: SAVE_AS_PATTERN, description: 'Variable name to save sys_id as (optional)' }
+                },
+                required: ['table', 'data']
               }
             },
             transaction: {
@@ -807,14 +824,16 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           properties: {
             updates: {
               type: 'array',
-              description: 'Array of update operations',
+              maxItems: MAX_BATCH_OPERATIONS,
+              description: `Array of at most ${MAX_BATCH_OPERATIONS} update operations, validated as a whole before any write`,
               items: {
                 type: 'object',
                 properties: {
-                  table: { type: 'string', description: 'Table name' },
-                  sys_id: { type: 'string', description: 'Record sys_id' },
-                  data: { type: 'object', description: 'Fields to update' }
-                }
+                  table: { type: 'string', pattern: TABLE_NAME_PATTERN, description: 'Table name' },
+                  sys_id: { type: 'string', pattern: SYS_ID_PATTERN, description: 'Record sys_id (32 lowercase hex characters)' },
+                  data: { type: 'object', description: `Fields to update (at most ${MAX_OPERATION_DATA_BYTES} bytes as JSON)` }
+                },
+                required: ['table', 'sys_id', 'data']
               }
             },
             stop_on_error: {
@@ -917,12 +936,13 @@ export async function createMcpServer(serviceNowClient, options = {}) {
       },
       {
         name: 'SN-Create-Workflow',
-        description: 'Create a complete ServiceNow workflow with activities, transitions, and conditions. This tool orchestrates the entire workflow creation process: base workflow → version → activities → transitions → publish. Reports progress during creation.',
+        description: `Create a complete ServiceNow workflow with activities, transitions, and conditions. This tool orchestrates the entire workflow creation process: base workflow → version → activities → transitions → publish. Reports progress during creation. Limits: ${MAX_WORKFLOW_ACTIVITIES} activities, ${MAX_WORKFLOW_TRANSITIONS} transitions, ${MAX_SCRIPT_BYTES} bytes per script, ${MAX_WORKFLOW_INPUT_BYTES} bytes total; the whole input is validated before any write.`,
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
+              maxLength: MAX_NAME_LENGTH,
               description: 'Workflow name (required)'
             },
             description: {
@@ -931,34 +951,39 @@ export async function createMcpServer(serviceNowClient, options = {}) {
             },
             table: {
               type: 'string',
+              pattern: TABLE_NAME_PATTERN,
               description: 'Table this workflow runs against (e.g., "incident", "change_request")'
             },
             condition: {
               type: 'string',
+              maxLength: MAX_SCRIPT_BYTES,
               description: 'Condition for workflow to trigger (e.g., "state=1^priority=1") (optional)'
             },
             activities: {
               type: 'array',
+              maxItems: MAX_WORKFLOW_ACTIVITIES,
               description: 'Array of activity definitions',
               items: {
                 type: 'object',
                 properties: {
-                  name: { type: 'string', description: 'Activity name' },
-                  script: { type: 'string', description: 'JavaScript code to execute' },
-                  activity_definition_sys_id: { type: 'string', description: 'Activity type sys_id (optional)' }
+                  id: { type: 'string', maxLength: MAX_NAME_LENGTH, description: 'Optional unique reference used by transitions and start_activity' },
+                  name: { type: 'string', maxLength: MAX_NAME_LENGTH, description: 'Activity name' },
+                  script: { type: 'string', maxLength: MAX_SCRIPT_BYTES, description: 'JavaScript code to execute' },
+                  activity_definition_sys_id: { type: 'string', pattern: SYS_ID_PATTERN, description: 'Activity type sys_id (optional)' }
                 },
                 required: ['name']
               }
             },
             transitions: {
               type: 'array',
+              maxItems: MAX_WORKFLOW_TRANSITIONS,
               description: 'Array of transition definitions (connects activities)',
               items: {
                 type: 'object',
                 properties: {
-                  from: { type: 'string', description: 'From activity name' },
-                  to: { type: 'string', description: 'To activity name' },
-                  condition_script: { type: 'string', description: 'JavaScript condition (optional)' }
+                  from: { type: 'string', maxLength: MAX_NAME_LENGTH, description: 'From activity: a declared activity id, a unique activity name, or an existing activity sys_id' },
+                  to: { type: 'string', maxLength: MAX_NAME_LENGTH, description: 'To activity: a declared activity id, a unique activity name, or an existing activity sys_id' },
+                  condition_script: { type: 'string', maxLength: MAX_SCRIPT_BYTES, description: 'JavaScript condition (optional)' }
                 },
                 required: ['from', 'to']
               }
@@ -1063,27 +1088,31 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           properties: {
             update_set_id: {
               type: 'string',
+              pattern: SYS_ID_PATTERN,
               description: 'Target update set sys_id to move records to (required)'
             },
             record_sys_ids: {
               type: 'array',
-              description: 'Array of sys_update_xml sys_ids to move (optional)',
-              items: { type: 'string' }
+              maxItems: MAX_UPDATE_SET_RECORD_IDS,
+              description: `Array of at most ${MAX_UPDATE_SET_RECORD_IDS} sys_update_xml sys_ids to move (optional)`,
+              items: { type: 'string', pattern: SYS_ID_PATTERN }
             },
             time_range: {
               type: 'object',
               description: 'Time range to filter records (optional - format: YYYY-MM-DD HH:MM:SS)',
               properties: {
-                start: { type: 'string', description: 'Start time (e.g., "2025-09-29 20:00:00")' },
-                end: { type: 'string', description: 'End time (e.g., "2025-09-29 20:03:31")' }
+                start: { type: 'string', pattern: DATE_TIME_PATTERN, description: 'Start time (e.g., "2025-09-29 20:00:00")' },
+                end: { type: 'string', pattern: DATE_TIME_PATTERN, description: 'End time (e.g., "2025-09-29 20:03:31")' }
               }
             },
             source_update_set: {
               type: 'string',
+              maxLength: MAX_NAME_LENGTH,
               description: 'Filter by source update set name (e.g., "Default") (optional)'
             },
             table: {
               type: 'string',
+              pattern: TABLE_NAME_PATTERN,
               description: 'Table name (default: sys_update_xml)',
               default: 'sys_update_xml'
             },
@@ -1104,10 +1133,12 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           properties: {
             source_update_set_id: {
               type: 'string',
+              pattern: SYS_ID_PATTERN,
               description: 'Source update set sys_id to clone (required)'
             },
             new_name: {
               type: 'string',
+              maxLength: MAX_NAME_LENGTH,
               description: 'Name for the new cloned update set (required)'
             },
             progress: {
@@ -1917,7 +1948,7 @@ export async function createMcpServer(serviceNowClient, options = {}) {
         case 'SN-Natural-Language-Search': {
           const { query, table = 'incident', limit = 25, fields, order_by, show_patterns = true } = args;
 
-          console.error(`🔍 Natural language search: "${query}" on ${table}`);
+          console.error(`🔍 Natural language search (${typeof query === 'string' ? query.length : 0} chars) on ${String(table).slice(0, MAX_NAME_LENGTH)}`);
 
           // Parse natural language query
           const parseResult = parseNaturalLanguage(query, table);
@@ -2155,7 +2186,7 @@ The application scope has been set as your current application. Refresh your Ser
               }]
             };
           } catch (error) {
-            console.error('❌ Failed to set current application:', error);
+            console.error('❌ Failed to set current application:', error.message);
             return {
               content: [{
                 type: 'text',

@@ -31,4 +31,23 @@ describe('chunkMarkdown', () => {
     expect(chunks[0].endLine).toBe(4);
     expect(chunks[1].startLine).toBe(5);
   });
+
+  test('recognises ATX headings with the same rules as before', () => {
+    const chunks = chunkMarkdown({
+      family: 'australia',
+      path: 'h.md',
+      markdown: '####### Not a heading\n#NoSpace\n#   \n#\tTabbed Title  \n\nbody'
+    });
+
+    expect(chunks.map((chunk) => chunk.heading)).toEqual(['Tabbed Title', 'Tabbed Title']);
+    expect(chunks[0].body).toContain('####### Not a heading');
+    expect(chunks[1].startLine).toBe(4);
+  });
+
+  test('handles adversarial heading-like lines in linear time', () => {
+    const hostile = Array.from({ length: 200 }, () => `#${' '.repeat(16_000)}`).join('\n');
+    const started = performance.now();
+    chunkMarkdown({ family: 'australia', path: 'x.md', markdown: hostile });
+    expect(performance.now() - started).toBeLessThan(500);
+  });
 });

@@ -203,23 +203,68 @@ cp .env.example .env
 ### Start the Server
 
 ```bash
-# HTTP/SSE transport
-npm run dev
-
-# Stdio transport (for Claude Desktop)
+# Stdio transport (for Claude Desktop); no HTTP token involved
 npm run stdio
+
+# HTTP/SSE transport; refuses to start without a valid bearer token
+export HAPPY_MCP_API_TOKEN="$(openssl rand -hex 32)"
+npm run dev
 ```
 
-HTTP/SSE listens on `127.0.0.1` by default. To expose it through a reverse proxy or network interface, set both `HAPPY_MCP_BIND_HOST` and a high-entropy `HAPPY_MCP_API_TOKEN`; clients must send `Authorization: Bearer <token>`.
+### HTTP Transport Security
+
+The HTTP/SSE transport is built for **one trusted operator**, a single principal. Whoever holds `HAPPY_MCP_API_TOKEN` can use every ServiceNow credential configured on the server, so ServiceNow ACLs on those accounts still decide what they can do. HTTP authentication doesn't replace them. **Shared multi-user hosting isn't supported**: several people or tenants sharing one server or token get no per-user identity, isolation or authorization. Run one server per operator.
+
+- **A token is required on every listener.** HTTP startup fails unless `HAPPY_MCP_API_TOKEN` is 32 random bytes encoded as 64 hex characters (`openssl rand -hex 32`) or 43 base64url characters. Loopback and embedded `createHttpApp` use are no exception. The server checks the encoding but can't measure randomness, so always generate the value. Keep it in a secret store or an untracked `.env`, never commit or log it, and rotate it by restarting with a new value. Stdio doesn't use it.
+- **Every route authenticates.** `/health`, `/instances`, `GET /mcp` and `POST /mcp` all require exactly one `Authorization: Bearer <token>` header. The token is compared in constant time. Requests are rejected before body parsing or session setup.
+- **Failed attempts are throttled.** After 10 failed attempts from one peer address within a minute, that peer receives `429` with `Retry-After` until the window ends. The throttle is checked before the token, so a blocked peer is refused even with the right token. The budget lives in process memory: it resets on restart, isn't shared between processes, and only tracks a bounded number of peers. Behind a reverse proxy, or Docker port publishing where host clients can share one gateway address, every client shares one budget, so any unauthenticated client that can reach the endpoint can lock the operator out with ten bad requests a minute. Restrict who can reach the proxy and rate-limit there.
+- **Host and Origin are checked (DNS-rebinding protection).** `Host` must name the listener (`127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` on loopback, otherwise the bound address and port) or exactly match a `HAPPY_MCP_ALLOWED_HOSTS` entry. Requests without `Origin`, as native MCP clients send them, are allowed. A present `Origin` must exactly match a `HAPPY_MCP_ALLOWED_ORIGINS` entry, and `null`, wildcard, malformed and duplicate values are rejected. `X-Forwarded-*` and `Forwarded` headers are never trusted.
+- **Resource limits.** 16 pending and 32 active SSE sessions (`429` beyond that); `HEAD /mcp` gets `405`. Sessions have a 30-second setup timeout, a 30-minute idle timeout and a 12-hour maximum lifetime. JSON bodies are capped at 8 MiB. Each session processes one POST at a time with up to 8 queued, and at most 8 POSTs are processed at once across sessions. Unanswered JSON-RPC requests are capped at 16 per session and 64 per process. A cancelled request keeps its slot until its handler actually finishes, and its late result is discarded, because tool handlers don't stop early when cancelled. Unknown or closed session IDs are refused.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HAPPY_MCP_API_TOKEN` | none (required for HTTP) | Bearer token: 64 hex or 43 base64url characters |
+| `HAPPY_MCP_BIND_HOST` | `127.0.0.1` | Listen address |
+| `HAPPY_MCP_ALLOWED_HOSTS` | empty | Comma-separated extra `host[:port]` authorities, such as a reverse-proxy name. No schemes, paths or wildcards |
+| `HAPPY_MCP_ALLOWED_ORIGINS` | empty (rejects any `Origin`) | Comma-separated exact browser origins, such as `https://console.example.com` |
+
+#### Reverse proxy
+
+Terminate TLS at the proxy and forward to the loopback listener. If the proxy rewrites `Host` to the upstream address (nginx's default `$proxy_host`, which gives `127.0.0.1:3000`), no extra setting is needed. If it forwards the public name, approve that exact authority:
+
+```nginx
+location / {
+  proxy_pass http://127.0.0.1:3000;
+  proxy_set_header Host $host;   # forwards "mcp.example.com"
+  proxy_http_version 1.1;
+  proxy_buffering off;           # required for SSE
+  proxy_read_timeout 1h;
+}
+```
+
+```bash
+HAPPY_MCP_ALLOWED_HOSTS=mcp.example.com
+```
+
+The proxy must pass the `Authorization` header through unchanged. Don't let the proxy add its own credentials in place of the client's token.
+
+#### Migrating existing HTTP clients
+
+This release requires the bearer token for all HTTP use, loopback included.
+
+- **curl and scripts:** add `-H "Authorization: Bearer $HAPPY_MCP_API_TOKEN"` to every request, `/health` included.
+- **MCP SSE clients:** configure the client to send the header on both the SSE `GET` and message `POST` requests. With the TypeScript SDK, that's `new SSEClientTransport(url, { requestInit: { headers: { Authorization: 'Bearer ' + token } } })`.
+- **Clients that send `Origin`** (for example web views or proxies that forward it): add that exact origin to `HAPPY_MCP_ALLOWED_ORIGINS`. The server sends no CORS headers, so cross-origin browser pages still can't read its responses.
+- **Docker:** supply `HAPPY_MCP_API_TOKEN` at run time and set `HAPPY_MCP_ALLOWED_HOSTS` to the authority clients use, for example `localhost:3000,127.0.0.1:3000`. Health checks must authenticate; the image's `HEALTHCHECK` and `docker-compose.yml` already do. See [docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md).
 
 ### Verify
 
 ```bash
-curl http://localhost:3000/health
-curl http://localhost:3000/instances
-
-# Required when HAPPY_MCP_API_TOKEN is set
 curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/health
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/instances
+
+# Without the token the server answers 401
+curl -i http://localhost:3000/health
 ```
 
 ## Multi-Instance Routing
@@ -470,6 +515,86 @@ happy-platform-mcp instance test public-dev
 Public authorization-code metadata requires no `credentialRef` or client
 secret. The first test/API call opens the browser flow and stores its refresh
 token in the OS keychain.
+
+Refresh tokens are keyed by OAuth identity — local OS user, canonical instance
+URL, client ID, and the effective authorize/token endpoints — never by the
+instance name, so a renamed instance keeps its sign-in and a same-named
+instance on another URL, client, or IdP never receives it. **After upgrading,
+sign in once per authorization-code instance:** older name-keyed tokens are not
+read or migrated and are deleted after the new sign-in succeeds.
+`instance remove`, and `instance update` changes to the URL, client ID, or
+authorize/token URL, first delete that identity's refresh token (and any legacy
+name-keyed entry) from both the OS keychain and the file token store, whichever
+the server used, and name the stores cleaned. If either store reports an error,
+the command stops before changing the registry. On Windows the file store is
+skipped only when its directory does not exist. Tokens are not cleaned when the
+registry file is edited by hand; such a stale token is never used for a
+different identity.
+
+The keychain binding (`@napi-rs/keyring` 2.1+) reports a locked, denied or
+inaccessible keychain as an error rather than "no entry", so a delete that
+cannot complete stops the command before the registry changes — unlock the
+keychain and retry. Keychain errors carry no code that separates "no keychain
+backend" from "locked", so an unavailable keychain always stops the command. On Linux without a Secret Service the binding falls back to the kernel
+keyring; where neither works (for example containers that block `keyctl`), the
+server could only have used the file store: delete the `token-*` files under
+`$XDG_CONFIG_HOME/happy-platform-mcp/` (or `~/.config/happy-platform-mcp/`) and
+the instance entry from the registry file by hand.
+
+### Trusted external identity providers
+
+Authorize and token endpoints default to the instance itself
+(`/oauth_auth.do`, `/oauth_token.do`). A custom endpoint on the instance origin
+is always allowed. An external IdP is accepted only when its exact origin is
+listed in the environment of every process that loads the configuration — the
+MCP server **and** the shell running `happy-platform-mcp instance …` (the CLI
+does not read `.env`):
+
+```bash
+export SERVICENOW_OAUTH_TRUSTED_ORIGINS=https://login.example.com,https://idp.example.net:8443
+```
+
+Entries must be HTTPS origins (loopback HTTP is allowed for local testing) with
+no path, query, fragment, credentials, or wildcard; malformed entries fail
+closed. The allow-list cannot be set through the instance registry or MCP tools.
+It is checked when instances are registered or loaded and again immediately
+before every token request, and token requests never follow redirects. A
+registry that already uses an external IdP fails to load — in the server and in
+every CLI command, including `instance remove` — until its origin is added. If
+the server uses the file token store with a custom `XDG_CONFIG_HOME`, export the
+same `XDG_CONFIG_HOME` for the CLI so removal cleans the right directory.
+
+### Optional plaintext refresh-token storage (POSIX only)
+
+The OS keychain remains the default (unset or `SERVICENOW_TOKEN_STORE=keychain`).
+Explicitly opt in with `SERVICENOW_TOKEN_STORE=file` in the server process environment
+to persist authorization-code refresh tokens as plaintext `token-<sha256-hex>` files
+(named by the SHA-256 of the account key, so case-insensitive filesystems cannot alias
+accounts that differ only by case) in `$XDG_CONFIG_HOME/happy-platform-mcp`, or
+`~/.config/happy-platform-mcp` when XDG is unset. Earlier `token-<account>` files are
+never read; authorize again. `XDG_CONFIG_HOME` must be an absolute trusted path. This
+does not change the keychain storage of instance passwords or OAuth client secrets.
+
+The file store checks current-user ownership, a private 0700 directory and regular
+0600 token files; unsafe existing directories/files, symlinks, writable untrusted
+ancestors and setup/permission errors fail closed. Every existing ancestor (after
+resolving symlinks) is checked before any directory is created and must be owned by
+the current user or root and not group/world-writable unless sticky; errors name the
+offending path and required ownership/mode. If the directory already holds
+configuration with broader permissions, inspect it and make it private before opting
+in; the server does not silently repair exposed existing storage. Windows file mode
+bits do not enforce Windows ACL privacy, so file storage is rejected there: keep
+the OS-keychain default. See [setup details](docs/SETUP_GUIDE.md#refresh-token-storage).
+
+Any process running as the same OS user can read these plaintext tokens. Exclude the
+directory from shared/synced backups, or protect backups as secrets (including access
+controls and encryption). Do not commit, log or upload its contents. Switching stores
+does not migrate tokens; authorize again in the selected store. Each write uses a
+unique exclusive 0600 temporary file and same-directory atomic rename, so concurrent
+writers do not share temporary files and readers see complete tokens. This does not
+serialize OAuth refresh exchanges, solve cross-process refresh-token rotation, or
+guarantee power-loss durability; use one refreshing process per identity.
+
 ## Architecture
 
 ```
@@ -513,8 +638,8 @@ npm run inspector
 # Test configured credentials without exposing them in shell history.
 happy-platform-mcp instance test <instance-name>
 
-# Check server health
-curl http://localhost:3000/health
+# Check server health (HTTP transport)
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/health
 ```
 
 ### Common Problems
@@ -522,6 +647,7 @@ curl http://localhost:3000/health
 - **Multi-instance not working:** Verify the version 1 registry is valid JSON and has one `"default": true` instance when a startup default is needed. Normal live registration reloads without a restart; restart only for docs-only mode or a reload failure.
 - **Tools not appearing:** Check MCP Inspector connection and server logs.
 - **Auth failures:** Run `happy-platform-mcp instance test <instance-name>` and verify the local keychain credential reference and required ServiceNow roles.
+- **HTTP `401`/`403`/`429`:** `401` means a missing, duplicate or wrong bearer token. `403` means the `Host` or `Origin` header isn't approved (see [HTTP Transport Security](#http-transport-security)). `429` means too many failed attempts from your address or too many open sessions; wait for `Retry-After`.
 - **SSE disconnects in Docker:** Enable keepalive (default 15s). See `docs/SSE_DOCKER_SETUP.md`.
 
 ### Debug Mode

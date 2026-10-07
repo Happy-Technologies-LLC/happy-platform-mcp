@@ -52,24 +52,29 @@ Implemented automatic SSE keepalive heartbeat mechanism:
 ### Quick Start
 
 ```bash
+export HAPPY_MCP_API_TOKEN="$(openssl rand -hex 32)"
 docker run -d \
   --name servicenow-mcp \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  -e HAPPY_MCP_API_TOKEN \
+  -e HAPPY_MCP_ALLOWED_HOSTS=localhost:3000,127.0.0.1:3000 \
   -e SERVICENOW_INSTANCE_URL=https://dev12345.service-now.com \
   -e SERVICENOW_USERNAME=admin \
   -e SERVICENOW_PASSWORD=password \
   nczitzer/mcp-servicenow-nodejs:latest
 ```
 
+The server refuses to start without `HAPPY_MCP_API_TOKEN`, and every request must send it as `Authorization: Bearer <token>`. See [HTTP Transport Security](../README.md#http-transport-security).
+
 ### Test Connection
 
 ```bash
 # Watch SSE stream (you should see keepalive comments every 15 seconds)
-curl -N http://localhost:3000/mcp
+curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp
 
 # Expected output:
 # event: endpoint
-# data: /message
+# data: /mcp?sessionId=<session-id>
 #
 # : keepalive
 #
@@ -136,7 +141,7 @@ docker logs servicenow-mcp-server
 docker-compose up
 
 # Terminal 2: Test connection (watch for keepalive comments)
-curl -N http://localhost:3000/mcp
+curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp
 
 # Terminal 3: Monitor logs
 docker logs -f servicenow-mcp-server
@@ -210,7 +215,7 @@ Recommendation: Use default 15 seconds
 **Still dropping?**
 
 1. Check keepalive interval: `docker logs servicenow-mcp-server | grep keepalive`
-2. Monitor connection: `curl -N http://localhost:3000/mcp`
+2. Monitor connection: `curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp`
 3. Reduce interval: `SSE_KEEPALIVE_INTERVAL=10000`
 4. Check proxy timeout: Must be > keepalive interval
 
@@ -222,7 +227,7 @@ Recommendation: Use default 15 seconds
 
 ### Existing Deployments
 
-**No changes required!** The fix is automatic.
+**No keepalive changes required.** The keepalive fix is automatic. Current releases do require `HAPPY_MCP_API_TOKEN` and bearer authentication on every HTTP request; see [Migrating existing HTTP clients](../README.md#migrating-existing-http-clients).
 
 **Optional tuning:**
 
@@ -266,7 +271,7 @@ All 183 tests pass:
 
 1. Pull latest image: `docker pull nczitzer/mcp-servicenow-nodejs:latest`
 2. Update deployment with new environment variable (optional)
-3. Test SSE connection: `curl -N http://localhost:3000/mcp`
+3. Test SSE connection: `curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp`
 4. Monitor logs for keepalive messages
 5. Enjoy stable connections! 🎉
 
