@@ -95,3 +95,31 @@ jobs:
 
       - name: Scan packed npm tarball for secrets
         run: scripts/secret-scan.sh package
+
+  # Issue #67 VULN-004: real Windows sign-in through the default shell-free
+  # opener (explorer.exe) and the system browser against a loopback fake IdP.
+  windows-signin-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Suppress Edge first-run screens
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty -Path $key -Name HideFirstRunExperience -Type DWord -Value 1
+          Set-ItemProperty -Path $key -Name DefaultBrowserSettingEnabled -Type DWord -Value 0
+
+      - name: Native OAuth sign-in smoke
+        run: node scripts/oauth-signin-smoke.mjs --require-browser
