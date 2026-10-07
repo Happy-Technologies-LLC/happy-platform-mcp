@@ -16,14 +16,16 @@ export function mainIndex(families = [['australia', 'australia']]) {
 
 /**
  * Local stand-in for raw.githubusercontent.com. Routes map an exact request
- * path (as received on the wire) to a handler or a static body.
+ * path (as received on the wire) to a handler or a static body; the returned
+ * `routes` Map can be updated between requests.
  */
 export async function startFakeRawGitHub(routes = {}) {
   const requests = [];
   const sockets = new Set();
+  const routeTable = new Map(Object.entries(routes));
   const server = http.createServer((req, res) => {
     requests.push({ method: req.method, url: req.url, headers: { ...req.headers } });
-    const route = routes[req.url];
+    const route = routeTable.get(req.url);
     if (route === undefined) {
       res.writeHead(404, { 'content-type': 'text/plain' });
       res.end('not found');
@@ -44,7 +46,7 @@ export async function startFakeRawGitHub(routes = {}) {
   const base = `http://127.0.0.1:${server.address().port}`;
 
   return {
-    routes,
+    routes: routeTable,
     requests,
     base,
     /**
