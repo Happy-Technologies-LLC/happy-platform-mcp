@@ -471,6 +471,55 @@ Public authorization-code metadata requires no `credentialRef` or client
 secret. The first test/API call opens the browser flow and stores its refresh
 token in the OS keychain.
 
+Refresh tokens are keyed by OAuth identity — local OS user, canonical instance
+URL, client ID, and the effective authorize/token endpoints — never by the
+instance name, so a renamed instance keeps its sign-in and a same-named
+instance on another URL, client, or IdP never receives it. **After upgrading,
+sign in once per authorization-code instance:** older name-keyed tokens are not
+read or migrated and are deleted after the new sign-in succeeds.
+`instance remove`, and `instance update` changes to the URL, client ID, or
+authorize/token URL, first delete that identity's refresh token (and any legacy
+name-keyed entry) from both the OS keychain and the file token store, whichever
+the server used, and name the stores cleaned. If either store reports an error,
+the command stops before changing the registry. On Windows the file store is
+skipped only when its directory does not exist. Tokens are not cleaned when the
+registry file is edited by hand; such a stale token is never used for a
+different identity.
+
+The bundled keychain binding (`@napi-rs/keyring` 1.x) reports a locked or denied
+delete the same as "no entry", so the CLI re-reads the entry and fails if it is
+still readable; a keychain that also hides entries on read cannot be checked —
+unlock it before removing. Keychain errors carry no code that separates "no
+keychain backend" from "locked", so an unavailable keychain always stops the
+command. On Linux without a Secret Service the binding falls back to the kernel
+keyring; where neither works (for example containers that block `keyctl`), the
+server could only have used the file store: delete the `token-*` files under
+`$XDG_CONFIG_HOME/happy-platform-mcp/` (or `~/.config/happy-platform-mcp/`) and
+the instance entry from the registry file by hand.
+
+### Trusted external identity providers
+
+Authorize and token endpoints default to the instance itself
+(`/oauth_auth.do`, `/oauth_token.do`). A custom endpoint on the instance origin
+is always allowed. An external IdP is accepted only when its exact origin is
+listed in the environment of every process that loads the configuration — the
+MCP server **and** the shell running `happy-platform-mcp instance …` (the CLI
+does not read `.env`):
+
+```bash
+export SERVICENOW_OAUTH_TRUSTED_ORIGINS=https://login.example.com,https://idp.example.net:8443
+```
+
+Entries must be HTTPS origins (loopback HTTP is allowed for local testing) with
+no path, query, fragment, credentials, or wildcard; malformed entries fail
+closed. The allow-list cannot be set through the instance registry or MCP tools.
+It is checked when instances are registered or loaded and again immediately
+before every token request, and token requests never follow redirects. A
+registry that already uses an external IdP fails to load — in the server and in
+every CLI command, including `instance remove` — until its origin is added. If
+the server uses the file token store with a custom `XDG_CONFIG_HOME`, export the
+same `XDG_CONFIG_HOME` for the CLI so removal cleans the right directory.
+
 ### Optional plaintext refresh-token storage (POSIX only)
 
 The OS keychain remains the default (unset or `SERVICENOW_TOKEN_STORE=keychain`).

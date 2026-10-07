@@ -6,9 +6,11 @@
  */
 
 import axios from 'axios';
+import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { performAuthorizationCodeFlow } from './oauth-authorization-code.js';
-import { createDefaultTokenStore } from './token-store.js';
+import { assertApprovedOAuthEndpoint, resolveOAuthEndpoints } from './oauth-endpoint-policy.js';
+import { createDefaultTokenStore, isValidTokenAccount } from './token-store.js';
 import { InstanceCredentialStore, parseCredentialRef } from './instance-credential-store.js';
 
 const CREDENTIAL_ERROR_CODES = new Set([
@@ -240,6 +242,9 @@ function collectErrorCredentialValues(value, values, seen = new Set(), key = '')
         collectErrorCredentialValues(JSON.parse(value), values, seen, key);
       } catch {
         for (const [field, fieldValue] of new URLSearchParams(value)) {
+          // In a form-encoded token request body, `code` is the single-use
+          // authorization code. Elsewhere `code` names error codes, so only here.
+          if (field === 'code' && fieldValue) values.add(fieldValue);
           collectErrorCredentialValues(fieldValue, values, seen, field);
         }
       }
@@ -254,7 +259,7 @@ function collectErrorCredentialValues(value, values, seen = new Set(), key = '')
 }
 
 function isCredentialField(key) {
-  return /^(?:authorization|access_token|refresh_token|client_secret|password|token|id_token|basic)$/i.test(key)
+  return /^(?:authorization|access_token|refresh_token|client_secret|code_verifier|password|token|id_token|basic)$/i.test(key)
     || /authorization/i.test(key);
 }
 
@@ -325,6 +330,26 @@ function safeAuthError(error, client) {
     safe.stack = redactCredentialStrings(error.stack, values);
   }
   return safe;
+}
+
+/**
+ * Detail-free summary of a request error for paths outside the sanitizing
+ * client interceptor: only the redacted message, string code and HTTP status.
+ * The Axios config, request, response and headers are never retained.
+ */
+function credentialSafeErrorSummary(error, credentialSource, extraAuthorizationValues = []) {
+  const values = collectCredentialValues(credentialSource);
+  for (const value of extraAuthorizationValues) addAuthorizationValue(values, value);
+  collectErrorCredentialValues(error, values);
+  collectAuthorizationValues(error, values);
+  const status = error?.response?.status ?? error?.status;
+  return {
+    message: redactCredentialStrings(typeof error?.message === 'string' && error.message
+      ? error.message
+      : 'Request failed', values),
+    code: typeof error?.code === 'string' ? error.code : undefined,
+    status: Number.isInteger(status) ? status : undefined
+  };
 }
 
 function sanitizeServiceNowError(error, credentialSource, messageOverride) {
@@ -425,12 +450,75 @@ function requestBelongsToInstance(config, instanceUrl) {
     : resolvedPath === basePath || resolvedPath.startsWith(`${basePath}/`);
 }
 
+/**
+ * POST a form-encoded token request. Redirects are never followed: a 3xx
+ * response must not carry a client secret, code, or refresh token elsewhere.
+ */
+async function postTokenForm(url, params) {
+  return axios.post(url, new URLSearchParams(params).toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    maxRedirects: 0
+  });
+}
+
 /** Default token-endpoint POST: form-encode params via axios, return the body. */
 async function defaultTokenPost(url, params) {
-  const response = await axios.post(url, new URLSearchParams(params).toString(), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
-  return response.data;
+  return (await postTokenForm(url, params)).data;
+}
+
+const REFRESH_TOKEN_IDENTITY_PREFIX = 'identity-v1-';
+
+function canonicalIdentityInstanceUrl(url) {
+  const parsed = new URL(url);
+  let end = parsed.pathname.length;
+  while (end > 0 && parsed.pathname.charCodeAt(end - 1) === 47) end -= 1;
+  return `${parsed.origin}${parsed.pathname.slice(0, end)}`;
+}
+
+/**
+ * Token-store account key for a persisted authorization_code refresh token.
+ *
+ * Bound to the identity a refresh token is valid for — local OS user,
+ * canonical instance URL, OAuth client ID, and the effective authorize and
+ * token endpoints — and never to the mutable instance display name. The
+ * non-secret tuple is hashed into a fixed-width, filesystem- and
+ * keychain-safe key. Bump the version prefix if the tuple ever changes.
+ * @param {{ url: string, clientId: string, authorizeUrl?: string, tokenUrl?: string }} instance
+ * @param {{ osUser?: string }} [options]
+ * @returns {string} "identity-v1-<sha256 hex>"
+ */
+export function oauthRefreshTokenAccount(instance, { osUser = userInfo().username } = {}) {
+  const instanceUrl = canonicalIdentityInstanceUrl(instance.url);
+  const endpoints = resolveOAuthEndpoints(instanceUrl, instance);
+  const tuple = [
+    'happy-platform-mcp/oauth-refresh-token',
+    1,
+    osUser,
+    instanceUrl,
+    instance.clientId,
+    new URL(endpoints.authorizeUrl).href,
+    new URL(endpoints.tokenUrl).href
+  ];
+  return REFRESH_TOKEN_IDENTITY_PREFIX + createHash('sha256').update(JSON.stringify(tuple), 'utf8').digest('hex');
+}
+
+/**
+ * Pre-identity-binding key ("<os user>@<instance name>"). Never read; only
+ * cleared. Returns null when the name cannot be safely addressed in a store.
+ */
+export function legacyRefreshTokenAccount(instanceName, { osUser = userInfo().username } = {}) {
+  const account = `${osUser}@${instanceName}`;
+  return typeof instanceName === 'string' && instanceName && isValidTokenAccount(account) ? account : null;
+}
+
+/**
+ * Clear the persisted refresh tokens an instance may own: its identity key
+ * and, when addressable, its legacy name-keyed entry. Errors propagate.
+ */
+export async function clearInstanceRefreshTokens(tokenStore, instance) {
+  await tokenStore.clearRefreshToken(oauthRefreshTokenAccount(instance));
+  const legacy = legacyRefreshTokenAccount(instance.name);
+  if (legacy) await tokenStore.clearRefreshToken(legacy);
 }
 
 export function enrichServiceNowError(error, credentialSource = null) {
@@ -799,20 +887,19 @@ export class ServiceNowClient {
       return this._getAuthorizationCodeToken(generation);
     }
     this._assertCurrentGeneration(generation);
+    this._approvedOAuthEndpoint('tokenUrl');
     const clientSecret = await this._resolveCredential('clientSecret', generation);
     this._assertCurrentGeneration(generation);
-    const tokenUrl = this.oauthConfig.tokenUrl || `${this.instanceUrl}/oauth_token.do`;
 
     // Try refresh token first if we have one
     if (this.oauthRefreshToken) {
+      const refreshUrl = this._approvedOAuthEndpoint('tokenUrl');
       try {
-        const response = await axios.post(tokenUrl, new URLSearchParams({
+        const response = await postTokenForm(refreshUrl, {
           grant_type: 'refresh_token',
           client_id: this.oauthConfig.clientId,
           client_secret: clientSecret,
           refresh_token: this.oauthRefreshToken
-        }).toString(), {
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
 
         this._assertCurrentGeneration(generation);
@@ -853,11 +940,10 @@ export class ServiceNowClient {
       params.scope = this.oauthConfig.scope;
     }
 
+    this._assertCurrentGeneration(generation);
+    const tokenUrl = this._approvedOAuthEndpoint('tokenUrl');
     try {
-      this._assertCurrentGeneration(generation);
-      const response = await axios.post(tokenUrl, new URLSearchParams(params).toString(), {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-      });
+      const response = await postTokenForm(tokenUrl, params);
 
       this._assertCurrentGeneration(generation);
       return this._handleTokenResponse(response.data, generation);
@@ -878,7 +964,10 @@ export class ServiceNowClient {
    * interactive browser sign-in. A rejected refresh token FAILS LOUD: it never
    * falls back to a password/client_credentials grant (that would re-introduce
    * shared-principal attribution). Instead it re-prompts the browser sign-in.
-   * Refresh tokens are persisted per local OS user and instance in the injected token store.
+   * Refresh tokens are persisted in the injected token store under the identity
+   * key from oauthRefreshTokenAccount (OS user, instance URL, client ID and
+   * endpoints), never under the mutable instance name. Legacy name-keyed
+   * entries are never read; they are cleared after a fresh sign-in.
    * @returns {Promise<string>} Access token
    */
   async _getAuthorizationCodeToken(generation = this._instanceGeneration) {
@@ -890,9 +979,15 @@ export class ServiceNowClient {
 
     const tokenStore = this._tokenStore;
     const oauthConfig = { ...this.oauthConfig };
-    const account = `${userInfo().username}@${this.currentInstanceName}`;
-    const tokenUrl = oauthConfig.tokenUrl || `${this.instanceUrl}/oauth_token.do`;
-    const authorizeUrl = oauthConfig.authorizeUrl || `${this.instanceUrl}/oauth_auth.do`;
+    const authorizeUrl = this._approvedOAuthEndpoint('authorizeUrl');
+    const tokenUrl = this._approvedOAuthEndpoint('tokenUrl');
+    const account = oauthRefreshTokenAccount({
+      url: this.instanceUrl,
+      clientId: oauthConfig.clientId,
+      authorizeUrl,
+      tokenUrl
+    });
+    const legacyAccount = legacyRefreshTokenAccount(this.currentInstanceName);
 
     // Load a persisted refresh token if we don't have one in memory yet.
     if (!this.oauthRefreshToken) {
@@ -921,7 +1016,7 @@ export class ServiceNowClient {
           params.client_secret = oauthConfig.clientSecret;
         }
         this._assertCurrentGeneration(generation);
-        const data = await this._postToken(tokenUrl, params);
+        const data = await this._postToken(this._approvedOAuthEndpoint('tokenUrl'), params);
         this._assertCurrentGeneration(generation);
         return this._acceptAuthCodeTokens(data, account, generation, tokenStore);
       } catch (refreshError) {
@@ -957,7 +1052,15 @@ export class ServiceNowClient {
       }
     }
 
-    // Interactive authorization_code + PKCE + loopback sign-in.
+    // Interactive authorization_code + PKCE + loopback sign-in. The code
+    // exchange re-checks endpoint approval immediately before posting.
+    const approvedExchange = async (url, params) => {
+      this._assertCurrentGeneration(generation);
+      if (url !== tokenUrl || this._approvedOAuthEndpoint('tokenUrl') !== tokenUrl) {
+        throw new AuthenticationError('OAuth token endpoint changed during sign-in', 'OAUTH_ENDPOINT_NOT_APPROVED');
+      }
+      return this._postToken(tokenUrl, params);
+    };
     let data;
     try {
       this._assertCurrentGeneration(generation);
@@ -969,7 +1072,7 @@ export class ServiceNowClient {
         scope: oauthConfig.scope,
         redirectPort: oauthConfig.redirectPort,
         callbackPath: oauthConfig.callbackPath
-      });
+      }, { post: approvedExchange });
       this._assertCurrentGeneration(generation);
     } catch (error) {
       this._assertCurrentGeneration(generation);
@@ -979,7 +1082,26 @@ export class ServiceNowClient {
       }
       throw safeAuthError(error, this);
     }
-    return this._acceptAuthCodeTokens(data, account, generation, tokenStore);
+    const accessToken = await this._acceptAuthCodeTokens(data, account, generation, tokenStore);
+    if (legacyAccount) {
+      try {
+        await tokenStore.clearRefreshToken(legacyAccount);
+      } catch {
+        console.error('Could not remove a legacy name-keyed OAuth refresh token entry; remove it from the token store manually');
+      }
+    }
+    return accessToken;
+  }
+
+  /**
+   * Effective OAuth endpoint for this instance, checked against the endpoint
+   * origin policy at call time (same origin or operator-approved origin).
+   * @param {'authorizeUrl'|'tokenUrl'} field
+   * @returns {string} Normalized endpoint URL
+   */
+  _approvedOAuthEndpoint(field) {
+    const endpoints = resolveOAuthEndpoints(this.instanceUrl, this.oauthConfig || {});
+    return assertApprovedOAuthEndpoint(endpoints[field], this.instanceUrl, field);
   }
 
   /**
@@ -1229,6 +1351,7 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
 
   async setCurrentApplication(appSysId) {
     const startTime = Date.now();
+    let authHeader;
 
     try {
       // Validate input
@@ -1268,7 +1391,7 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
       }
 
       // Create axios client with cookie jar
-      const authHeader = await this.getAuthHeader();
+      authHeader = await this.getAuthHeader();
       const axiosWithCookies = axios.create({
         baseURL: this.instanceUrl,
         headers: {
@@ -1339,31 +1462,32 @@ gs.info('✅ Update set changed to: ${updateSet.name}');`;
       return result;
     } catch (error) {
       const executionTime = Date.now() - startTime;
+      // This UI client bypasses the sanitizing interceptor: keep only the
+      // redacted message, code and status, never the Axios config/request.
+      const summary = credentialSafeErrorSummary(error, this, [authHeader]);
 
       // Enhanced error messages based on error type
-      let errorMessage = error.message;
-
-      if (error.response) {
-        const status = error.response.status;
-        if (status === 401) {
-          errorMessage = 'Authentication failed. Please check your credentials.';
-        } else if (status === 403) {
-          errorMessage = `Access denied. Please verify:\n1. You have admin or developer role\n2. You have access to the application\n3. The application is active`;
-        } else if (status === 404) {
-          errorMessage = `Application not found with sys_id: ${appSysId}`;
-        } else if (status >= 500) {
-          errorMessage = `ServiceNow server error (${status}). Please try again later.`;
-        }
+      let errorMessage = summary.message;
+      const status = summary.status;
+      if (status === 401) {
+        errorMessage = 'Authentication failed. Please check your credentials.';
+      } else if (status === 403) {
+        errorMessage = `Access denied. Please verify:\n1. You have admin or developer role\n2. You have access to the application\n3. The application is active`;
+      } else if (status === 404) {
+        errorMessage = `Application not found with sys_id: ${appSysId}`;
+      } else if (status >= 500) {
+        errorMessage = `ServiceNow server error (${status}). Please try again later.`;
       }
 
       console.error('Failed to set current application:', errorMessage);
 
-      const enhancedError = new Error(`Failed to set current application: ${errorMessage}`);
-      enhancedError.execution_time_ms = executionTime;
-      enhancedError.app_sys_id = appSysId;
-      enhancedError.original_error = error;
+      const safeError = new Error(`Failed to set current application: ${errorMessage}`);
+      if (summary.code !== undefined) safeError.code = summary.code;
+      if (status !== undefined) safeError.status = status;
+      safeError.execution_time_ms = executionTime;
+      safeError.app_sys_id = appSysId;
 
-      throw enhancedError;
+      throw safeError;
     }
   }
 

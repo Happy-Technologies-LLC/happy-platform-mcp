@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { credentialRefFor, parseCredentialRef } from './instance-credential-store.js';
 import { resolveConfigPaths } from './config-path.js';
+import { assertApprovedOAuthEndpoint } from './oauth-endpoint-policy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -292,6 +293,14 @@ function validateNewInstance(instance, { allowSecrets = false } = {}) {
   if (instance.description !== undefined) validateOptionalString(instance.description, name, 'description');
   if (instance.authorizeUrl !== undefined) validateOptionalUrl(instance.authorizeUrl, name, 'authorizeUrl');
   if (instance.tokenUrl !== undefined) validateOptionalUrl(instance.tokenUrl, name, 'tokenUrl');
+  for (const field of ['authorizeUrl', 'tokenUrl']) {
+    if (instance[field] === undefined) continue;
+    try {
+      assertApprovedOAuthEndpoint(instance[field], instance.url, field);
+    } catch (error) {
+      invalid(`Instance '${name}' ${error.message}`, { field });
+    }
+  }
   if (instance.callbackPath !== undefined) validateCallbackPath(instance.callbackPath, name);
   if (instance.redirectPort !== undefined && (!Number.isInteger(instance.redirectPort) || instance.redirectPort < 0 || instance.redirectPort > 65535)) {
     invalid(`Instance '${name}' redirectPort must be an integer from 0 to 65535`, { field: 'redirectPort' });

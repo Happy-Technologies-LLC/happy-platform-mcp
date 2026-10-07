@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { InstanceRegistry } from '../src/instance-registry.js';
-import { describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { runInstanceCli } from '../src/instance-cli.js';
+import { oauthRefreshTokenAccount } from '../src/servicenow-client.js';
+import { FileTokenStore, InMemoryTokenStore, KeychainTokenStore } from '../src/token-store.js';
 
 function streams() {
   const out = { chunks: [], write(value) { this.chunks.push(String(value)); } };
@@ -774,4 +776,197 @@ test.each([
 
   expect(code).toBe(2);
   for (const prompt of Object.values(injected)) expect(prompt).not.toHaveBeenCalled();
+});
+
+describe('OAuth refresh-token identity cleanup', () => {
+  const codeInstance = {
+    name: 'code', url: 'https://code.service-now.com', authType: 'oauth', grantType: 'authorization_code',
+    clientId: 'public-client', default: false
+  };
+  const legacyAccount = `${os.userInfo().username}@code`;
+  const tempDirs = [];
+  const savedEnv = {};
+
+  beforeEach(() => {
+    for (const key of ['SERVICENOW_TOKEN_STORE', 'XDG_CONFIG_HOME']) savedEnv[key] = process.env[key];
+    delete process.env.SERVICENOW_TOKEN_STORE;
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    jest.restoreAllMocks();
+  });
+
+  async function seededTokenStore(entries = []) {
+    const store = new InMemoryTokenStore();
+    for (const [account, token] of entries) await store.setRefreshToken(account, token);
+    jest.spyOn(store, 'clearRefreshToken');
+    return store;
+  }
+
+  function untouchableTokenStore() {
+    const fail = jest.fn(async () => { throw new Error('token store must not be touched'); });
+    return { getRefreshToken: fail, setRefreshToken: fail, clearRefreshToken: fail };
+  }
+
+  function fakeKeychain(entries = new Map()) {
+    return new KeychainTokenStore({
+      createEntry: (_service, account) => ({
+        getPassword: async () => entries.get(account),
+        setPassword: async value => { entries.set(account, value); },
+        deletePassword: async () => entries.delete(account)
+      })
+    });
+  }
+
+  function tempConfigHome() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'happy-cli-tokens-'));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  test('remove clears the identity and legacy keys from both the keychain and the file store, leaving other identities', async () => {
+    const { out, err } = streams();
+    const current = oauthRefreshTokenAccount(codeInstance);
+    const other = oauthRefreshTokenAccount({ ...codeInstance, url: 'https://other.service-now.com' });
+    const seed = [[current, 'rt-current'], [legacyAccount, 'rt-legacy'], [other, 'rt-other']];
+    const keychainTokenStore = await seededTokenStore(seed);
+    const fileTokenStore = await seededTokenStore(seed);
+    const registry = registryWith([codeInstance]);
+
+    expect(await runInstanceCli(['instance', 'remove', 'code'], {
+      registry, credentialStore: credentialStore(), keychainTokenStore, fileTokenStore, prompts: prompts({ confirm: true }), stdout: out, stderr: err
+    })).toBe(0);
+
+    expect(registry.remove).toHaveBeenCalledWith('code');
+    for (const store of [keychainTokenStore, fileTokenStore]) {
+      expect(await store.getRefreshToken(current)).toBeNull();
+      expect(await store.getRefreshToken(legacyAccount)).toBeNull();
+      expect(await store.getRefreshToken(other)).toBe('rt-other');
+    }
+    expect(out.chunks.join('')).toMatch(/OS keychain, file token store/);
+  });
+
+  test('remove deletes a file-store token even when SERVICENOW_TOKEN_STORE is absent from the CLI environment', async () => {
+    const { out, err } = streams();
+    process.env.XDG_CONFIG_HOME = tempConfigHome();
+    const seeded = new FileTokenStore();
+    await seeded.setRefreshToken(oauthRefreshTokenAccount(codeInstance), 'rt-left-behind');
+    const registry = new InstanceRegistry({ readPath: path.join(tempConfigHome(), 'instances.json'), writePath: path.join(tempConfigHome(), 'instances.json') });
+    registry.readPath = registry.writePath;
+    await registry.register(codeInstance);
+
+    expect(await runInstanceCli(['instance', 'remove', 'code'], {
+      registry, credentialStore: credentialStore(), keychainTokenStore: fakeKeychain(), prompts: prompts({ confirm: true }), stdout: out, stderr: err
+    })).toBe(0);
+
+    expect(await new FileTokenStore().getRefreshToken(oauthRefreshTokenAccount(codeInstance))).toBeNull();
+    expect(registry.list()).toEqual([]);
+  });
+
+  test.each([['keychain'], ['file']])('remove fails closed before deleting anything when the %s store cannot be cleaned', async (failing) => {
+    const { out, err } = streams();
+    const registry = registryWith([codeInstance]);
+    const store = credentialStore();
+    const broken = { clearRefreshToken: jest.fn(async () => { throw new Error('store locked'); }) };
+    const healthy = await seededTokenStore();
+
+    expect(await runInstanceCli(['instance', 'remove', 'code'], {
+      registry,
+      credentialStore: store,
+      keychainTokenStore: failing === 'keychain' ? broken : healthy,
+      fileTokenStore: failing === 'file' ? broken : healthy,
+      prompts: prompts({ confirm: true }),
+      stdout: out,
+      stderr: err
+    })).toBe(1);
+    expect(registry.remove).not.toHaveBeenCalled();
+    expect(store.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  test('on Windows the file store is skipped only when its directory does not exist', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      const keychainTokenStore = await seededTokenStore([[oauthRefreshTokenAccount(codeInstance), 'rt-keychain']]);
+      const missing = new FileTokenStore({ baseDir: path.join(tempConfigHome(), 'absent') });
+      const absent = streams();
+      expect(await runInstanceCli(['instance', 'remove', 'code'], {
+        registry: registryWith([codeInstance]), credentialStore: credentialStore(), keychainTokenStore, fileTokenStore: missing,
+        prompts: prompts({ confirm: true }), stdout: absent.out, stderr: absent.err
+      })).toBe(0);
+      expect(await keychainTokenStore.getRefreshToken(oauthRefreshTokenAccount(codeInstance))).toBeNull();
+      expect(absent.out.chunks.join('')).not.toContain('file token store');
+
+      const existing = new FileTokenStore({ baseDir: tempConfigHome() });
+      const present = streams();
+      const registry = registryWith([codeInstance]);
+      expect(await runInstanceCli(['instance', 'remove', 'code'], {
+        registry, credentialStore: credentialStore(), keychainTokenStore: await seededTokenStore(), fileTokenStore: existing,
+        prompts: prompts({ confirm: true }), stdout: present.out, stderr: present.err
+      })).toBe(1);
+      expect(registry.remove).not.toHaveBeenCalled();
+      expect(present.err.chunks.join('')).toMatch(/keychain on Windows/);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  test.each([
+    ['client id', ['--client-id', 'rotated-client']],
+    ['instance URL', ['--url', 'https://moved.service-now.com']],
+    ['token URL', ['--token-url', 'https://code.service-now.com/alternate_token.do']],
+    ['authorize URL', ['--authorize-url', 'https://code.service-now.com/alternate_auth.do']]
+  ])('update clears the previous identity from both stores when the %s changes', async (_label, flags) => {
+    const { out, err } = streams();
+    const previous = oauthRefreshTokenAccount(codeInstance);
+    const seed = [[previous, 'rt-previous'], [legacyAccount, 'rt-legacy']];
+    const keychainTokenStore = await seededTokenStore(seed);
+    const fileTokenStore = await seededTokenStore(seed);
+    const registry = registryWith([codeInstance]);
+
+    expect(await runInstanceCli(['instance', 'update', 'code', ...flags], {
+      registry, keychainTokenStore, fileTokenStore, prompts: prompts(), stdout: out, stderr: err
+    })).toBe(0);
+
+    const updated = registry._state[0];
+    expect(oauthRefreshTokenAccount(updated)).not.toBe(previous);
+    for (const store of [keychainTokenStore, fileTokenStore]) {
+      expect(await store.getRefreshToken(previous)).toBeNull();
+      expect(await store.getRefreshToken(legacyAccount)).toBeNull();
+      expect(store.clearRefreshToken).not.toHaveBeenCalledWith(oauthRefreshTokenAccount(updated));
+    }
+    expect(out.chunks.join('')).toMatch(/OS keychain, file token store/);
+  });
+
+  test('update fails closed before changing the registry when refresh-token cleanup fails', async () => {
+    const { out, err } = streams();
+    const registry = registryWith([codeInstance]);
+    const broken = { clearRefreshToken: jest.fn(async () => { throw new Error('store locked'); }) };
+
+    expect(await runInstanceCli(['instance', 'update', 'code', '--client-id', 'rotated-client'], {
+      registry, keychainTokenStore: await seededTokenStore(), fileTokenStore: broken, prompts: prompts(), stdout: out, stderr: err
+    })).toBe(1);
+    expect(broken.clearRefreshToken).toHaveBeenCalled();
+    expect(registry.update).not.toHaveBeenCalled();
+    expect(registry._state[0].clientId).toBe('public-client');
+  });
+
+  test('metadata-only updates and basic instances never touch either refresh-token store', async () => {
+    const { out, err } = streams();
+    const keychainTokenStore = untouchableTokenStore();
+    const fileTokenStore = untouchableTokenStore();
+    expect(await runInstanceCli(['instance', 'update', 'code', '--description', 'docs only'], {
+      registry: registryWith([codeInstance]), keychainTokenStore, fileTokenStore, prompts: prompts(), stdout: out, stderr: err
+    })).toBe(0);
+    expect(await runInstanceCli(['instance', 'remove', 'dev'], {
+      registry: registryWith([basic]), credentialStore: credentialStore(), keychainTokenStore, fileTokenStore, prompts: prompts({ confirm: true }), stdout: out, stderr: err
+    })).toBe(0);
+    expect(keychainTokenStore.clearRefreshToken).not.toHaveBeenCalled();
+    expect(fileTokenStore.clearRefreshToken).not.toHaveBeenCalled();
+  });
 });

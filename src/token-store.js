@@ -6,10 +6,11 @@
  *   setRefreshToken(account, t)-> Promise<void>
  *   clearRefreshToken(account) -> Promise<void>
  *
- * `account` is a stable per-identity key (e.g. "<username>@<instanceName>").
- * Production defaults to the OS keychain (KeychainTokenStore). Set
- * SERVICENOW_TOKEN_STORE=file to use FileTokenStore instead; tests inject
- * InMemoryTokenStore.
+ * `account` is the versioned identity key derived by the client
+ * ("identity-v1-<sha256 hex>", see oauthRefreshTokenAccount). Every store
+ * enforces the same account grammar. Production defaults to the OS keychain
+ * (KeychainTokenStore). Set SERVICENOW_TOKEN_STORE=file to use FileTokenStore
+ * instead; tests inject InMemoryTokenStore.
  */
 
 import { promises as fs, constants } from 'node:fs';
@@ -19,6 +20,16 @@ import { join, resolve, dirname, basename, isAbsolute } from 'node:path';
 
 const SERVICE_NAME = 'happy-platform-mcp';
 
+/** True when `account` matches the account grammar shared by every token store. */
+export function isValidTokenAccount(account) {
+  return typeof account === 'string' && /^[A-Za-z0-9_@.-]{1,200}$/.test(account) &&
+    account !== '.' && !account.includes('..');
+}
+
+function assertTokenAccount(account) {
+  if (!isValidTokenAccount(account)) throw new Error('unsafe account key');
+}
+
 /** In-memory store — no persistence across processes. Used by tests and as a fallback. */
 export class InMemoryTokenStore {
   constructor() {
@@ -26,14 +37,17 @@ export class InMemoryTokenStore {
   }
 
   async getRefreshToken(account) {
+    assertTokenAccount(account);
     return this._tokens.has(account) ? this._tokens.get(account) : null;
   }
 
   async setRefreshToken(account, token) {
+    assertTokenAccount(account);
     this._tokens.set(account, token);
   }
 
   async clearRefreshToken(account) {
+    assertTokenAccount(account);
     this._tokens.delete(account);
   }
 }
@@ -58,13 +72,15 @@ export class FileTokenStore {
     this._baseDir = resolve(baseDir);
   }
 
+  /** Absolute token directory this store reads and writes. */
+  get baseDir() {
+    return this._baseDir;
+  }
+
   // Hash the key so case-insensitive filesystems (default macOS APFS) cannot
   // alias keys that differ only by case, such as "u@Dev" and "u@dev".
   _fileFor(account, directory = this._baseDir) {
-    if (typeof account !== 'string' || !/^[A-Za-z0-9_@.-]{1,200}$/.test(account) ||
-        account === '.' || account.includes('..')) {
-      throw new Error('unsafe account key');
-    }
+    assertTokenAccount(account);
     return join(directory, 'token-' + createHash('sha256').update(account, 'utf8').digest('hex'));
   }
 
@@ -252,6 +268,7 @@ export class KeychainTokenStore {
   }
 
   async getRefreshToken(account) {
+    assertTokenAccount(account);
     // A missing entry returns null (no throw). A real fault — missing native
     // module, locked keychain, permission denied — must FAIL LOUD rather than
     // masquerade as "no token" and trigger a silent re-auth.
@@ -264,11 +281,19 @@ export class KeychainTokenStore {
   }
 
   async setRefreshToken(account, token) {
+    assertTokenAccount(account);
     return await (await this._entry(account)).setPassword(token);
   }
 
   async clearRefreshToken(account) {
-    await (await this._entry(account)).deletePassword();
+    assertTokenAccount(account);
+    const entry = await this._entry(account);
+    // @napi-rs/keyring 1.x returns false for every failed delete (locked,
+    // denied) as well as for a missing entry. Confirm the entry is gone when it
+    // is still readable; a store that hides the entry on read cannot be checked.
+    if (await entry.deletePassword() === false && (await entry.getPassword()) != null) {
+      throw new Error('Keychain refresh-token deletion failed');
+    }
   }
 }
 

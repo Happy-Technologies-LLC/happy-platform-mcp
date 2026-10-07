@@ -366,10 +366,38 @@ Application Registry**, then store only the client identifier and canonical
 credential references in the registry. Authorization Code instances use
 `authorizeUrl`, `tokenUrl`, `redirectPort`, and `callbackPath` metadata.
 
+`authorizeUrl` and `tokenUrl` must share the instance origin unless the
+operator approves the external IdP origin with
+`SERVICENOW_OAUTH_TRUSTED_ORIGINS` (comma-separated exact HTTPS origins) in the
+environment of both the MCP server and the shell running
+`happy-platform-mcp instance …` (the CLI does not read `.env`). The registry and
+`SN-Register-Instance` cannot approve an origin. Off-policy endpoints are
+rejected at registration and
+registry load, and approval is re-checked before every token request; token
+requests never follow redirects. See
+[Setup Guide](SETUP_GUIDE.md#trusted-external-oauth-identity-providers).
+
 Client Credentials and password-grant tokens are cached in memory and refreshed
-before expiry. Authorization Code refresh tokens are stored in the OS keychain.
-After a rejected refresh token, browser sign-in starts again; there is no
-shared credential or plaintext fallback.
+before expiry. Authorization Code refresh tokens are stored in the OS keychain
+(or the opt-in file store) under an identity key derived from the local OS user,
+canonical instance URL, client ID, and authorize/token endpoints — never the
+instance name. Renaming an instance keeps its sign-in; a same-named instance on
+another URL, client, or IdP never receives it. After upgrading, each
+authorization-code instance signs in once; legacy name-keyed tokens are not
+read and are deleted after the new sign-in. `instance remove` and `instance
+update` changes to `url`, `clientId`, `authorizeUrl`, or `tokenUrl` first delete
+the previous identity's refresh token (and legacy name-keyed entry) from both
+the OS keychain and the file token store, regardless of which one the server
+selected, and print the stores cleaned. If either store reports an error, the
+command stops before changing the registry. On Windows the file store is skipped
+only when its directory does not exist. Export the same `XDG_CONFIG_HOME` as the
+server so the CLI cleans the right file-store directory. Hand edits to the
+registry file do not clean tokens. A locked keychain that hides entries cannot
+be verified (the keychain binding reports a failed delete as "no entry"; the CLI
+re-reads and fails if the entry is still readable), and an unavailable keychain
+always stops the command; see the README for the manual workaround. After a
+rejected refresh token, browser sign-in starts again; there is no shared
+credential or plaintext fallback.
 
 When `SN-Set-Instance` selects a configured instance, the current sequential
 session client uses that instance's authentication method. The configuration

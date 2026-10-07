@@ -573,10 +573,21 @@ describe('KeychainTokenStore (with injected entry factory)', () => {
     await expect(store.clearRefreshToken('acct')).rejects.toBe(backendError);
   });
 
-  it('treats a false delete result as an idempotent missing entry', async () => {
+  it('treats a false delete result as an idempotent missing entry when the entry is gone', async () => {
     const store = new KeychainTokenStore({
-      createEntry: () => ({ deletePassword: () => false })
+      createEntry: () => ({ deletePassword: () => false, getPassword: () => null })
     });
     await expect(store.clearRefreshToken('acct')).resolves.toBeUndefined();
+  });
+
+  it('fails loud when a false delete result leaves a readable entry behind', async () => {
+    // @napi-rs/keyring 1.x reports every delete failure (locked, denied) as false.
+    const store = new KeychainTokenStore({
+      createEntry: () => ({ deletePassword: () => false, getPassword: () => 'still-stored-refresh-token' })
+    });
+    const error = await store.clearRefreshToken('acct').catch(caught => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe('Keychain refresh-token deletion failed');
+    expect(String(error.stack)).not.toContain('still-stored-refresh-token');
   });
 });

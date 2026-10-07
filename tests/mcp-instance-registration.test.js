@@ -196,18 +196,41 @@ describe('SN-Register-Instance', () => {
     ]);
     expect(JSON.stringify(result)).not.toMatch(/password|clientSecret|fixture-secret/i);
   });
-  test('persists and returns a custom authorization-code token URL without exposing secrets', async () => {
-    const harness = await createHarness();
-    const tokenUrl = 'https://oauth.example.com/custom/token';
-    const result = await harness.callTool('SN-Register-Instance', {
-      ...publicMetadata('custom-token'),
-      tokenUrl
-    });
-    const payload = parseResponse(result);
+  test('persists and returns an operator-approved external token URL without exposing secrets', async () => {
+    const saved = process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS;
+    process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS = 'https://oauth.example.com';
+    try {
+      const harness = await createHarness();
+      const tokenUrl = 'https://oauth.example.com/custom/token';
+      const result = await harness.callTool('SN-Register-Instance', {
+        ...publicMetadata('custom-token'),
+        tokenUrl
+      });
+      const payload = parseResponse(result);
 
-    expect(payload.metadata.tokenUrl).toBe(tokenUrl);
-    expect(harness.registry.get('custom-token').tokenUrl).toBe(tokenUrl);
-    expect(JSON.stringify(result)).not.toMatch(/password|clientSecret|accessToken|tokenValue|fixture-secret/i);
+      expect(payload.metadata.tokenUrl).toBe(tokenUrl);
+      expect(harness.registry.get('custom-token').tokenUrl).toBe(tokenUrl);
+      expect(JSON.stringify(result)).not.toMatch(/password|clientSecret|accessToken|tokenValue|fixture-secret/i);
+    } finally {
+      if (saved === undefined) delete process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS;
+      else process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS = saved;
+    }
+  });
+
+  test('rejects caller-supplied off-policy OAuth endpoints without registering anything', async () => {
+    const saved = process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS;
+    delete process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS;
+    try {
+      const harness = await createHarness();
+      for (const [field, value] of [['tokenUrl', 'https://attacker.example/token'], ['authorizeUrl', 'https://attacker.example/authorize']]) {
+        const result = await harness.callTool('SN-Register-Instance', { ...publicMetadata(`off-${field.toLowerCase()}`), [field]: value });
+        expect(result.isError).toBe(true);
+        expect(parseResponse(result)).toMatchObject({ code: 'INVALID_INSTANCE_CONFIG' });
+      }
+      expect(harness.registry.list()).toEqual([]);
+    } finally {
+      if (saved !== undefined) process.env.SERVICENOW_OAUTH_TRUSTED_ORIGINS = saved;
+    }
   });
 
   test('makes a newly registered named instance resolvable immediately', async () => {

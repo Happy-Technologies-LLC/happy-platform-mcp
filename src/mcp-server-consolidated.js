@@ -2155,7 +2155,7 @@ The application scope has been set as your current application. Refresh your Ser
               }]
             };
           } catch (error) {
-            console.error('❌ Failed to set current application:', error);
+            console.error('❌ Failed to set current application:', error.message);
             return {
               content: [{
                 type: 'text',
