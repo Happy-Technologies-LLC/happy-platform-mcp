@@ -5,12 +5,15 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { createHttpApp } from '../src/http-server.js';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const stdioServerPath = path.join(projectRoot, 'src', 'stdio-server.js');
+const packageJson = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+const expectedServerIdentity = { name: packageJson.name, version: packageJson.version };
 const TEST_DEADLINE_MS = 8_000;
 const MCP_OPERATION_TIMEOUT_MS = 4_000;
 const CLEANUP_TIMEOUT_MS = 1_000;
@@ -392,10 +395,7 @@ describe('real SDK production transports', () => {
         }
       }), 'callTool');
 
-      expect(client.getServerVersion()).toEqual({
-        name: 'servicenow-server',
-        version: '2.0.0'
-      });
+      expect(client.getServerVersion()).toEqual(expectedServerIdentity);
       expect(tools.tools.some((tool) => tool.name === 'SN-Query-Table')).toBe(true);
       expect(serviceNowRequests).toEqual([{
         method: 'GET',
@@ -480,10 +480,7 @@ describe('real SDK production transports', () => {
       }), 'callTool');
       const status = JSON.parse(result.content[0].text);
 
-      expect(client.getServerVersion()).toEqual({
-        name: 'servicenow-server',
-        version: '2.0.0'
-      });
+      expect(client.getServerVersion()).toEqual(expectedServerIdentity);
       expect(tools.tools.some((tool) => tool.name === 'SN-Docs-Status')).toBe(true);
       expect(result.isError).not.toBe(true);
       expect(status).toMatchObject({

@@ -5,6 +5,7 @@
 
 import { jest } from '@jest/globals';
 import { createResourceHandlers } from '../src/resources.js';
+import { PACKAGE_VERSION } from '../src/package-info.js';
 import { createMockMcpServer, mockTableMetadata } from './helpers/mocks.js';
 
 describe('MCP Resources', () => {
@@ -86,7 +87,7 @@ describe('MCP Resources', () => {
       const instanceInfo = {
         server_info: {
           name: 'Happy MCP Server (Consolidated)',
-          version: '2.0.0',
+          version: PACKAGE_VERSION,
           description: 'Consolidated ServiceNow integration with metadata-driven schema lookups',
         },
         instance_info: {
@@ -114,13 +115,13 @@ describe('MCP Resources', () => {
       expect(result.contents[0].mimeType).toBe('application/json');
 
       const parsed = JSON.parse(result.contents[0].text);
-      expect(parsed.server_info.version).toBe('2.0.0');
+      expect(parsed.server_info.version).toBe(PACKAGE_VERSION);
       expect(parsed.capabilities.tools).toBe(34);
     });
 
     it('should include instance URL', async () => {
       const instanceInfo = {
-        server_info: { name: 'Happy MCP Server', version: '2.0.0' },
+        server_info: { name: 'Happy MCP Server', version: PACKAGE_VERSION },
         instance_info: { url: 'https://prod456.service-now.com' },
         capabilities: {},
       };

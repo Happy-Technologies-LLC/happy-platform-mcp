@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- MCP clients now see the server as `happy-platform-mcp` with the installed package version; it previously reported `servicenow-server` 2.0.0.
 ## 6.0.1 - 2026-10-07
 
 ### Fixed

@@ -8,6 +8,7 @@
  */
 
 import { instanceToClientOptions } from './config-manager.js';
+import { PACKAGE_VERSION } from './package-info.js';
 
 export function createResourceHandlers(
   serviceNowClient,
@@ -197,7 +198,7 @@ export function createResourceHandlers(
           },
           server_info: {
             name: 'Happy MCP Server',
-            version: '2.0.0',
+            version: PACKAGE_VERSION,
             description: 'Multi-instance ServiceNow MCP server with resources'
           },
           capabilities: {
