@@ -958,13 +958,12 @@ const instance = await client.readResource('servicenow://instance');
 const tables = await client.readResource('servicenow://tables/all');
 ```
 
-**Via HTTP (when using HTTP transport):**
-```bash
-# List available resources
-curl http://localhost:3000/mcp/resources
-
-# Read specific resource
-curl http://localhost:3000/mcp/resources/servicenow://instance
+**Via HTTP (when using HTTP transport):** there are no REST resource endpoints. Connect an MCP client to the SSE endpoint with the bearer token, then call `readResource` as above:
+```javascript
+const transport = new SSEClientTransport(new URL('http://localhost:3000/mcp'), {
+  requestInit: { headers: { Authorization: `Bearer ${process.env.HAPPY_MCP_API_TOKEN}` } }
+});
+await client.connect(transport);
 ```
 
 ---
@@ -1032,7 +1031,7 @@ await Promise.all([
 ### List Instances
 
 ```bash
-curl http://localhost:3000/instances
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/instances
 ```
 
 ---

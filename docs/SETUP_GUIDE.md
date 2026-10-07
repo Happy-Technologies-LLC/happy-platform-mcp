@@ -7,9 +7,9 @@ This MCP server can run in two different modes:
 ### 1. HTTP/SSE Mode (Port 3000) - For Claude Code & Testing
 - **File**: `src/server.js`
 - **Port**: 3000 (configurable via PORT env var)
-- **Usage**: Claude Code integration, API testing, web-based access
-- **Start Command**: `npm start:http` or `npm run dev`
-- **Endpoint**: http://localhost:3000/mcp
+- **Usage**: Claude Code integration, API testing, web-based access, for **one trusted operator**
+- **Start Command**: `npm start` or `npm run dev` (requires `HAPPY_MCP_API_TOKEN`)
+- **Endpoint**: http://localhost:3000/mcp (every request needs `Authorization: Bearer <token>`)
 
 ### 2. STDIO Mode - For Claude Desktop App
 - **File**: `src/stdio-server.js`
@@ -39,12 +39,15 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 
 ## Configuration for Claude Code
 
-The HTTP server runs automatically on port 3000 when you use:
+The HTTP server runs on port 3000 and refuses to start without a bearer token:
 ```bash
+export HAPPY_MCP_API_TOKEN="$(openssl rand -hex 32)"
 npm start
 # or
 npm run dev
 ```
+
+Configure your MCP client to send `Authorization: Bearer <token>` on both the SSE `GET /mcp` request and the message `POST` requests.
 
 ## Running Both Simultaneously
 
@@ -52,7 +55,7 @@ You can run both servers at the same time:
 
 1. **Terminal 1** - HTTP Server for Claude Code:
 ```bash
-npm start:http
+npm start
 ```
 
 2. **Claude Desktop** - Will automatically start stdio server when needed
@@ -61,11 +64,11 @@ npm start:http
 
 ### Test HTTP Server:
 ```bash
-# Health check
-curl http://localhost:3000/health
+# Health check (401 without the bearer token)
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/health
 
-# Test MCP endpoint
-curl -X GET http://localhost:3000/mcp
+# Test MCP endpoint (prints the endpoint event, then keepalive comments)
+curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp
 ```
 
 ### Test STDIO Server:
@@ -103,11 +106,26 @@ PORT=3000
 DEBUG=true
 ```
 
-HTTP/SSE binds to `127.0.0.1` by default. For a non-loopback `HAPPY_MCP_BIND_HOST`, set `HAPPY_MCP_API_TOKEN` and require clients to send it as a bearer token:
+### HTTP transport security
+
+The HTTP/SSE transport serves a single trusted operator; shared multi-user hosting is unsupported. Every HTTP listener, including loopback, requires `HAPPY_MCP_API_TOKEN`: 32 random bytes as 64 hex characters (or 43 base64url). Startup fails if it's missing or malformed. Stdio mode doesn't use it.
+
+```bash
+# Generate once and keep it out of version control
+openssl rand -hex 32
 ```
-HAPPY_MCP_BIND_HOST=0.0.0.0
-HAPPY_MCP_API_TOKEN=replace-with-a-high-entropy-secret
+
 ```
+HAPPY_MCP_API_TOKEN=<64 hex characters from openssl rand -hex 32>
+# Optional: listen beyond loopback (prefer a TLS reverse proxy)
+HAPPY_MCP_BIND_HOST=127.0.0.1
+# Optional: extra Host authorities, e.g. the public name your reverse proxy forwards
+HAPPY_MCP_ALLOWED_HOSTS=mcp.example.com
+# Optional: exact browser origins; unset rejects any request carrying Origin
+HAPPY_MCP_ALLOWED_ORIGINS=https://console.example.com
+```
+
+`/health`, `/instances` and `/mcp` all require the bearer token. Requests whose `Host` doesn't name the listener or an approved authority, or whose `Origin` isn't approved, get `403`. Ten failed attempts from one address within a minute trigger `429`. See [HTTP Transport Security](../README.md#http-transport-security) for limits, reverse-proxy setup and client migration.
 
 ### OAuth Environment Variables (Optional)
 

@@ -596,7 +596,7 @@ See `docs/403_TROUBLESHOOTING.md` for detailed solutions:
 ### Instance Connection Issues
 ```bash
 # Verify instance configuration
-curl http://localhost:3000/instances
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/instances
 
 # Test ServiceNow connectivity
 curl -u username:password https://your-instance.service-now.com/api/now/table/incident?sysparm_limit=1

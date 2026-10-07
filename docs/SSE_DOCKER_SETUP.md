@@ -29,14 +29,19 @@ The ServiceNow MCP Server now includes:
 
 ---
 
+> **Authentication required.** Every HTTP request, including `/health` and the SSE stream, must send `Authorization: Bearer $HAPPY_MCP_API_TOKEN`. The server refuses to start without a valid token (`openssl rand -hex 32`) and only accepts `Host` values that name the listener or appear in `HAPPY_MCP_ALLOWED_HOSTS`. See [HTTP Transport Security](../README.md#http-transport-security).
+
 ## 🚀 Quick Start (Docker)
 
 ### 1. Basic Docker Run
 
 ```bash
+export HAPPY_MCP_API_TOKEN="$(openssl rand -hex 32)"
 docker run -d \
   --name servicenow-mcp \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  -e HAPPY_MCP_API_TOKEN \
+  -e HAPPY_MCP_ALLOWED_HOSTS=localhost:3000,127.0.0.1:3000 \
   -e SERVICENOW_INSTANCE_URL=https://dev12345.service-now.com \
   -e SERVICENOW_USERNAME=admin \
   -e SERVICENOW_PASSWORD=password \
@@ -54,8 +59,10 @@ services:
     image: nczitzer/mcp-servicenow-nodejs:latest
     container_name: servicenow-mcp-server
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
+      - HAPPY_MCP_API_TOKEN=${HAPPY_MCP_API_TOKEN:?Set HAPPY_MCP_API_TOKEN}
+      - HAPPY_MCP_ALLOWED_HOSTS=localhost:3000,127.0.0.1:3000
       - SERVICENOW_INSTANCE_URL=${SERVICENOW_INSTANCE_URL}
       - SERVICENOW_USERNAME=${SERVICENOW_USERNAME}
       - SERVICENOW_PASSWORD=${SERVICENOW_PASSWORD}
@@ -67,7 +74,8 @@ services:
       - ./config/servicenow-instances.json:/app/config/servicenow-instances.json:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      # /health requires the bearer; read it from the container environment
+      test: ["CMD", "node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/health',headers:{authorization:'Bearer '+process.env.HAPPY_MCP_API_TOKEN}},(r)=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -81,7 +89,7 @@ services:
 docker-compose up
 
 # Terminal 2: Test SSE connection
-curl -N http://localhost:3000/mcp
+curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp
 
 # You should see keepalive comments every 15 seconds:
 # : keepalive
@@ -98,6 +106,8 @@ curl -N http://localhost:3000/mcp
 
 | Variable | Description | Default | Example |
 |----------|-------------|---------|---------|
+| `HAPPY_MCP_API_TOKEN` | Required bearer token (64 hex or 43 base64url characters) | - | output of `openssl rand -hex 32` |
+| `HAPPY_MCP_ALLOWED_HOSTS` | Extra `host[:port]` values accepted in `Host` | empty | `localhost:3000,your-domain.com` |
 | `SSE_KEEPALIVE_INTERVAL` | Keepalive interval in milliseconds | `15000` | `10000` |
 | `PORT` | HTTP server port | `3000` | `8080` |
 | `DEBUG` | Enable debug logging | `false` | `true` |
@@ -125,16 +135,26 @@ SSE_KEEPALIVE_INTERVAL=30000
 
 ## 🔧 Reverse Proxy Configuration
 
+The bearer token is the only credential protecting the server, so a proxy that's reachable beyond the local machine must terminate TLS. Never expose plain HTTP. The examples below serve HTTPS on 443 with your own certificate.
+
 ### nginx
 
 **Problem:** nginx buffers responses by default, breaking SSE
 
-**Solution:** Disable buffering for `/mcp` endpoint
+**Solution:** Disable buffering for `/mcp` endpoint. Because nginx forwards the public name in `Host` here, start the server with `HAPPY_MCP_ALLOWED_HOSTS=your-domain.com`. nginx passes the client's `Authorization` header through by default; don't strip or replace it. The server ignores the `X-Forwarded-*` headers.
 
 ```nginx
 server {
     listen 80;
     server_name your-domain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+    ssl_certificate     /etc/nginx/certs/your-domain.com.crt;
+    ssl_certificate_key /etc/nginx/certs/your-domain.com.key;
 
     location /mcp {
         proxy_pass http://servicenow-mcp:3000;
@@ -160,9 +180,10 @@ server {
         proxy_http_version 1.1;
     }
 
-    # Health check endpoint (buffered is OK)
+    # Health check endpoint (buffered is OK; still requires the bearer token)
     location /health {
         proxy_pass http://servicenow-mcp:3000;
+        proxy_set_header Host $host;
     }
 }
 ```
@@ -174,6 +195,9 @@ http:
   routers:
     servicenow-mcp:
       rule: "Host(`your-domain.com`)"
+      entryPoints:
+        - websecure        # HTTPS entry point
+      tls: {}              # or certResolver: <your resolver>
       service: servicenow-mcp
 
   services:
@@ -186,11 +210,13 @@ http:
           flushInterval: "1s"
 ```
 
+Traefik forwards the original `Host` by default, so set `HAPPY_MCP_ALLOWED_HOSTS=your-domain.com`.
+
 ### HAProxy
 
 ```conf
-frontend http_front
-    bind *:80
+frontend https_front
+    bind *:443 ssl crt /etc/haproxy/certs/your-domain.com.pem
     default_backend servicenow_mcp
 
 backend servicenow_mcp
@@ -202,6 +228,8 @@ backend servicenow_mcp
     option http-server-close
     option forwardfor
 ```
+
+HAProxy keeps the client's `Host` header, so set `HAPPY_MCP_ALLOWED_HOSTS=your-domain.com` here too.
 
 ---
 
@@ -221,7 +249,7 @@ docker logs servicenow-mcp-server
 **2. Monitor connection:**
 ```bash
 # Watch SSE stream
-curl -N http://localhost:3000/mcp
+curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp
 
 # You should see keepalive comments every 15 seconds
 ```
@@ -279,10 +307,16 @@ docker logs -f servicenow-mcp-server
 
 **Test script (test-sse.js):**
 ```javascript
-const EventSource = require('eventsource');
+const { EventSource } = require('eventsource');
 
 const url = 'http://localhost:3000/mcp';
-const es = new EventSource(url);
+const authorization = `Bearer ${process.env.HAPPY_MCP_API_TOKEN}`;
+const es = new EventSource(url, {
+  fetch: (input, init) => fetch(input, {
+    ...init,
+    headers: { Accept: 'text/event-stream', Authorization: authorization }
+  })
+});
 
 let keepaliveCount = 0;
 
@@ -339,25 +373,30 @@ services:
   servicenow-mcp-1:
     image: nczitzer/mcp-servicenow-nodejs:latest
     environment:
+      - HAPPY_MCP_API_TOKEN=${HAPPY_MCP_API_TOKEN:?Set HAPPY_MCP_API_TOKEN}
+      - HAPPY_MCP_ALLOWED_HOSTS=your-domain.com
       - SSE_KEEPALIVE_INTERVAL=10000
 
   servicenow-mcp-2:
     image: nczitzer/mcp-servicenow-nodejs:latest
     environment:
+      - HAPPY_MCP_API_TOKEN=${HAPPY_MCP_API_TOKEN:?Set HAPPY_MCP_API_TOKEN}
+      - HAPPY_MCP_ALLOWED_HOSTS=your-domain.com
       - SSE_KEEPALIVE_INTERVAL=10000
 
   nginx:
     image: nginx:alpine
     ports:
-      - "80:80"
+      - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
     depends_on:
       - servicenow-mcp-1
       - servicenow-mcp-2
 ```
 
-**nginx.conf for load balancing:**
+**nginx.conf for load balancing** (mounted as `conf.d/default.conf`, so it holds only `upstream` and `server` blocks):
 ```nginx
 upstream servicenow_mcp {
     # Sticky sessions for SSE (hash by IP)
@@ -368,10 +407,14 @@ upstream servicenow_mcp {
 }
 
 server {
-    listen 80;
+    listen 443 ssl;
+    server_name your-domain.com;
+    ssl_certificate     /etc/nginx/certs/your-domain.com.crt;
+    ssl_certificate_key /etc/nginx/certs/your-domain.com.key;
 
     location /mcp {
         proxy_pass http://servicenow_mcp;
+        proxy_set_header Host $host;
         proxy_buffering off;
         proxy_read_timeout 86400s;
         proxy_http_version 1.1;
@@ -379,6 +422,8 @@ server {
     }
 }
 ```
+
+Both replicas serve the same single operator and token. Each one keeps its own SSE sessions, resource limits and failed-auth budget in memory, so sticky routing is required and limits apply per replica rather than across the pool.
 
 ### Kubernetes Deployment
 
@@ -403,6 +448,13 @@ spec:
         ports:
         - containerPort: 3000
         env:
+        - name: HAPPY_MCP_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: happy-mcp-http
+              key: api-token
+        - name: HAPPY_MCP_ALLOWED_HOSTS
+          value: "servicenow-mcp:3000"
         - name: SSE_KEEPALIVE_INTERVAL
           value: "10000"
         - name: SERVICENOW_INSTANCE_URL
@@ -410,16 +462,16 @@ spec:
             secretKeyRef:
               name: servicenow-creds
               key: instance-url
+        # /health requires the bearer token; httpGet probes can't read a
+        # secret into a header, so run the authenticated check in-container.
         livenessProbe:
-          httpGet:
-            path: /health
-            port: 3000
+          exec:
+            command: ["node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/health',headers:{authorization:'Bearer '+process.env.HAPPY_MCP_API_TOKEN}},(r)=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
           initialDelaySeconds: 10
           periodSeconds: 30
         readinessProbe:
-          httpGet:
-            path: /health
-            port: 3000
+          exec:
+            command: ["node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/health',headers:{authorization:'Bearer '+process.env.HAPPY_MCP_API_TOKEN}},(r)=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
           initialDelaySeconds: 5
           periodSeconds: 10
 ---
@@ -491,7 +543,7 @@ These comments:
 
 **Connection issues?**
 1. Check server logs: `docker logs servicenow-mcp-server`
-2. Test with curl: `curl -N http://localhost:3000/mcp`
+2. Test with curl: `curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp`
 3. Verify keepalive: Look for `: keepalive` comments
 4. Check proxy config: Ensure buffering disabled
 

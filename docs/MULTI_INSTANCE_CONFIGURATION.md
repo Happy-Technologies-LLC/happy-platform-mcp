@@ -240,7 +240,7 @@ SERVICENOW_PASSWORD=
 
 ## API Endpoints
 ```bash
-curl http://localhost:3000/instances
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/instances
 ```
 
 Response:
@@ -265,7 +265,7 @@ Response:
 
 ### Health Check
 ```bash
-curl http://localhost:3000/health
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/health
 ```
 
 Response:
