@@ -27,6 +27,8 @@
 
 - Pin MCP SDK 1.32.1 and Axios 1.20.0, refresh affected transitive dependencies, and retain only development-tool overrides. The bundled SDK now supports Hono 2 natively, without a prepack manifest rewrite.
 - Restrict npm releases to an explicit runtime, configuration-example, documentation, asset, and consumer-verification allow-list. Docker installs production dependencies from the committed lockfile instead of re-resolving versions.
+- `SN-Natural-Language-Search` parsing is now bounded. `parseNaturalLanguage()` rejects non-string queries (`TypeError`) and queries over 2048 characters (`RangeError`, exported as `MAX_NATURAL_LANGUAGE_QUERY_LENGTH`) before any parsing. The overlapping backtracking regexes, which took seconds for 2048-character inputs and grew cubically with length, are replaced by a single-pass tokenizer with linear-time pattern matching. Captured names, search terms and dates can no longer contain `^`, line breaks or other control characters, so a value cannot inject extra encoded-query conditions or `ORDERBY` clauses.
+- Intentional natural-language parsing changes that come with the bounded parser: state words now produce valid conditions (`open` → `state=1^ORstate=2^ORstate=3`, `closed` → `state=7`, previously bare `1^OR…`/`7`); captured values end only at whole connector words (`assigned to John Andrews` is no longer cut at `And`); a value cannot be empty or start with `and`/`or`; matched text is removed where it matched rather than at its first occurrence; and `matchedPatterns[].pattern` is a stable pattern id (for example `priority-code`) instead of the regex source. Raw encoded queries are still passed through unchanged when no natural-language pattern matches.
 
 ### Changed
 
