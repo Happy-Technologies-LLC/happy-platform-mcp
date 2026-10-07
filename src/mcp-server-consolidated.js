@@ -13,6 +13,7 @@ import path from 'path';
 import { configManager, instanceToClientOptions } from './config-manager.js';
 import { ServiceNowClient } from './servicenow-client.js';
 import { syncScript, syncAllScripts, SCRIPT_TYPES } from './script-sync.js';
+import { PACKAGE_NAME, PACKAGE_VERSION } from './package-info.js';
 import { parseNaturalLanguage, getSupportedPatterns } from './natural-language.js';
 import {
   DATE_TIME_PATTERN,
@@ -85,8 +86,8 @@ export async function createMcpServer(serviceNowClient, options = {}) {
   const instanceClients = new Map();
   const server = new Server(
     {
-      name: 'servicenow-server',
-      version: '2.0.0',
+      name: PACKAGE_NAME,
+      version: PACKAGE_VERSION,
     },
     {
       capabilities: {
@@ -3260,7 +3261,7 @@ The problem has been closed successfully.`
       const config = {
         server_info: {
           name: 'Happy MCP Server (Consolidated)',
-          version: '2.0.0',
+          version: PACKAGE_VERSION,
           description: 'Consolidated ServiceNow integration with metadata-driven schema lookups'
         },
         instance_info: {

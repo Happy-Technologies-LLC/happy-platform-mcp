@@ -755,7 +755,7 @@ async function verifyPackage(resources) {
   const stdioStatus = JSON.parse(stdioResult.content?.[0]?.text);
   assert(
     JSON.stringify(resources.stdioClient.getServerVersion()) ===
-      JSON.stringify({ name: 'servicenow-server', version: '2.0.0' }),
+      JSON.stringify({ name: packedRoot.name, version: packedRoot.version }),
     'installed stdio server identity is unexpected',
   );
   assert(
@@ -846,7 +846,7 @@ async function verifyPackage(resources) {
   );
   assert(
     JSON.stringify(resources.httpClient.getServerVersion()) ===
-      JSON.stringify({ name: 'servicenow-server', version: '2.0.0' }),
+      JSON.stringify({ name: packedRoot.name, version: packedRoot.version }),
     'installed HTTP server identity is unexpected',
   );
   assert(
