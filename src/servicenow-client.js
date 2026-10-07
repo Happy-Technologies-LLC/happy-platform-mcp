@@ -1300,11 +1300,11 @@ export class ServiceNowClient {
   }
 
   /**
-   * Open a UI session for the concourse pickers. The picker state is
-   * session-scoped and Node's axios keeps no cookie jar, so the session cookie
-   * from the landing page must be sent explicitly on every picker call;
-   * otherwise each call lands in a fresh session and a "successful" write is
-   * invisible to the next read.
+   * Open a UI session for the concourse pickers. Node's axios keeps no cookie
+   * jar, so the landing-page session cookie is sent explicitly to run the
+   * read, write and read-back verification in one UI session. The chosen
+   * update set / application is stored as a user preference, so it persists
+   * into later sessions (verified on a live instance).
    */
   async _openUiPickerSession() {
     const authHeader = await this.getAuthHeader();
