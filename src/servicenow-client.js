@@ -6,11 +6,27 @@
  */
 
 import axios from 'axios';
+import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { performAuthorizationCodeFlow } from './oauth-authorization-code.js';
-import { KeychainTokenStore } from './token-store.js';
+import { assertApprovedOAuthEndpoint, resolveOAuthEndpoints } from './oauth-endpoint-policy.js';
+import { createDefaultTokenStore, isValidTokenAccount } from './token-store.js';
 import { InstanceCredentialStore, parseCredentialRef } from './instance-credential-store.js';
 import { toJavaScriptLiteral } from './generated-scripts.js';
+import { MAX_URL_LENGTH, exceedsUrlLength, trimLeadingSlashes, trimTrailingSlashes } from './url-limits.js';
+import {
+  BulkInputError,
+  MAX_UPDATE_SET_QUERY_RECORDS,
+  isSysId,
+  UPDATE_SET_ID_CHUNK_SIZE,
+  UPDATE_SET_QUERY_PAGE_SIZE,
+  resolveBatchPlaceholders,
+  validateBatchCreateOperations,
+  validateBatchUpdates,
+  validateUpdateSetClone,
+  validateUpdateSetMove,
+  validateWorkflowSpec
+} from './bulk-limits.js';
 
 const CREDENTIAL_ERROR_CODES = new Set([
   'CREDENTIAL_NOT_FOUND',
@@ -241,6 +257,9 @@ function collectErrorCredentialValues(value, values, seen = new Set(), key = '')
         collectErrorCredentialValues(JSON.parse(value), values, seen, key);
       } catch {
         for (const [field, fieldValue] of new URLSearchParams(value)) {
+          // In a form-encoded token request body, `code` is the single-use
+          // authorization code. Elsewhere `code` names error codes, so only here.
+          if (field === 'code' && fieldValue) values.add(fieldValue);
           collectErrorCredentialValues(fieldValue, values, seen, field);
         }
       }
@@ -255,7 +274,7 @@ function collectErrorCredentialValues(value, values, seen = new Set(), key = '')
 }
 
 function isCredentialField(key) {
-  return /^(?:authorization|access_token|refresh_token|client_secret|password|token|id_token|basic)$/i.test(key)
+  return /^(?:authorization|access_token|refresh_token|client_secret|code_verifier|password|token|id_token|basic)$/i.test(key)
     || /authorization/i.test(key);
 }
 
@@ -328,6 +347,26 @@ function safeAuthError(error, client) {
   return safe;
 }
 
+/**
+ * Detail-free summary of a request error for paths outside the sanitizing
+ * client interceptor: only the redacted message, string code and HTTP status.
+ * The Axios config, request, response and headers are never retained.
+ */
+function credentialSafeErrorSummary(error, credentialSource, extraAuthorizationValues = []) {
+  const values = collectCredentialValues(credentialSource);
+  for (const value of extraAuthorizationValues) addAuthorizationValue(values, value);
+  collectErrorCredentialValues(error, values);
+  collectAuthorizationValues(error, values);
+  const status = error?.response?.status ?? error?.status;
+  return {
+    message: redactCredentialStrings(typeof error?.message === 'string' && error.message
+      ? error.message
+      : 'Request failed', values),
+    code: typeof error?.code === 'string' ? error.code : undefined,
+    status: Number.isInteger(status) ? status : undefined
+  };
+}
+
 function sanitizeServiceNowError(error, credentialSource, messageOverride) {
   const values = collectCredentialValues(credentialSource);
   collectAuthorizationValues(error?.config, values);
@@ -379,12 +418,38 @@ function sanitizeServiceNowError(error, credentialSource, messageOverride) {
 }
 
 function normalizeInstanceUrl(value) {
-  return typeof value === 'string' ? value.replace(/\/+$/, '') : value;
+  return typeof value === 'string' ? trimTrailingSlashes(value) : value;
 }
 
 function normalizePathname(pathname) {
-  const normalized = pathname.replace(/\/+$/, '');
-  return normalized || '/';
+  return trimTrailingSlashes(pathname) || '/';
+}
+
+/**
+ * Validate a direct client instance URL and strip trailing slashes linearly.
+ * Path prefixes are preserved; credentials, queries and fragments are refused
+ * so request scoping can compare against an exact origin + path prefix.
+ */
+function normalizeClientInstanceUrl(instanceUrl) {
+  if (typeof instanceUrl !== 'string' || !instanceUrl) {
+    throw new Error('ServiceNow instance URL must be a non-empty string');
+  }
+  if (exceedsUrlLength(instanceUrl)) {
+    throw new Error(`ServiceNow instance URL must be at most ${MAX_URL_LENGTH} characters`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(instanceUrl);
+  } catch {
+    throw new Error('ServiceNow instance URL is not a valid URL');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('ServiceNow instance URL must use http or https');
+  }
+  if (parsed.username || parsed.password || instanceUrl.includes('?') || instanceUrl.includes('#')) {
+    throw new Error('ServiceNow instance URL must not include credentials, a query or a fragment');
+  }
+  return trimTrailingSlashes(instanceUrl);
 }
 
 function requestBelongsToInstance(config, instanceUrl) {
@@ -412,7 +477,7 @@ function requestBelongsToInstance(config, instanceUrl) {
       const pathEnd = requestUrl.search(/[?#]/);
       const rawPath = pathEnd === -1 ? requestUrl : requestUrl.slice(0, pathEnd);
       const suffix = pathEnd === -1 ? '' : requestUrl.slice(pathEnd);
-      const relativePath = rawPath.replace(/^\/+/, '');
+      const relativePath = trimLeadingSlashes(rawPath);
       const joinedPath = basePath === '/' ? `/${relativePath}` : `${basePath}/${relativePath}`;
       resolved = new URL(`${base.origin}${joinedPath}${suffix}`);
     }
@@ -426,12 +491,73 @@ function requestBelongsToInstance(config, instanceUrl) {
     : resolvedPath === basePath || resolvedPath.startsWith(`${basePath}/`);
 }
 
+/**
+ * POST a form-encoded token request. Redirects are never followed: a 3xx
+ * response must not carry a client secret, code, or refresh token elsewhere.
+ */
+async function postTokenForm(url, params) {
+  return axios.post(url, new URLSearchParams(params).toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    maxRedirects: 0
+  });
+}
+
 /** Default token-endpoint POST: form-encode params via axios, return the body. */
 async function defaultTokenPost(url, params) {
-  const response = await axios.post(url, new URLSearchParams(params).toString(), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
-  return response.data;
+  return (await postTokenForm(url, params)).data;
+}
+
+const REFRESH_TOKEN_IDENTITY_PREFIX = 'identity-v1-';
+
+function canonicalIdentityInstanceUrl(url) {
+  const parsed = new URL(url);
+  return `${parsed.origin}${trimTrailingSlashes(parsed.pathname)}`;
+}
+
+/**
+ * Token-store account key for a persisted authorization_code refresh token.
+ *
+ * Bound to the identity a refresh token is valid for — local OS user,
+ * canonical instance URL, OAuth client ID, and the effective authorize and
+ * token endpoints — and never to the mutable instance display name. The
+ * non-secret tuple is hashed into a fixed-width, filesystem- and
+ * keychain-safe key. Bump the version prefix if the tuple ever changes.
+ * @param {{ url: string, clientId: string, authorizeUrl?: string, tokenUrl?: string }} instance
+ * @param {{ osUser?: string }} [options]
+ * @returns {string} "identity-v1-<sha256 hex>"
+ */
+export function oauthRefreshTokenAccount(instance, { osUser = userInfo().username } = {}) {
+  const instanceUrl = canonicalIdentityInstanceUrl(instance.url);
+  const endpoints = resolveOAuthEndpoints(instanceUrl, instance);
+  const tuple = [
+    'happy-platform-mcp/oauth-refresh-token',
+    1,
+    osUser,
+    instanceUrl,
+    instance.clientId,
+    new URL(endpoints.authorizeUrl).href,
+    new URL(endpoints.tokenUrl).href
+  ];
+  return REFRESH_TOKEN_IDENTITY_PREFIX + createHash('sha256').update(JSON.stringify(tuple), 'utf8').digest('hex');
+}
+
+/**
+ * Pre-identity-binding key ("<os user>@<instance name>"). Never read; only
+ * cleared. Returns null when the name cannot be safely addressed in a store.
+ */
+export function legacyRefreshTokenAccount(instanceName, { osUser = userInfo().username } = {}) {
+  const account = `${osUser}@${instanceName}`;
+  return typeof instanceName === 'string' && instanceName && isValidTokenAccount(account) ? account : null;
+}
+
+/**
+ * Clear the persisted refresh tokens an instance may own: its identity key
+ * and, when addressable, its legacy name-keyed entry. Errors propagate.
+ */
+export async function clearInstanceRefreshTokens(tokenStore, instance) {
+  await tokenStore.clearRefreshToken(oauthRefreshTokenAccount(instance));
+  const legacy = legacyRefreshTokenAccount(instance.name);
+  if (legacy) await tokenStore.clearRefreshToken(legacy);
 }
 
 export function enrichServiceNowError(error, credentialSource = null) {
@@ -568,6 +694,7 @@ export class ServiceNowClient {
    * @param {object} options - Optional config (authType, clientId, clientSecret)
    */
   setInstance(instanceUrl, username, password, instanceName = null, options = {}) {
+    const normalizedInstanceUrl = normalizeClientInstanceUrl(instanceUrl);
     this._instanceGeneration = (this._instanceGeneration || 0) + 1;
     this._oauthCacheGeneration = this._instanceGeneration;
     this._resolvedCredentialSecrets = new Map();
@@ -575,7 +702,7 @@ export class ServiceNowClient {
     this._oauthTokenPromise = null;
     this._credentialStore = options.credentialStore || null;
     this.credentialRef = options.credentialRef;
-    this.instanceUrl = instanceUrl.replace(/\/$/, ''); // Remove trailing slash
+    this.instanceUrl = normalizedInstanceUrl;
     this.username = username;
     this.password = password;
     this.authType = options.authType || 'basic';
@@ -597,7 +724,7 @@ export class ServiceNowClient {
         callbackPath: options.callbackPath
       };
       // Injectable seams (defaults for production; overridden in tests)
-      this._tokenStore = options.tokenStore || new KeychainTokenStore();
+      this._tokenStore = options.tokenStore || createDefaultTokenStore();
       this._performAuthCodeFlow = options.performAuthCodeFlow || performAuthorizationCodeFlow;
       this._postToken = options.postToken || defaultTokenPost;
       // Clear any stale token so the next request triggers a fresh grant
@@ -800,20 +927,19 @@ export class ServiceNowClient {
       return this._getAuthorizationCodeToken(generation);
     }
     this._assertCurrentGeneration(generation);
+    this._approvedOAuthEndpoint('tokenUrl');
     const clientSecret = await this._resolveCredential('clientSecret', generation);
     this._assertCurrentGeneration(generation);
-    const tokenUrl = this.oauthConfig.tokenUrl || `${this.instanceUrl}/oauth_token.do`;
 
     // Try refresh token first if we have one
     if (this.oauthRefreshToken) {
+      const refreshUrl = this._approvedOAuthEndpoint('tokenUrl');
       try {
-        const response = await axios.post(tokenUrl, new URLSearchParams({
+        const response = await postTokenForm(refreshUrl, {
           grant_type: 'refresh_token',
           client_id: this.oauthConfig.clientId,
           client_secret: clientSecret,
           refresh_token: this.oauthRefreshToken
-        }).toString(), {
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
 
         this._assertCurrentGeneration(generation);
@@ -854,11 +980,10 @@ export class ServiceNowClient {
       params.scope = this.oauthConfig.scope;
     }
 
+    this._assertCurrentGeneration(generation);
+    const tokenUrl = this._approvedOAuthEndpoint('tokenUrl');
     try {
-      this._assertCurrentGeneration(generation);
-      const response = await axios.post(tokenUrl, new URLSearchParams(params).toString(), {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-      });
+      const response = await postTokenForm(tokenUrl, params);
 
       this._assertCurrentGeneration(generation);
       return this._handleTokenResponse(response.data, generation);
@@ -879,7 +1004,10 @@ export class ServiceNowClient {
    * interactive browser sign-in. A rejected refresh token FAILS LOUD: it never
    * falls back to a password/client_credentials grant (that would re-introduce
    * shared-principal attribution). Instead it re-prompts the browser sign-in.
-   * Refresh tokens are persisted per local OS user and instance in the injected token store.
+   * Refresh tokens are persisted in the injected token store under the identity
+   * key from oauthRefreshTokenAccount (OS user, instance URL, client ID and
+   * endpoints), never under the mutable instance name. Legacy name-keyed
+   * entries are never read; they are cleared after a fresh sign-in.
    * @returns {Promise<string>} Access token
    */
   async _getAuthorizationCodeToken(generation = this._instanceGeneration) {
@@ -891,9 +1019,15 @@ export class ServiceNowClient {
 
     const tokenStore = this._tokenStore;
     const oauthConfig = { ...this.oauthConfig };
-    const account = `${userInfo().username}@${this.currentInstanceName}`;
-    const tokenUrl = oauthConfig.tokenUrl || `${this.instanceUrl}/oauth_token.do`;
-    const authorizeUrl = oauthConfig.authorizeUrl || `${this.instanceUrl}/oauth_auth.do`;
+    const authorizeUrl = this._approvedOAuthEndpoint('authorizeUrl');
+    const tokenUrl = this._approvedOAuthEndpoint('tokenUrl');
+    const account = oauthRefreshTokenAccount({
+      url: this.instanceUrl,
+      clientId: oauthConfig.clientId,
+      authorizeUrl,
+      tokenUrl
+    });
+    const legacyAccount = legacyRefreshTokenAccount(this.currentInstanceName);
 
     // Load a persisted refresh token if we don't have one in memory yet.
     if (!this.oauthRefreshToken) {
@@ -922,7 +1056,7 @@ export class ServiceNowClient {
           params.client_secret = oauthConfig.clientSecret;
         }
         this._assertCurrentGeneration(generation);
-        const data = await this._postToken(tokenUrl, params);
+        const data = await this._postToken(this._approvedOAuthEndpoint('tokenUrl'), params);
         this._assertCurrentGeneration(generation);
         return this._acceptAuthCodeTokens(data, account, generation, tokenStore);
       } catch (refreshError) {
@@ -958,7 +1092,15 @@ export class ServiceNowClient {
       }
     }
 
-    // Interactive authorization_code + PKCE + loopback sign-in.
+    // Interactive authorization_code + PKCE + loopback sign-in. The code
+    // exchange re-checks endpoint approval immediately before posting.
+    const approvedExchange = async (url, params) => {
+      this._assertCurrentGeneration(generation);
+      if (url !== tokenUrl || this._approvedOAuthEndpoint('tokenUrl') !== tokenUrl) {
+        throw new AuthenticationError('OAuth token endpoint changed during sign-in', 'OAUTH_ENDPOINT_NOT_APPROVED');
+      }
+      return this._postToken(tokenUrl, params);
+    };
     let data;
     try {
       this._assertCurrentGeneration(generation);
@@ -970,7 +1112,7 @@ export class ServiceNowClient {
         scope: oauthConfig.scope,
         redirectPort: oauthConfig.redirectPort,
         callbackPath: oauthConfig.callbackPath
-      });
+      }, { post: approvedExchange });
       this._assertCurrentGeneration(generation);
     } catch (error) {
       this._assertCurrentGeneration(generation);
@@ -980,7 +1122,26 @@ export class ServiceNowClient {
       }
       throw safeAuthError(error, this);
     }
-    return this._acceptAuthCodeTokens(data, account, generation, tokenStore);
+    const accessToken = await this._acceptAuthCodeTokens(data, account, generation, tokenStore);
+    if (legacyAccount) {
+      try {
+        await tokenStore.clearRefreshToken(legacyAccount);
+      } catch {
+        console.error('Could not remove a legacy name-keyed OAuth refresh token entry; remove it from the token store manually');
+      }
+    }
+    return accessToken;
+  }
+
+  /**
+   * Effective OAuth endpoint for this instance, checked against the endpoint
+   * origin policy at call time (same origin or operator-approved origin).
+   * @param {'authorizeUrl'|'tokenUrl'} field
+   * @returns {string} Normalized endpoint URL
+   */
+  _approvedOAuthEndpoint(field) {
+    const endpoints = resolveOAuthEndpoints(this.instanceUrl, this.oauthConfig || {});
+    return assertApprovedOAuthEndpoint(endpoints[field], this.instanceUrl, field);
   }
 
   /**
@@ -1232,6 +1393,7 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
 
   async setCurrentApplication(appSysId) {
     const startTime = Date.now();
+    let authHeader;
 
     try {
       // Validate input
@@ -1271,7 +1433,7 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
       }
 
       // Create axios client with cookie jar
-      const authHeader = await this.getAuthHeader();
+      authHeader = await this.getAuthHeader();
       const axiosWithCookies = axios.create({
         baseURL: this.instanceUrl,
         headers: {
@@ -1342,31 +1504,32 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
       return result;
     } catch (error) {
       const executionTime = Date.now() - startTime;
+      // This UI client bypasses the sanitizing interceptor: keep only the
+      // redacted message, code and status, never the Axios config/request.
+      const summary = credentialSafeErrorSummary(error, this, [authHeader]);
 
       // Enhanced error messages based on error type
-      let errorMessage = error.message;
-
-      if (error.response) {
-        const status = error.response.status;
-        if (status === 401) {
-          errorMessage = 'Authentication failed. Please check your credentials.';
-        } else if (status === 403) {
-          errorMessage = `Access denied. Please verify:\n1. You have admin or developer role\n2. You have access to the application\n3. The application is active`;
-        } else if (status === 404) {
-          errorMessage = `Application not found with sys_id: ${appSysId}`;
-        } else if (status >= 500) {
-          errorMessage = `ServiceNow server error (${status}). Please try again later.`;
-        }
+      let errorMessage = summary.message;
+      const status = summary.status;
+      if (status === 401) {
+        errorMessage = 'Authentication failed. Please check your credentials.';
+      } else if (status === 403) {
+        errorMessage = `Access denied. Please verify:\n1. You have admin or developer role\n2. You have access to the application\n3. The application is active`;
+      } else if (status === 404) {
+        errorMessage = `Application not found with sys_id: ${appSysId}`;
+      } else if (status >= 500) {
+        errorMessage = `ServiceNow server error (${status}). Please try again later.`;
       }
 
       console.error('Failed to set current application:', errorMessage);
 
-      const enhancedError = new Error(`Failed to set current application: ${errorMessage}`);
-      enhancedError.execution_time_ms = executionTime;
-      enhancedError.app_sys_id = appSysId;
-      enhancedError.original_error = error;
+      const safeError = new Error(`Failed to set current application: ${errorMessage}`);
+      if (summary.code !== undefined) safeError.code = summary.code;
+      if (status !== undefined) safeError.status = status;
+      safeError.execution_time_ms = executionTime;
+      safeError.app_sys_id = appSysId;
 
-      throw enhancedError;
+      throw safeError;
     }
   }
 
@@ -2134,10 +2297,13 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
 
   // Batch operations
   async batchCreate(operations, transaction = true, reportProgress = true) {
+    // Validate the whole batch before the first write.
+    const serializedData = validateBatchCreateOperations(operations);
+    const savedIds = new Map();
     const results = {
       success: true,
       created_count: 0,
-      sys_ids: {},
+      sys_ids: Object.create(null),
       errors: [],
       execution_time_ms: 0
     };
@@ -2157,18 +2323,15 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
       for (let i = 0; i < operations.length; i++) {
         const op = operations[i];
         try {
-          // Replace variable references from previous operations
-          let processedData = JSON.stringify(op.data);
-          Object.keys(results.sys_ids).forEach(key => {
-            processedData = processedData.replace(`\${${key}}`, results.sys_ids[key]);
-          });
-          const data = JSON.parse(processedData);
+          // Resolve ${name} references to IDs saved by earlier operations in one pass.
+          const data = JSON.parse(resolveBatchPlaceholders(serializedData[i], savedIds));
 
           const result = await this.createRecord(op.table, data);
 
           // Save sys_id with the save_as key or operation index
           const key = op.save_as || `operation_${i}`;
           results.sys_ids[key] = result.sys_id;
+          if (typeof result.sys_id === 'string') savedIds.set(key, result.sys_id);
           results.created_count++;
 
           // Report progress
@@ -2211,6 +2374,8 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
   }
 
   async batchUpdate(updates, stopOnError = false, reportProgress = true) {
+    // Validate the whole batch before the first write.
+    validateBatchUpdates(updates);
     const results = {
       success: true,
       updated_count: 0,
@@ -2384,11 +2549,20 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
   }
 
   async createCompleteWorkflow(workflowSpec, reportProgress = true) {
+    // Validate every activity and transition before the first write.
+    const activityReferences = validateWorkflowSpec(workflowSpec);
+    const createdActivityIds = [];
+    // Endpoints were validated as an index, a declared id/name, or an existing sys_id.
+    const resolveActivity = (reference) => {
+      if (typeof reference === 'number') return createdActivityIds[reference];
+      const index = activityReferences.get(reference);
+      return index === undefined ? reference : createdActivityIds[index];
+    };
     // Create complete workflow with activities and transitions in one call
     const results = {
       workflow_sys_id: '',
       version_sys_id: '',
-      activity_sys_ids: {},
+      activity_sys_ids: Object.create(null),
       transition_sys_ids: [],
       published: false
     };
@@ -2447,6 +2621,7 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
 
         const key = actSpec.id || `activity_${i}`;
         results.activity_sys_ids[key] = activity.activity_sys_id;
+        createdActivityIds.push(activity.activity_sys_id);
       }
 
       // 4. Create transitions
@@ -2460,13 +2635,8 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
         }
 
         // Resolve activity references
-        const fromId = typeof transSpec.from === 'number'
-          ? results.activity_sys_ids[`activity_${transSpec.from}`]
-          : results.activity_sys_ids[transSpec.from] || transSpec.from;
-
-        const toId = typeof transSpec.to === 'number'
-          ? results.activity_sys_ids[`activity_${transSpec.to}`]
-          : results.activity_sys_ids[transSpec.to] || transSpec.to;
+        const fromId = resolveActivity(transSpec.from);
+        const toId = resolveActivity(transSpec.to);
 
         // Create condition if specified
         let conditionId = transSpec.condition_sys_id;
@@ -2497,9 +2667,9 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
       if (workflowSpec.publish && activities.length > 0) {
         if (reportProgress) this.notifyProgress('Publishing workflow');
 
-        const startActivityId = workflowSpec.start_activity
-          ? (results.activity_sys_ids[workflowSpec.start_activity] || workflowSpec.start_activity)
-          : results.activity_sys_ids['activity_0'] || results.activity_sys_ids[Object.keys(results.activity_sys_ids)[0]];
+        const startActivityId = workflowSpec.start_activity !== undefined
+          ? resolveActivity(workflowSpec.start_activity)
+          : createdActivityIds[0];
 
         await this.publishWorkflow(version.version_sys_id, startActivityId);
         results.published = true;
@@ -2516,15 +2686,61 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
     }
   }
 
+  /**
+   * Fetch every record matching an encoded query in stable sys_id order, page
+   * by page. Fails rather than silently truncating when more than
+   * MAX_UPDATE_SET_QUERY_RECORDS match.
+   */
+  async _getAllRecordsBounded(table, query) {
+    const records = [];
+    // Keyset pagination on sys_id: stable even if matching records change between pages.
+    let cursor = null;
+    for (;;) {
+      const page = await this.getRecords(table, {
+        sysparm_query: `${query}${cursor ? `^sys_id>${cursor}` : ''}^ORDERBYsys_id`,
+        sysparm_limit: UPDATE_SET_QUERY_PAGE_SIZE
+      });
+      if (!Array.isArray(page)) throw new Error(`Unexpected ${table} query response`);
+      for (const record of page) records.push(record);
+      if (records.length > MAX_UPDATE_SET_QUERY_RECORDS) {
+        throw new BulkInputError(
+          `More than ${MAX_UPDATE_SET_QUERY_RECORDS} ${table} records match; narrow the selection`
+        );
+      }
+      if (page.length < UPDATE_SET_QUERY_PAGE_SIZE) return records;
+      const last = page[page.length - 1]?.sys_id;
+      if (!isSysId(last) || (cursor !== null && last <= cursor)) {
+        throw new Error(`Unexpected ${table} pagination response`);
+      }
+      cursor = last;
+    }
+  }
+
+  /** Fetch records by sys_id with at most UPDATE_SET_ID_CHUNK_SIZE IDs per encoded query. */
+  async _getRecordsBySysIds(table, sysIds) {
+    const records = [];
+    for (let start = 0; start < sysIds.length; start += UPDATE_SET_ID_CHUNK_SIZE) {
+      const chunk = sysIds.slice(start, start + UPDATE_SET_ID_CHUNK_SIZE);
+      const page = await this.getRecords(table, {
+        sysparm_query: `sys_idIN${chunk.join(',')}`,
+        sysparm_limit: chunk.length
+      });
+      if (!Array.isArray(page)) throw new Error(`Unexpected ${table} query response`);
+      for (const record of page) records.push(record);
+    }
+    return records;
+  }
+
   // Move records to update set
   async moveRecordsToUpdateSet(updateSetId, options = {}) {
     const {
-      record_sys_ids = [],
       time_range = null,
       source_update_set = null,
       table = 'sys_update_xml',
       reportProgress = true
     } = options;
+    // Validate every input before the first request.
+    const recordSysIds = validateUpdateSetMove(updateSetId, options);
 
     try {
       const results = {
@@ -2537,13 +2753,9 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
       let recordsToMove = [];
 
       // Get records by sys_ids
-      if (record_sys_ids.length > 0) {
-        if (reportProgress) this.notifyProgress(`Fetching ${record_sys_ids.length} records to move`);
-        const sysIdsQuery = record_sys_ids.map(id => `sys_id=${id}`).join('^OR');
-        recordsToMove = await this.getRecords(table, {
-          sysparm_query: sysIdsQuery,
-          sysparm_limit: 1000
-        });
+      if (recordSysIds.length > 0) {
+        if (reportProgress) this.notifyProgress(`Fetching ${recordSysIds.length} records to move`);
+        recordsToMove = await this._getRecordsBySysIds(table, recordSysIds);
       }
       // Get records by time range
       else if (time_range) {
@@ -2552,10 +2764,7 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
         if (source_update_set) {
           query += `^update_set.name=${source_update_set}`;
         }
-        recordsToMove = await this.getRecords(table, {
-          sysparm_query: query,
-          sysparm_limit: 1000
-        });
+        recordsToMove = await this._getAllRecordsBounded(table, query);
       }
 
       const total = recordsToMove.length;
@@ -2622,10 +2831,16 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
 
   // Clone update set
   async cloneUpdateSet(sourceUpdateSetId, newName, reportProgress = true) {
+    validateUpdateSetClone(sourceUpdateSetId, newName);
     try {
       // Get source update set
       if (reportProgress) this.notifyProgress('Fetching source update set');
       const sourceSet = await this.getRecord('sys_update_set', sourceUpdateSetId);
+
+      // Fetch every source record before creating anything, so an over-cap
+      // source fails without leaving an empty clone behind.
+      if (reportProgress) this.notifyProgress('Fetching update records from source');
+      const updateRecords = await this._getAllRecordsBounded('sys_update_xml', `update_set=${sourceUpdateSetId}`);
 
       // Create new update set
       if (reportProgress) this.notifyProgress(`Creating new update set: ${newName}`);
@@ -2634,13 +2849,6 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
         description: `Clone of: ${sourceSet.name}\n\n${sourceSet.description || ''}`,
         application: sourceSet.application,
         state: 'in progress'
-      });
-
-      // Get all update XML records from source
-      if (reportProgress) this.notifyProgress('Fetching update records from source');
-      const updateRecords = await this.getRecords('sys_update_xml', {
-        sysparm_query: `update_set=${sourceUpdateSetId}`,
-        sysparm_limit: 5000
       });
 
       const total = updateRecords.length;

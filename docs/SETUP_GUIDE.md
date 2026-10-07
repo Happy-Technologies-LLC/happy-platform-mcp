@@ -7,9 +7,9 @@ This MCP server can run in two different modes:
 ### 1. HTTP/SSE Mode (Port 3000) - For Claude Code & Testing
 - **File**: `src/server.js`
 - **Port**: 3000 (configurable via PORT env var)
-- **Usage**: Claude Code integration, API testing, web-based access
-- **Start Command**: `npm start:http` or `npm run dev`
-- **Endpoint**: http://localhost:3000/mcp
+- **Usage**: Claude Code integration, API testing, web-based access, for **one trusted operator**
+- **Start Command**: `npm start` or `npm run dev` (requires `HAPPY_MCP_API_TOKEN`)
+- **Endpoint**: http://localhost:3000/mcp (every request needs `Authorization: Bearer <token>`)
 
 ### 2. STDIO Mode - For Claude Desktop App
 - **File**: `src/stdio-server.js`
@@ -39,12 +39,15 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 
 ## Configuration for Claude Code
 
-The HTTP server runs automatically on port 3000 when you use:
+The HTTP server runs on port 3000 and refuses to start without a bearer token:
 ```bash
+export HAPPY_MCP_API_TOKEN="$(openssl rand -hex 32)"
 npm start
 # or
 npm run dev
 ```
+
+Configure your MCP client to send `Authorization: Bearer <token>` on both the SSE `GET /mcp` request and the message `POST` requests.
 
 ## Running Both Simultaneously
 
@@ -52,7 +55,7 @@ You can run both servers at the same time:
 
 1. **Terminal 1** - HTTP Server for Claude Code:
 ```bash
-npm start:http
+npm start
 ```
 
 2. **Claude Desktop** - Will automatically start stdio server when needed
@@ -61,11 +64,11 @@ npm start:http
 
 ### Test HTTP Server:
 ```bash
-# Health check
-curl http://localhost:3000/health
+# Health check (401 without the bearer token)
+curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/health
 
-# Test MCP endpoint
-curl -X GET http://localhost:3000/mcp
+# Test MCP endpoint (prints the endpoint event, then keepalive comments)
+curl -N -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/mcp
 ```
 
 ### Test STDIO Server:
@@ -103,11 +106,26 @@ PORT=3000
 DEBUG=true
 ```
 
-HTTP/SSE binds to `127.0.0.1` by default. For a non-loopback `HAPPY_MCP_BIND_HOST`, set `HAPPY_MCP_API_TOKEN` and require clients to send it as a bearer token:
+### HTTP transport security
+
+The HTTP/SSE transport serves a single trusted operator; shared multi-user hosting is unsupported. Every HTTP listener, including loopback, requires `HAPPY_MCP_API_TOKEN`: 32 random bytes as 64 hex characters (or 43 base64url). Startup fails if it's missing or malformed. Stdio mode doesn't use it.
+
+```bash
+# Generate once and keep it out of version control
+openssl rand -hex 32
 ```
-HAPPY_MCP_BIND_HOST=0.0.0.0
-HAPPY_MCP_API_TOKEN=replace-with-a-high-entropy-secret
+
 ```
+HAPPY_MCP_API_TOKEN=<64 hex characters from openssl rand -hex 32>
+# Optional: listen beyond loopback (prefer a TLS reverse proxy)
+HAPPY_MCP_BIND_HOST=127.0.0.1
+# Optional: extra Host authorities, e.g. the public name your reverse proxy forwards
+HAPPY_MCP_ALLOWED_HOSTS=mcp.example.com
+# Optional: exact browser origins; unset rejects any request carrying Origin
+HAPPY_MCP_ALLOWED_ORIGINS=https://console.example.com
+```
+
+`/health`, `/instances` and `/mcp` all require the bearer token. Requests whose `Host` doesn't name the listener or an approved authority, or whose `Origin` isn't approved, get `403`. Ten failed attempts from one address within a minute trigger `429`. See [HTTP Transport Security](../README.md#http-transport-security) for limits, reverse-proxy setup and client migration.
 
 ### OAuth Environment Variables (Optional)
 
@@ -132,3 +150,82 @@ SERVICENOW_OAUTH_CALLBACK_PATH=/callback
 Register `http://127.0.0.1:8202/callback` as the public client's redirect URL. Do not set `SERVICENOW_CLIENT_SECRET` for a public client.
 
 For multi-instance setups, configure OAuth per-instance in `config/servicenow-instances.json` instead. See [Multi-Instance Configuration](MULTI_INSTANCE_CONFIGURATION.md#oauth-authentication).
+
+### Trusted external OAuth identity providers
+
+Authorize and token URLs must be on the instance origin unless you approve an
+external IdP origin in the environment (never in the registry). Set it for the
+MCP server **and** export it in the shell that runs `happy-platform-mcp instance
+…`; the CLI does not read `.env`, and a registry that uses an unapproved external
+IdP fails to load for every CLI command, including `instance remove`:
+
+```
+export SERVICENOW_OAUTH_TRUSTED_ORIGINS=https://login.example.com
+```
+
+List exact comma-separated origins: HTTPS (loopback HTTP only for local
+testing), no path, query, fragment, credentials, or wildcard. Malformed entries
+fail closed. Approval is checked at configuration load/registration and again
+immediately before each token request, and token requests never follow
+redirects. Endpoints on an unapproved external origin are rejected before any
+client secret, authorization code, or refresh token is sent.
+
+### Reauthorization after upgrading
+
+Refresh tokens are stored under an identity key derived from the local OS user,
+canonical instance URL, OAuth client ID, and the effective authorize/token
+endpoints — not the instance name. Tokens stored by earlier versions under
+`<os-user>@<instance-name>` are never read or migrated: each authorization-code
+instance opens the browser sign-in once after upgrading, and the old entry is
+deleted once the new sign-in succeeds. Changing the instance URL, client ID, or
+authorize/token URL is a new identity that signs in again. `instance remove` and
+identity-changing `instance update` delete the previous identity's refresh token
+from both the OS keychain and the file token store before changing the registry,
+and stop if either store reports an error. When the server uses the file store
+with a custom `XDG_CONFIG_HOME`, export the same value for the CLI. Unlock the
+keychain before removing: a locked keychain may report a failed delete as "no
+entry", and an unavailable keychain stops the command. Where no keychain works
+(for example containers that block `keyctl`), delete the token files under
+`$XDG_CONFIG_HOME/happy-platform-mcp/` and the registry entry by hand.
+
+### Refresh-token storage
+
+Authorization-code refresh tokens default to the OS keychain. Leave
+`SERVICENOW_TOKEN_STORE` unset or set it to `keychain` (also the supported Windows
+choice). An unavailable keychain fails rather than silently falling back to files.
+
+On a trusted POSIX filesystem, explicitly opt in by adding this to the server
+process environment or its private `.env` file:
+
+```sh
+SERVICENOW_TOKEN_STORE=file
+```
+
+Tokens are plaintext files at `$XDG_CONFIG_HOME/happy-platform-mcp/token-<sha256-hex>`
+or `~/.config/happy-platform-mcp/token-<sha256-hex>` if XDG is unset, where the name is
+the lowercase SHA-256 hex of the account key. Keys differing only by case therefore
+never share a file on case-insensitive filesystems such as default macOS APFS. Older
+`token-<account>` files are not read or migrated; authorize again (you may delete them).
+If overriding XDG, use an absolute trusted directory. New storage is created private;
+existing storage must already be owned by the current OS user with mode 0700, and
+existing token files must be regular, singly linked, current-user-owned files with
+mode 0600. Before creating any directory, every existing ancestor is resolved
+(symlinked ancestors are followed) and checked: each must be a directory owned by the
+current user or root and not group/world-writable unless sticky (like `/tmp`). The
+error names the offending path; for example, a group-writable `~/.config` from umask
+002 needs `chmod go-w ~/.config`. Missing intermediate directories are created one at
+a time and re-checked. Unsafe symlinks, types, ownership and permissions are rejected;
+permission/setup failures are not ignored. Inspect any existing directory and its
+contents before manually making it private. Do not select file storage on
+shared/network filesystems with untrusted ownership or ACL policies.
+Windows is rejected because POSIX chmod cannot establish private Windows ACLs.
+
+This opt-in trades keychain isolation for access by every process of the same OS
+user. Exclude token storage from shared/cloud backups and version control, or
+encrypt and restrict backups as secrets. No token migration occurs when switching
+stores; authorize again. Instance passwords/client secrets still use the keychain.
+
+Unique exclusive temporary files (0600) and atomic same-directory rename protect
+complete file replacement during concurrent writes, not cross-process OAuth
+refresh-token rotation or power-loss durability. Run only one refreshing process
+per identity; no distributed locking or refresh-rotation guarantee is provided.

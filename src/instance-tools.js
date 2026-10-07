@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { credentialRefFor } from './instance-credential-store.js';
+import { MAX_URL_LENGTH } from './url-limits.js';
 
 const TOOL_NAME = 'SN-Register-Instance';
 const ALLOWED_FIELDS = new Set([
@@ -27,16 +28,16 @@ const SAFE_CREDENTIAL_ERROR_MESSAGES = new Map([
 
 const INSTANCE_SCHEMA_PROPERTIES = {
   name: { type: 'string', description: 'Unique local instance name (for example, dev or prod).' },
-  url: { type: 'string', description: 'HTTPS ServiceNow instance URL.' },
+  url: { type: 'string', maxLength: MAX_URL_LENGTH, description: 'HTTPS ServiceNow instance URL.' },
   authType: { type: 'string', enum: ['basic', 'oauth'], description: 'Authentication type. Defaults to basic.' },
   grantType: { type: 'string', enum: ['client_credentials', 'password', 'authorization_code'], description: 'OAuth grant type.' },
   username: { type: 'string', description: 'Basic-auth or OAuth password-grant username.' },
   clientId: { type: 'string', description: 'OAuth client identifier.' },
   scope: { type: 'string', description: 'Optional OAuth scope.' },
-  authorizeUrl: { type: 'string', description: 'Optional OAuth authorization endpoint.' },
-  tokenUrl: { type: 'string', description: 'Optional OAuth token endpoint.' },
+  authorizeUrl: { type: 'string', maxLength: MAX_URL_LENGTH, description: 'Optional OAuth authorization endpoint.' },
+  tokenUrl: { type: 'string', maxLength: MAX_URL_LENGTH, description: 'Optional OAuth token endpoint.' },
   redirectPort: { type: 'integer', minimum: 0, maximum: 65535, description: 'Optional local authorization callback port.' },
-  callbackPath: { type: 'string', description: 'Optional local authorization callback path.' },
+  callbackPath: { type: 'string', maxLength: MAX_URL_LENGTH, description: 'Optional local authorization callback path.' },
   description: { type: 'string', description: 'Optional human-readable description.' },
   makeDefault: { type: 'boolean', description: 'Make this instance the default after registration.' }
 };

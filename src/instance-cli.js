@@ -3,7 +3,8 @@ import path from 'node:path';
 import { input as defaultInput, password as defaultPassword, select as defaultSelect, confirm as defaultConfirm } from '@inquirer/prompts';
 import { InstanceRegistry, isSecretShapedKey } from './instance-registry.js';
 import { credentialRefFor, CredentialNotFoundError, InstanceCredentialStore } from './instance-credential-store.js';
-import { ServiceNowClient } from './servicenow-client.js';
+import { clearInstanceRefreshTokens, oauthRefreshTokenAccount, ServiceNowClient } from './servicenow-client.js';
+import { FileTokenStore, KeychainTokenStore } from './token-store.js';
 
 export const SECRET_ARGUMENT_ERROR = 'Secret flags and values are not accepted in command arguments; use a masked prompt.';
 const SECRET_NAMES = new Set(['password', 'clientsecret']);
@@ -234,6 +235,57 @@ function effectiveOAuthGrantType(instance) {
     : instance.grantType;
 }
 
+/** Only authorization_code instances persist refresh tokens. */
+function persistsRefreshTokens(instance) {
+  return instance?.authType === 'oauth' && effectiveOAuthGrantType(instance) === 'authorization_code';
+}
+
+/**
+ * Refresh tokens may live in either store: the server selects one with
+ * SERVICENOW_TOKEN_STORE, often from an environment (MCP host config or .env)
+ * that this CLI never sees. Cleanup therefore covers both stores. File-store
+ * clears are no-ops when its directory is absent; on Windows (where the file
+ * store always fails closed) it is skipped only when that directory is absent.
+ */
+function refreshTokenStores(context) {
+  if (!context.refreshTokenStores) {
+    const fileStore = context.fileTokenStore || new FileTokenStore();
+    const stores = [{ label: 'OS keychain', store: context.keychainTokenStore || new KeychainTokenStore() }];
+    if (process.platform !== 'win32' || typeof fileStore.baseDir !== 'string' || fs.existsSync(fileStore.baseDir)) {
+      stores.push({ label: 'file token store', store: fileStore });
+    }
+    context.refreshTokenStores = stores;
+  }
+  return context.refreshTokenStores;
+}
+
+/**
+ * Clear an instance's identity and legacy refresh-token keys from every store.
+ * Any store error propagates before the caller mutates the registry.
+ */
+async function clearRefreshTokensEverywhere(instance, context) {
+  const stores = refreshTokenStores(context);
+  for (const { store } of stores) await clearInstanceRefreshTokens(store, instance);
+  output(context.stdout, `Cleared OAuth refresh tokens for '${instance.name}' from: ${stores.map(({ label }) => label).join(', ')}.`);
+}
+
+/**
+ * When a metadata update changes the refresh-token identity (instance URL,
+ * client ID, authorize or token endpoint), clear the previous identity's
+ * refresh token before committing, so the old grant cannot linger.
+ */
+async function clearChangedOAuthIdentity(existing, patch, context) {
+  if (!persistsRefreshTokens(existing)) return;
+  const candidate = { ...existing, ...patch };
+  if (typeof context.registry.validate === 'function') context.registry.validate(candidate);
+  let changed;
+  try {
+    changed = oauthRefreshTokenAccount(candidate) !== oauthRefreshTokenAccount(existing);
+  } catch {
+    return; // An unparseable candidate is rejected by the registry update.
+  }
+  if (changed) await clearRefreshTokensEverywhere(existing, context);
+}
 
 function instanceCredentialRefs(instance) {
   const ref = instance?.credentialRef;
@@ -464,6 +516,7 @@ async function updateCommand(name, args, context) {
     }
     patch.description = await ask(context.prompts, 'input', { name: 'description', message: 'Description:', default: existing.description || '' });
   }
+  await clearChangedOAuthIdentity(existing, patch, context);
   const updated = await context.registry.update(name, patch);
   output(context.stdout, `Updated instance '${name}'.`);
   output(context.stdout, JSON.stringify(stable(redact(updated)), null, 2));
@@ -509,6 +562,11 @@ async function removeCommand(name, context) {
   if (!confirmed) {
     output(context.stdout, 'Cancelled.');
     return 0;
+  }
+  if (persistsRefreshTokens(instance)) {
+    // Fail closed before deleting anything: a removed instance must not leave
+    // a refresh token that a later identical registration would silently reuse.
+    await clearRefreshTokensEverywhere(instance, context);
   }
   const snapshots = [];
   for (const ref of [...new Set(instanceCredentialRefs(instance))]) {

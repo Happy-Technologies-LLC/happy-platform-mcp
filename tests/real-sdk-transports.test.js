@@ -2,8 +2,10 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import path from 'node:path';
 import { createHttpApp } from '../src/http-server.js';
 
@@ -344,30 +346,38 @@ describe('real SDK production transports', () => {
     expect(cleanupOnlyError).toBe(cleanupError);
   });
 
-  test('round-trips tools over HTTP/SSE with the production server transport', async () => {
+  test('round-trips authenticated HTTP/SSE tools against a fake ServiceNow endpoint', async () => {
     const records = [{ sys_id: 'smoke-record', short_description: 'SDK transport smoke' }];
-    const serviceNowClient = {
-      setProgressCallback: jest.fn(),
-      getRecords: jest.fn(async () => records)
-    };
-    const defaultInstance = {
-      name: 'smoke',
-      url: 'https://smoke.invalid'
-    };
-    const credentialStore = {};
-    const createServiceNowClient = jest.fn(() => serviceNowClient);
-    const app = createHttpApp({ defaultInstance, credentialStore, createServiceNowClient });
+    const serviceNowRequests = [];
+    const fakeServiceNow = http.createServer((req, res) => {
+      serviceNowRequests.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ result: records }));
+    });
+    const apiToken = randomBytes(32).toString('hex');
     const deadline = createDeadline('HTTP/SSE smoke');
     let server;
     let transport;
     let client;
 
     await runWithCleanup(async () => {
+      const serviceNowListener = listenOnEphemeralLoopback(fakeServiceNow);
+      await deadline(() => serviceNowListener.listening, 'fake ServiceNow startup');
+      const defaultInstance = {
+        name: 'smoke',
+        url: `http://127.0.0.1:${fakeServiceNow.address().port}`,
+        authType: 'basic',
+        username: 'smoke-user',
+        password: 'smoke-password'
+      };
+      const app = createHttpApp({ apiToken, defaultInstance, credentialStore: {} });
       const listener = listenOnEphemeralLoopback(app);
       server = listener.server;
       await deadline(() => listener.listening, 'HTTP listener startup');
       const { port } = server.address();
-      transport = new SSEClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
+      transport = new SSEClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${apiToken}` } }
+      });
       client = createSdkClient('http-sse-smoke');
 
       await deadline(() => client.connect(transport), 'connect');
@@ -387,18 +397,58 @@ describe('real SDK production transports', () => {
         version: '2.0.0'
       });
       expect(tools.tools.some((tool) => tool.name === 'SN-Query-Table')).toBe(true);
-      expect(createServiceNowClient).toHaveBeenCalledWith(defaultInstance, { credentialStore });
-      expect(serviceNowClient.getRecords).toHaveBeenCalledWith('incident', {
-        sysparm_limit: 1,
-        sysparm_query: 'active=true',
-        sysparm_fields: 'sys_id,short_description',
-        sysparm_offset: undefined
-      });
+      expect(serviceNowRequests).toEqual([{
+        method: 'GET',
+        url: '/api/now/table/incident?sysparm_query=active%3Dtrue&sysparm_limit=1&sysparm_fields=sys_id%2Cshort_description',
+        authorization: `Basic ${Buffer.from('smoke-user:smoke-password').toString('base64')}`
+      }]);
+      expect(JSON.stringify(serviceNowRequests)).not.toContain(apiToken);
       expect(result.isError).not.toBe(true);
       expect(result.content).toEqual([{
         type: 'text',
         text: `Found 1 records in incident:\n${JSON.stringify(records, null, 2)}`
       }]);
+    }, async () => {
+      await closeSdkResources({ client, transport, server, deadline });
+      await deadline(() => closeHttpServer(fakeServiceNow), 'fake ServiceNow close', CLEANUP_TIMEOUT_MS);
+    });
+  });
+
+  test.each([
+    ['an unauthenticated client', () => ({}), 401],
+    ['a client with the wrong bearer', () => ({ Authorization: `Bearer ${randomBytes(32).toString('hex')}` }), 401],
+    ['a foreign-origin client', (apiToken) => ({ Authorization: `Bearer ${apiToken}`, Origin: 'https://evil.example' }), 403]
+  ])('denies %s before any SSE session setup', async (_label, headersFor, status) => {
+    const apiToken = randomBytes(32).toString('hex');
+    const createServiceNowClient = jest.fn(() => {
+      throw new Error('denied clients must not reach session setup');
+    });
+    const app = createHttpApp({
+      apiToken,
+      defaultInstance: { name: 'smoke', url: 'https://smoke.invalid' },
+      credentialStore: {},
+      createServiceNowClient
+    });
+    const deadline = createDeadline('HTTP/SSE denial');
+    let server;
+    let transport;
+    let client;
+
+    await runWithCleanup(async () => {
+      const listener = listenOnEphemeralLoopback(app);
+      server = listener.server;
+      await deadline(() => listener.listening, 'HTTP listener startup');
+      transport = new SSEClientTransport(new URL(`http://127.0.0.1:${server.address().port}/mcp`), {
+        requestInit: { headers: headersFor(apiToken) }
+      });
+      client = createSdkClient('http-sse-denied');
+
+      const error = await deadline(() => client.connect(transport).then(
+        () => null,
+        (caught) => caught
+      ), 'denied connect');
+      expect(error).toMatchObject({ code: status });
+      expect(createServiceNowClient).not.toHaveBeenCalled();
     }, () => closeSdkResources({ client, transport, server, deadline }));
   });
 

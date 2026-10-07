@@ -8,8 +8,18 @@ services:
       dockerfile: Dockerfile
     container_name: happy-platform-mcp
     ports:
-      - "3000:3000"
+      # Published on loopback only. Put a TLS reverse proxy in front for remote use.
+      - "127.0.0.1:3000:3000"
     environment:
+      # Required HTTP bearer token (32 random bytes). Generate: openssl rand -hex 32
+      # Keep it in an untracked .env file or a secret store; never commit it.
+      - HAPPY_MCP_API_TOKEN=${HAPPY_MCP_API_TOKEN:?Set HAPPY_MCP_API_TOKEN (generate with openssl rand -hex 32)}
+      - HAPPY_MCP_BIND_HOST=0.0.0.0
+      # Host header values clients (or your reverse proxy) use to reach this container
+      - HAPPY_MCP_ALLOWED_HOSTS=${HAPPY_MCP_ALLOWED_HOSTS:-localhost:3000,127.0.0.1:3000}
+      # Exact browser origins allowed to call the server; empty rejects every Origin header
+      - HAPPY_MCP_ALLOWED_ORIGINS=${HAPPY_MCP_ALLOWED_ORIGINS:-}
+
       # Single instance mode (legacy .env support)
       - SERVICENOW_INSTANCE_URL=${SERVICENOW_INSTANCE_URL}
       - SERVICENOW_USERNAME=${SERVICENOW_USERNAME}
@@ -26,7 +36,8 @@ services:
       - ./config/servicenow-instances.json:/app/config/servicenow-instances.json:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      # Authenticates with the container's own HAPPY_MCP_API_TOKEN; /health requires the bearer.
+      test: ["CMD", "node", "-e", "require('http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/health',headers:{authorization:'Bearer '+process.env.HAPPY_MCP_API_TOKEN}},(r)=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 3s
       retries: 3

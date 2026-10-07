@@ -5,6 +5,8 @@ function disabledVector(reason) {
     available: false,
     reason,
     async indexChunks() {},
+    removeChunks() {},
+    clear() {},
     search() {
       return [];
     }
@@ -108,6 +110,15 @@ export async function createVectorIndex({
         deleteVector.run(chunk.id);
         insertVector.run(chunk.id, serializeVector(embed(body)));
       }
+    },
+
+    removeChunks(chunkIds) {
+      const deleteVector = db.prepare('DELETE FROM docs_chunk_vectors WHERE _rowid_ = ?');
+      for (const id of chunkIds) deleteVector.run(id);
+    },
+
+    clear() {
+      db.exec('DELETE FROM docs_chunk_vectors');
     },
 
     search({ query, family, limit = 10 }) {

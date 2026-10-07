@@ -85,13 +85,6 @@
           "format": "string",
           "isSecret": false,
           "name": "HAPPY_DOCS_EMBEDDING_PROVIDER"
-        },
-        {
-          "description": "Optional GitHub token for higher ServiceNowDocs repository rate limits",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true,
-          "name": "GITHUB_TOKEN"
         }
       ]
     }
