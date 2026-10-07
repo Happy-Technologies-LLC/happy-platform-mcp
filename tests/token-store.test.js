@@ -580,14 +580,13 @@ describe('KeychainTokenStore (with injected entry factory)', () => {
     await expect(store.clearRefreshToken('acct')).resolves.toBeUndefined();
   });
 
-  it('fails loud when a false delete result leaves a readable entry behind', async () => {
-    // @napi-rs/keyring 1.x reports every delete failure (locked, denied) as false.
-    const store = new KeychainTokenStore({
-      createEntry: () => ({ deletePassword: () => false, getPassword: () => 'still-stored-refresh-token' })
-    });
-    const error = await store.clearRefreshToken('acct').catch(caught => caught);
-    expect(error).toBeInstanceOf(Error);
-    expect(error.message).toBe('Keychain refresh-token deletion failed');
-    expect(String(error.stack)).not.toContain('still-stored-refresh-token');
+  it('relies on a keyring binding that rejects failed deletes instead of reporting false', async () => {
+    // @napi-rs/keyring 1.x reported locked/denied deletes as false (absent), so
+    // removal could "succeed" with the token retained. >= 2.1 throws on any
+    // failure and returns false only for an absent credential.
+    const { createRequire } = await import('node:module');
+    const { version } = createRequire(import.meta.url)('@napi-rs/keyring/package.json');
+    const [major, minor] = version.split('.').map(Number);
+    expect(major > 2 || (major === 2 && minor >= 1)).toBe(true);
   });
 });

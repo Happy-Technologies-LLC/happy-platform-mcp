@@ -288,12 +288,9 @@ export class KeychainTokenStore {
   async clearRefreshToken(account) {
     assertTokenAccount(account);
     const entry = await this._entry(account);
-    // @napi-rs/keyring 1.x returns false for every failed delete (locked,
-    // denied) as well as for a missing entry. Confirm the entry is gone when it
-    // is still readable; a store that hides the entry on read cannot be checked.
-    if (await entry.deletePassword() === false && (await entry.getPassword()) != null) {
-      throw new Error('Keychain refresh-token deletion failed');
-    }
+    // @napi-rs/keyring >= 2.1 rejects when the credential exists but cannot be
+    // deleted (locked, denied, inaccessible); false means it is absent.
+    await entry.deletePassword();
   }
 }
 
