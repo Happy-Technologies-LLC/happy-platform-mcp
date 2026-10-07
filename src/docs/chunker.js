@@ -1,11 +1,24 @@
+const WHITESPACE = /\s/;
+
+// ATX heading: 1-6 "#", then whitespace, then non-blank text. Linear scan.
 function headingText(line) {
-  const match = line.match(/^#{1,6}\s+(.+)$/);
-  return match ? match[1].trim() : null;
+  let level = 0;
+  while (level < line.length && line[level] === '#') level += 1;
+  if (level < 1 || level > 6 || !WHITESPACE.test(line[level] ?? '')) return null;
+  return line.slice(level).trim() || null;
+}
+
+function firstHeading(lines) {
+  for (const line of lines) {
+    const heading = headingText(line);
+    if (heading) return heading;
+  }
+  return null;
 }
 
 export function chunkMarkdown({ family, path, markdown }) {
   const lines = markdown.split(/\r?\n/);
-  const title = lines.map(headingText).find(Boolean) || path;
+  const title = firstHeading(lines) || path;
   const chunks = [];
   let current = null;
 
