@@ -132,3 +132,45 @@ SERVICENOW_OAUTH_CALLBACK_PATH=/callback
 Register `http://127.0.0.1:8202/callback` as the public client's redirect URL. Do not set `SERVICENOW_CLIENT_SECRET` for a public client.
 
 For multi-instance setups, configure OAuth per-instance in `config/servicenow-instances.json` instead. See [Multi-Instance Configuration](MULTI_INSTANCE_CONFIGURATION.md#oauth-authentication).
+
+### Refresh-token storage
+
+Authorization-code refresh tokens default to the OS keychain. Leave
+`SERVICENOW_TOKEN_STORE` unset or set it to `keychain` (also the supported Windows
+choice). An unavailable keychain fails rather than silently falling back to files.
+
+On a trusted POSIX filesystem, explicitly opt in by adding this to the server
+process environment or its private `.env` file:
+
+```sh
+SERVICENOW_TOKEN_STORE=file
+```
+
+Tokens are plaintext files at `$XDG_CONFIG_HOME/happy-platform-mcp/token-<sha256-hex>`
+or `~/.config/happy-platform-mcp/token-<sha256-hex>` if XDG is unset, where the name is
+the lowercase SHA-256 hex of the account key. Keys differing only by case therefore
+never share a file on case-insensitive filesystems such as default macOS APFS. Older
+`token-<account>` files are not read or migrated; authorize again (you may delete them).
+If overriding XDG, use an absolute trusted directory. New storage is created private;
+existing storage must already be owned by the current OS user with mode 0700, and
+existing token files must be regular, singly linked, current-user-owned files with
+mode 0600. Before creating any directory, every existing ancestor is resolved
+(symlinked ancestors are followed) and checked: each must be a directory owned by the
+current user or root and not group/world-writable unless sticky (like `/tmp`). The
+error names the offending path; for example, a group-writable `~/.config` from umask
+002 needs `chmod go-w ~/.config`. Missing intermediate directories are created one at
+a time and re-checked. Unsafe symlinks, types, ownership and permissions are rejected;
+permission/setup failures are not ignored. Inspect any existing directory and its
+contents before manually making it private. Do not select file storage on
+shared/network filesystems with untrusted ownership or ACL policies.
+Windows is rejected because POSIX chmod cannot establish private Windows ACLs.
+
+This opt-in trades keychain isolation for access by every process of the same OS
+user. Exclude token storage from shared/cloud backups and version control, or
+encrypt and restrict backups as secrets. No token migration occurs when switching
+stores; authorize again. Instance passwords/client secrets still use the keychain.
+
+Unique exclusive temporary files (0600) and atomic same-directory rename protect
+complete file replacement during concurrent writes, not cross-process OAuth
+refresh-token rotation or power-loss durability. Run only one refreshing process
+per identity; no distributed locking or refresh-rotation guarantee is provided.

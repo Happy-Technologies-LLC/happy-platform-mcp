@@ -8,7 +8,7 @@
 import axios from 'axios';
 import { userInfo } from 'node:os';
 import { performAuthorizationCodeFlow } from './oauth-authorization-code.js';
-import { KeychainTokenStore } from './token-store.js';
+import { createDefaultTokenStore } from './token-store.js';
 import { InstanceCredentialStore, parseCredentialRef } from './instance-credential-store.js';
 
 const CREDENTIAL_ERROR_CODES = new Set([
@@ -596,7 +596,7 @@ export class ServiceNowClient {
         callbackPath: options.callbackPath
       };
       // Injectable seams (defaults for production; overridden in tests)
-      this._tokenStore = options.tokenStore || new KeychainTokenStore();
+      this._tokenStore = options.tokenStore || createDefaultTokenStore();
       this._performAuthCodeFlow = options.performAuthCodeFlow || performAuthorizationCodeFlow;
       this._postToken = options.postToken || defaultTokenPost;
       // Clear any stale token so the next request triggers a fresh grant
