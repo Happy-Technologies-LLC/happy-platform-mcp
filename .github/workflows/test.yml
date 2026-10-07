@@ -121,5 +121,8 @@ jobs:
           Set-ItemProperty -Path $key -Name HideFirstRunExperience -Type DWord -Value 1
           Set-ItemProperty -Path $key -Name DefaultBrowserSettingEnabled -Type DWord -Value 0
 
+      - name: TEMP launch diagnostic
+        run: node scripts/oauth-signin-smoke-diag.mjs
+
       - name: Native OAuth sign-in smoke
         run: node scripts/oauth-signin-smoke.mjs --require-browser
