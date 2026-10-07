@@ -10,6 +10,8 @@
  * loaded and again immediately before every token request.
  */
 
+import { MAX_URL_LENGTH, exceedsUrlLength } from './url-limits.js';
+
 export const TRUSTED_OAUTH_ORIGINS_ENV = 'SERVICENOW_OAUTH_TRUSTED_ORIGINS';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -55,6 +57,7 @@ export function parseTrustedOAuthOrigins(value = process.env[TRUSTED_OAUTH_ORIGI
     const entry = entries[index].trim();
     if (!entry) continue;
     let parsed;
+    if (exceedsUrlLength(entry)) throw invalidTrustedOrigins(index + 1);
     try {
       parsed = new URL(entry);
     } catch {
@@ -95,6 +98,13 @@ export function assertApprovedOAuthEndpoint(endpoint, instanceUrl, field, env = 
   const trusted = parseTrustedOAuthOrigins(env[TRUSTED_OAUTH_ORIGINS_ENV]);
   let parsed;
   let instance;
+  if (exceedsUrlLength(endpoint) || exceedsUrlLength(instanceUrl)) {
+    throw new OAuthEndpointPolicyError(
+      'OAUTH_ENDPOINT_NOT_APPROVED',
+      `${field} and the instance URL must be at most ${MAX_URL_LENGTH} characters`,
+      field
+    );
+  }
   try {
     parsed = new URL(endpoint);
     instance = new URL(instanceUrl);
