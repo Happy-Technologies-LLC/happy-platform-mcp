@@ -470,6 +470,38 @@ happy-platform-mcp instance test public-dev
 Public authorization-code metadata requires no `credentialRef` or client
 secret. The first test/API call opens the browser flow and stores its refresh
 token in the OS keychain.
+
+### Optional plaintext refresh-token storage (POSIX only)
+
+The OS keychain remains the default (unset or `SERVICENOW_TOKEN_STORE=keychain`).
+Explicitly opt in with `SERVICENOW_TOKEN_STORE=file` in the server process environment
+to persist authorization-code refresh tokens as plaintext `token-<sha256-hex>` files
+(named by the SHA-256 of the account key, so case-insensitive filesystems cannot alias
+accounts that differ only by case) in `$XDG_CONFIG_HOME/happy-platform-mcp`, or
+`~/.config/happy-platform-mcp` when XDG is unset. Earlier `token-<account>` files are
+never read; authorize again. `XDG_CONFIG_HOME` must be an absolute trusted path. This
+does not change the keychain storage of instance passwords or OAuth client secrets.
+
+The file store checks current-user ownership, a private 0700 directory and regular
+0600 token files; unsafe existing directories/files, symlinks, writable untrusted
+ancestors and setup/permission errors fail closed. Every existing ancestor (after
+resolving symlinks) is checked before any directory is created and must be owned by
+the current user or root and not group/world-writable unless sticky; errors name the
+offending path and required ownership/mode. If the directory already holds
+configuration with broader permissions, inspect it and make it private before opting
+in; the server does not silently repair exposed existing storage. Windows file mode
+bits do not enforce Windows ACL privacy, so file storage is rejected there: keep
+the OS-keychain default. See [setup details](docs/SETUP_GUIDE.md#refresh-token-storage).
+
+Any process running as the same OS user can read these plaintext tokens. Exclude the
+directory from shared/synced backups, or protect backups as secrets (including access
+controls and encryption). Do not commit, log or upload its contents. Switching stores
+does not migrate tokens; authorize again in the selected store. Each write uses a
+unique exclusive 0600 temporary file and same-directory atomic rename, so concurrent
+writers do not share temporary files and readers see complete tokens. This does not
+serialize OAuth refresh exchanges, solve cross-process refresh-token rotation, or
+guarantee power-loss durability; use one refreshing process per identity.
+
 ## Architecture
 
 ```
