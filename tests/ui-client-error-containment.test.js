@@ -30,7 +30,10 @@ async function fakeServiceNow() {
       res.end(JSON.stringify(payload));
     };
     if (req.method === 'GET' && req.url === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html', 'Set-Cookie': 'JSESSIONID=session-cookie-fixture' });
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Set-Cookie': 'JSESSIONID=session-cookie-fixture; HttpOnly; Secure; SameSite=Strict'
+      });
       res.end('<html></html>');
       return;
     }
