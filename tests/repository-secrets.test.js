@@ -27,4 +27,38 @@ describe('repository credential hygiene', () => {
     expect(guide).toContain('"SERVICENOW_PASSWORD": "your-password"');
     expect(guide).not.toMatch(/dev\d+\.service-now\.com/);
   });
+
+  test('CI scans full git history and the packed npm tarball with pinned gitleaks', () => {
+    const testWorkflow = readFileSync(path.join(repositoryRoot, '.github/workflows/test.yml'), 'utf8');
+    const jobStart = testWorkflow.indexOf('\n  secret-scan:\n');
+    expect(jobStart).toBeGreaterThan(-1);
+    const secretScanJob = testWorkflow.slice(jobStart);
+    expect(secretScanJob).toMatch(/fetch-depth: 0\n/);
+    expect(secretScanJob).toContain('scripts/secret-scan.sh install "$RUNNER_TEMP/gitleaks"');
+    expect(secretScanJob).toContain('run: scripts/secret-scan.sh history');
+    expect(secretScanJob.indexOf('run: npm ci')).toBeLessThan(secretScanJob.indexOf('run: scripts/secret-scan.sh package'));
+
+    const publishWorkflow = readFileSync(path.join(repositoryRoot, '.github/workflows/publish.yml'), 'utf8');
+    const packageScan = publishWorkflow.indexOf('run: scripts/secret-scan.sh package');
+    expect(packageScan).toBeGreaterThan(publishWorkflow.indexOf('run: npm run test:package'));
+    expect(packageScan).toBeLessThan(publishWorkflow.indexOf('run: npm publish'));
+
+    const scanner = readFileSync(path.join(repositoryRoot, 'scripts/secret-scan.sh'), 'utf8');
+    expect(scanner).toMatch(/^GITLEAKS_VERSION="\d+\.\d+\.\d+"$/m);
+    expect(scanner).toMatch(/^GITLEAKS_LINUX_X64_SHA256="[0-9a-f]{64}"$/m);
+    expect(scanner).toContain('sha256sum --check --strict');
+    expect(scanner).toContain('--log-opts="--full-history HEAD"');
+    expect(scanner).toContain('--redact');
+  });
+
+  test('secret-scan baseline only ignores exact historical fingerprints', () => {
+    const baseline = readFileSync(path.join(repositoryRoot, '.gitleaksignore'), 'utf8');
+    const entries = baseline.split('\n').filter((line) => line.trim() && !line.startsWith('#'));
+
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(entry).toMatch(/^[0-9a-f]{40}:[^:\s]+:[a-z0-9-]+:\d+$/);
+      expect(baseline.slice(0, baseline.indexOf(entry))).toContain('#67');
+    }
+  });
 });
