@@ -561,13 +561,13 @@ export async function createMcpServer(serviceNowClient, options = {}) {
       },
       {
         name: 'SN-Set-Update-Set',
-        description: 'Generate a fix script to set the current update set using GlideUpdateSet API. Cannot be done via REST API - creates script file for manual execution in ServiceNow UI.',
+        description: 'Set the current update set through the ServiceNow UI picker and verify, in the same session, that it took effect. If the automated change fails or cannot be verified, a fix script is written to ./scripts for manual execution instead.',
         inputSchema: {
           type: 'object',
           properties: {
             update_set_sys_id: {
               type: 'string',
-              description: 'System ID of the update set to make current (required)'
+              description: 'sys_id of the update set to make current: 32 lowercase hexadecimal characters (required)'
             }
           },
           required: ['update_set_sys_id']
@@ -615,13 +615,13 @@ export async function createMcpServer(serviceNowClient, options = {}) {
       },
       {
         name: 'SN-Set-Current-Application',
-        description: 'Set the current application scope using the UI API. This changes which application is active for development and configuration changes.',
+        description: 'Set the current application scope using the UI picker and verify the change in the same session. Reports the previous scope; returns an error if the change cannot be verified.',
         inputSchema: {
           type: 'object',
           properties: {
             app_sys_id: {
               type: 'string',
-              description: 'System ID of the application to make current (required)'
+              description: 'sys_id of the sys_app record to make current, or "global" for the Global scope (required)'
             }
           },
           required: ['app_sys_id']
@@ -2037,43 +2037,26 @@ ${show_patterns ? `\n## Supported Patterns:\n${JSON.stringify(getSupportedPatter
           console.error(`🔄 Setting current update set to: ${update_set_sys_id}`);
 
           try {
-            // Try to set via API (UI endpoint or sys_trigger)
+            // UI picker write, verified in the same session; throws if the
+            // change did not take effect.
             const result = await requestClient.setCurrentUpdateSet(update_set_sys_id);
-
-            if (result.method === 'sys_trigger') {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `✅ Update set change scheduled via sys_trigger!
-
-Update Set: ${result.update_set}
-sys_id: ${result.sys_id}
-
-🔧 Method: sys_trigger (scheduled job)
-📊 Trigger Details:
-- Trigger sys_id: ${result.trigger_details.trigger_sys_id}
-- Trigger name: ${result.trigger_details.trigger_name}
-- Scheduled time: ${result.trigger_details.next_action}
-- Auto-delete: ${result.trigger_details.auto_delete ? 'Yes' : 'No'}
-
-The script will execute in ~1 second and set your current update set. Refresh your ServiceNow browser after 2 seconds to see the change in the top bar.`
-                }]
-              };
-            } else {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `✅ Update set set to current: ${result.update_set}
+            const previous = result.previous_update_set;
+            return {
+              content: [{
+                type: 'text',
+                text: `✅ Update set set to current: ${result.update_set}
 
 🔧 Method: UI API endpoint (/api/now/ui/concoursepicker/updateset)
-📊 Response: ${JSON.stringify(result.response, null, 2)}
+✅ Verification: passed${previous ? `\n↩️ Previous update set: ${previous.name || 'unknown'} (${previous.sys_id || 'unknown'})` : ''}
 
 The update set has been set as your current update set. Refresh your ServiceNow browser to see the change in the top bar.`
-                }]
-              };
-            }
+              }]
+            };
           } catch (error) {
-            // If both methods fail, fall back to creating fix script
+            if (/must be a 32-character/.test(error.message)) {
+              return { content: [{ type: 'text', text: `❌ ${error.message}` }], isError: true };
+            }
+            // Automated change failed or did not verify: fall back to a fix script.
             console.error('⚠️  Direct update set change failed, creating fix script...');
 
             const updateSet = await requestClient.getRecord('sys_update_set', update_set_sys_id);
@@ -2176,13 +2159,14 @@ Sys ID: ${update_set_sys_id}
             return {
               content: [{
                 type: 'text',
-                text: `✅ Application set to current: ${result.application}
+                text: `${result.verified ? '✅ Application set to current' : '⚠️ Application change requested but not verified'}: ${result.application}
 
 🔧 Method: UI API endpoint (/api/now/ui/concoursepicker/application)
-📊 Response: ${JSON.stringify(result.response, null, 2)}
+${result.verified ? '✅ Verification: passed' : `❌ Verification: failed${result.verification_error ? ` (${result.verification_error})` : ''}`}${result.previous_scope ? `\n↩️ Previous scope: ${result.previous_scope.name || 'unknown'} (${result.previous_scope.sys_id})` : ''}
 
-The application scope has been set as your current application. Refresh your ServiceNow browser to see the change in the top bar.`
-              }]
+${result.verified ? 'The application scope has been set as your current application. Refresh your ServiceNow browser to see the change in the top bar.' : 'Check the application picker in the ServiceNow UI before making changes.'}`
+              }],
+              isError: result.verified !== true
             };
           } catch (error) {
             console.error('❌ Failed to set current application:', error.message);
@@ -2195,7 +2179,8 @@ Please verify:
 1. The app_sys_id is valid
 2. You have permissions to access the application
 3. The application exists in your instance`
-              }]
+              }],
+              isError: true
             };
           }
         }
@@ -2449,7 +2434,8 @@ ${script_content.substring(0, 200)}${script_content.length > 200 ? '...' : ''}`
             content: [{
               type: 'text',
               text: `Batch create ${result.success ? 'completed' : 'failed'}:\n${JSON.stringify(result, null, 2)}`
-            }]
+            }],
+            isError: result.success !== true
           };
         }
 
@@ -2463,7 +2449,8 @@ ${script_content.substring(0, 200)}${script_content.length > 200 ? '...' : ''}`
             content: [{
               type: 'text',
               text: `Batch update ${result.success ? 'completed' : 'completed with errors'}:\n${JSON.stringify(result, null, 2)}`
-            }]
+            }],
+            isError: result.success !== true
           };
         }
 

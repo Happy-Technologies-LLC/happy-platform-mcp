@@ -90,32 +90,6 @@ describe('SN-Set-Update-Set Validation Tests', () => {
       expect(result.method).toBe('ui_api');
     });
 
-    it('should fall back to sys_trigger method when UI API fails', async () => {
-      // Mock: Get update set details
-      mockClient.getRecord.mockResolvedValueOnce(mockUpdateSet1);
-
-      // Mock: sys_trigger execution
-      mockClient.setCurrentUpdateSet.mockResolvedValueOnce({
-        success: true,
-        update_set: mockUpdateSet1.name,
-        sys_id: mockUpdateSet1.sys_id,
-        method: 'sys_trigger',
-        trigger_details: {
-          trigger_sys_id: mockTrigger.sys_id,
-          trigger_name: mockTrigger.name,
-          next_action: mockTrigger.next_action,
-          auto_delete: true,
-        },
-      });
-
-      const result = await mockClient.setCurrentUpdateSet(mockUpdateSet1.sys_id);
-
-      expect(result.success).toBe(true);
-      expect(result.method).toBe('sys_trigger');
-      expect(result.trigger_details).toBeDefined();
-      expect(result.trigger_details.auto_delete).toBe(true);
-    });
-
     it('should handle invalid update_set_sys_id', async () => {
       mockClient.setCurrentUpdateSet.mockRejectedValueOnce(
         new Error('Update set not found: invalid_sys_id')

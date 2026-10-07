@@ -489,7 +489,7 @@ await client.callTool({
 
 ### SN-Get-Current-Update-Set
 
-Get the currently active update set.
+Get the current user's active update set, read from the ServiceNow update-set picker (`/api/now/ui/concoursepicker/updateset`). The older `/api/now/ui/preferences/sys_update_set` endpoint answers HTTP 400 on current instances and is no longer used.
 
 **Parameters:**
 ```javascript
@@ -501,9 +501,11 @@ Get the currently active update set.
 **Returns:**
 ```json
 {
-  "sys_id": "abc123...",
-  "name": "My Update Set",
-  "state": "in progress"
+  "result": {
+    "name": "My Update Set",
+    "value": "0123456789abcdef0123456789abcdef",
+    "sys_id": "0123456789abcdef0123456789abcdef"
+  }
 }
 ```
 
@@ -511,17 +513,20 @@ Get the currently active update set.
 
 ### SN-Set-Update-Set
 
-Set the current update set programmatically.
+Set the current update set through the UI picker, then read the picker back in the same session to verify the change took effect. The response reports the previous update set.
 
 **Parameters:**
 ```javascript
 {
-  "update_set_sys_id": "abc123...",
+  "update_set_sys_id": "0123456789abcdef0123456789abcdef", // 32 lowercase hex characters
   "instance": "dev"
 }
 ```
 
-**Implementation:** Uses automated background script execution via `sys_trigger`
+**Behavior:**
+- An invalid `update_set_sys_id` is rejected with an error before any request.
+- If the picker write fails or does not verify, no success is reported: the tool writes a fix script to `./scripts` for manual execution in **Scripts - Background** instead.
+- There is no scheduled-job (`sys_trigger`) fallback: a scheduled job runs in the scheduler's own session, so it could not change or verify your current update set.
 
 ---
 
@@ -1188,7 +1193,7 @@ ServiceNow enforces rate limits on API calls:
 - `SN-Create-Fix-Script` - Generate script for manual execution
 
 ### Application Scope (1 tool)
-- `SN-Set-Current-Application` - Set current application scope
+- `SN-Set-Current-Application` - Set current application scope (sys_app sys_id, or `global`), verified in the same session
 
 ### Service Catalog AI-Submission (4 tools)
 - `SN-Catalog-Get-Categories` - List catalog categories

@@ -412,32 +412,6 @@ describe('generated fix-script metadata stays out of executable code (VULN-010)'
 });
 
 describe('update-set names are serialized as data (VULN-009)', () => {
-  test.each(HOSTILE_VALUES)('sys_trigger fallback script with %s', async (_label, updateSetName) => {
-    const fake = await startFakeServiceNow({ updateSetName });
-    const mcp = await connectMcp(new ServiceNowClient(fake.url, 'fake-user', 'fake-password'));
-    try {
-      const result = await mcp.callTool('SN-Set-Update-Set', { update_set_sys_id: UPDATE_SET_SYS_ID });
-      expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toMatch(/scheduled via sys_trigger/);
-
-      const triggerPost = fake.requests.find((r) => r.method === 'POST' && r.path === '/api/now/table/sys_trigger');
-      const script = triggerPost.body.script;
-      expect(expectDataAssignment(script, 'updateSetId', UPDATE_SET_SYS_ID)).toBeDefined();
-      const remainder = expectDataAssignment(script, 'updateSetName', updateSetName);
-      expect(remainder).not.toContain('pwned');
-      expect(remainder).toContain("gs.info('✅ Update set changed to: ' + updateSetName);");
-      // Description is a sys_trigger field value (data), never script text.
-      expect(triggerPost.body.description).toBe(`Set update set to: ${updateSetName}`);
-
-      const wrapped = fake.requests.find((r) => r.method === 'PUT' && r.path === `/api/now/table/sys_trigger/${TRIGGER_SYS_ID}`);
-      expect(() => new vm.Script(wrapped.body.script)).not.toThrow();
-      expect(wrapped.body.script).toContain(script);
-    } finally {
-      await mcp.close();
-      await fake.close();
-    }
-  });
-
   test.each(HOSTILE_VALUES)('manual fix-script file fallback with %s', async (_label, updateSetName) => {
     const fake = await startFakeServiceNow({ updateSetName, triggerStatus: 403 });
     const mcp = await connectMcp(new ServiceNowClient(fake.url, 'fake-user', 'fake-password'));
@@ -479,35 +453,18 @@ describe('update-set names are serialized as data (VULN-009)', () => {
     }
   });
 
-  test.each(HOSTILE_VALUES)('caller-supplied update_set_sys_id with %s in both fallbacks', async (_label, sysId) => {
+  test.each(HOSTILE_VALUES)('rejects a caller-supplied update_set_sys_id with %s before any request or file', async (_label, sysId) => {
     const fake = await startFakeServiceNow({ updateSetName: 'Benign Name' });
     const mcp = await connectMcp(new ServiceNowClient(fake.url, 'fake-user', 'fake-password'));
     try {
-      const scheduled = await mcp.callTool('SN-Set-Update-Set', { update_set_sys_id: sysId });
-      expect(scheduled.isError).toBeFalsy();
-      const triggerPost = fake.requests.find((r) => r.method === 'POST' && r.path === '/api/now/table/sys_trigger');
-      const triggerRemainder = expectDataAssignment(triggerPost.body.script, 'updateSetId', sysId);
-      expect(triggerRemainder).not.toContain('pwned');
-      expect(triggerRemainder).toContain('gr.value = updateSetId;');
+      const result = await mcp.callTool('SN-Set-Update-Set', { update_set_sys_id: sysId });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/32-character/);
+      expect(fake.requests).toHaveLength(0);
+      expect(await listFiles(tempRoot)).toHaveLength(0);
     } finally {
       await mcp.close();
       await fake.close();
-    }
-
-    const deniedFake = await startFakeServiceNow({ updateSetName: 'Benign Name', triggerStatus: 403 });
-    const deniedMcp = await connectMcp(new ServiceNowClient(deniedFake.url, 'fake-user', 'fake-password'));
-    try {
-      const manual = await deniedMcp.callTool('SN-Set-Update-Set', { update_set_sys_id: sysId });
-      expect(manual.isError).toBeFalsy();
-      const [file] = await listFiles(tempRoot);
-      const content = await fs.readFile(path.join(tempRoot, file), 'utf8');
-      expect(leadingBlockComment(content)).not.toContain('pwned');
-      const remainder = expectDataAssignment(content, 'updateSetSysId', sysId);
-      expect(remainder).not.toContain('pwned');
-      expect(remainder).toContain('gus.set(updateSetSysId);');
-    } finally {
-      await deniedMcp.close();
-      await deniedFake.close();
     }
   });
 });

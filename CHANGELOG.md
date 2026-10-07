@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `SN-Get-Current-Update-Set` reads the update-set picker; the `/api/now/ui/preferences/sys_update_set` endpoint it used answers HTTP 400 on current instances.
+- `SN-Set-Update-Set` sends the UI session cookie on every picker call (Node's HTTP client keeps no cookie jar, so each call landed in a fresh session) and reads the picker back to verify the change, reporting the previous update set. An unverified change is never reported as success: the tool falls back to the manual fix script. The unverified scheduled-job (`sys_trigger`) fallback is removed, and an invalid `update_set_sys_id` is rejected before any request (previously it was interpolated into the record URL).
+- `SN-Set-Current-Application` accepts `global` for the Global scope, reads the previous scope and verifies the change through the picker in the same session, and returns an MCP error when the change fails or cannot be verified. Its non-fatal warning now goes to stderr instead of the stdio protocol stream.
+- `SN-Batch-Create` (`transaction: false`) and `SN-Batch-Update` (`stop_on_error: false`) report `success: false` and an MCP error when any operation failed; previously a batch that kept going past failures reported success.
+
 ## 6.0.0 - 2026-10-07
 
 ### Upgrade guide (5.x → 6.0)
