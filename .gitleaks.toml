@@ -1,0 +1,63 @@
+title = "happy-platform-mcp secret scanning"
+
+# Start from the gitleaks default rule set; everything below only adds detection
+# or narrowly scoped false-positive exclusions. Never allowlist a real secret here:
+# a verified, already-rotated historical finding belongs in .gitleaksignore by
+# exact fingerprint so that any new occurrence still fails.
+[extend]
+useDefault = true
+
+# The default rules do not recognize literal ServiceNow basic-auth passwords or
+# OAuth client secrets assigned through the documented environment variable names
+# (.env, shell exports, docker -e, Claude Desktop JSON). This is the credential
+# class of #67 VULN-030, so detect it explicitly. A value counts as literal when it
+# is quoted after `:`/`=`, or written unquoted directly after `=` (env/shell form);
+# JavaScript assignments from identifiers (`= fixture.secret`) are not literals.
+[[rules]]
+id = "servicenow-env-credential"
+description = "Literal ServiceNow password or OAuth client secret assigned to a SERVICENOW_* variable"
+regex = '''SERVICENOW_(?:PASSWORD|CLIENT_SECRET)(?:["']?[ \t]*[:=][ \t]*["']|=)([^\s"'`]{6,})'''
+secretGroup = 1
+keywords = ["servicenow_password", "servicenow_client_secret"]
+
+[[rules.allowlists]]
+description = "Variable references, templates, fixtures and documentation placeholders are not credential values"
+regexTarget = "secret"
+regexes = [
+  '''^\$\{''',
+  '''^\$[A-Za-z_][A-Za-z0-9_]*$''',
+  '''^\$\(''',
+  '''^<[^>]*>?$''',
+  '''^\{\{''',
+  '''^(?i:\*+|x+|\.\.\.+)$''',
+  '''^(?i:password|secret|client[-_]?secret|admin|changeme)$''',
+  '''(?i)^(?:your|my|example|sample|placeholder|change-?me|redacted|dummy)[-_a-z]*$''',
+  '''(?i)^(?:[a-z]+[-_])*(?:fixture|test|fake|mock)(?:[-_][a-z]+)*$''',
+]
+
+[[allowlists]]
+description = "Regex assertion in the repository-secrets regression test that forbids literal exports"
+targetRules = ["servicenow-env-credential"]
+condition = "AND"
+regexTarget = "match"
+paths = ['''^tests/repository-secrets\.test\.js$''']
+regexes = ['''^SERVICENOW_PASSWORD=\.\+\$/m''']
+
+[[allowlists]]
+description = "Keychain credential-reference fixtures are pointers to stored secrets, not secret values"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "match"
+paths = ['''^tests/instance-credential-store\.test\.js$''']
+regexes = ['''keychain:instance/''']
+
+[[allowlists]]
+description = "Documentation curl examples that use the literal placeholder bearer token"
+targetRules = ["curl-auth-header"]
+regexTarget = "secret"
+regexes = ['''^(?i:your[-_]token)$''']
+
+[[allowlists]]
+description = "Public jwt.io sample token used as a test vector by zod, shipped inside the bundled SDK dependency tree"
+targetRules = ["jwt"]
+paths = ['''(?:^|/)bundled-dependencies/zod/src/v4/mini/tests/string\.test\.ts$''']
