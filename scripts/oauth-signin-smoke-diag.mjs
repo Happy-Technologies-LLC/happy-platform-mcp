@@ -16,6 +16,9 @@ console.log('session:', info('cmd.exe', ['/d', '/c', 'query session']));
 console.log('explorer running:', info('tasklist', ['/FI', 'IMAGENAME eq explorer.exe']));
 console.log('http association:', info('cmd.exe', ['/d', '/c', 'assoc .html & ftype htmlfile']));
 console.log('edge path:', edge);
+console.log('node session:', info('tasklist', ['/FI', 'PID eq ' + process.pid, '/V', '/FO', 'LIST']).split('\n').filter(l => /Session|User Name/.test(l)).join(' | '));
+console.log('http UserChoice:', info('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice']));
+console.log('http class:', info('reg', ['query', 'HKCR\\http\\shell\\open\\command']));
 
 async function attempt(label, cmd, args) {
   const before = hits.length;
@@ -25,6 +28,7 @@ async function attempt(label, cmd, args) {
 }
 
 await attempt('explorer.exe', 'explorer.exe', [`${base}/explorer?a=1&b=2`]);
+await attempt('rundll32 FileProtocolHandler', 'rundll32.exe', ['url.dll,FileProtocolHandler', `${base}/rundll?a=1&b=2`]);
 if (edge) {
   await attempt('msedge direct', edge, ['--no-first-run', `${base}/edge?a=1&b=2`]);
   await attempt('msedge headless', edge, ['--headless=new', '--no-first-run', `${base}/headless?a=1&b=2`]);
