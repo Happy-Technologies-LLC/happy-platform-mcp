@@ -225,10 +225,11 @@ async function defaultOpenBrowser(authUrl) {
   }
 }
 
-/** Default HTTP POST: form-encode params to the token endpoint via axios, return the body. */
+/** Default HTTP POST: form-encode params to the token endpoint via axios (redirects refused), return the body. */
 async function defaultFormPost(url, params) {
   const response = await axios.post(url, new URLSearchParams(params).toString(), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    maxRedirects: 0
   });
   return response.data;
 }

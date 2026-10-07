@@ -573,10 +573,20 @@ describe('KeychainTokenStore (with injected entry factory)', () => {
     await expect(store.clearRefreshToken('acct')).rejects.toBe(backendError);
   });
 
-  it('treats a false delete result as an idempotent missing entry', async () => {
+  it('treats a false delete result as an idempotent missing entry when the entry is gone', async () => {
     const store = new KeychainTokenStore({
-      createEntry: () => ({ deletePassword: () => false })
+      createEntry: () => ({ deletePassword: () => false, getPassword: () => null })
     });
     await expect(store.clearRefreshToken('acct')).resolves.toBeUndefined();
+  });
+
+  it('relies on a keyring binding that rejects failed deletes instead of reporting false', async () => {
+    // @napi-rs/keyring 1.x reported locked/denied deletes as false (absent), so
+    // removal could "succeed" with the token retained. >= 2.1 throws on any
+    // failure and returns false only for an absent credential.
+    const { createRequire } = await import('node:module');
+    const { version } = createRequire(import.meta.url)('@napi-rs/keyring/package.json');
+    const [major, minor] = version.split('.').map(Number);
+    expect(major > 2 || (major === 2 && minor >= 1)).toBe(true);
   });
 });

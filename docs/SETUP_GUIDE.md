@@ -133,6 +133,43 @@ Register `http://127.0.0.1:8202/callback` as the public client's redirect URL. D
 
 For multi-instance setups, configure OAuth per-instance in `config/servicenow-instances.json` instead. See [Multi-Instance Configuration](MULTI_INSTANCE_CONFIGURATION.md#oauth-authentication).
 
+### Trusted external OAuth identity providers
+
+Authorize and token URLs must be on the instance origin unless you approve an
+external IdP origin in the environment (never in the registry). Set it for the
+MCP server **and** export it in the shell that runs `happy-platform-mcp instance
+…`; the CLI does not read `.env`, and a registry that uses an unapproved external
+IdP fails to load for every CLI command, including `instance remove`:
+
+```
+export SERVICENOW_OAUTH_TRUSTED_ORIGINS=https://login.example.com
+```
+
+List exact comma-separated origins: HTTPS (loopback HTTP only for local
+testing), no path, query, fragment, credentials, or wildcard. Malformed entries
+fail closed. Approval is checked at configuration load/registration and again
+immediately before each token request, and token requests never follow
+redirects. Endpoints on an unapproved external origin are rejected before any
+client secret, authorization code, or refresh token is sent.
+
+### Reauthorization after upgrading
+
+Refresh tokens are stored under an identity key derived from the local OS user,
+canonical instance URL, OAuth client ID, and the effective authorize/token
+endpoints — not the instance name. Tokens stored by earlier versions under
+`<os-user>@<instance-name>` are never read or migrated: each authorization-code
+instance opens the browser sign-in once after upgrading, and the old entry is
+deleted once the new sign-in succeeds. Changing the instance URL, client ID, or
+authorize/token URL is a new identity that signs in again. `instance remove` and
+identity-changing `instance update` delete the previous identity's refresh token
+from both the OS keychain and the file token store before changing the registry,
+and stop if either store reports an error. When the server uses the file store
+with a custom `XDG_CONFIG_HOME`, export the same value for the CLI. Unlock the
+keychain before removing: a locked keychain may report a failed delete as "no
+entry", and an unavailable keychain stops the command. Where no keychain works
+(for example containers that block `keyctl`), delete the token files under
+`$XDG_CONFIG_HOME/happy-platform-mcp/` and the registry entry by hand.
+
 ### Refresh-token storage
 
 Authorization-code refresh tokens default to the OS keychain. Leave

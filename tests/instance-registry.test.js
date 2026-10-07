@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, jest, test } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { InstanceRegistry, InstanceRegistryError } from '../src/instance-registry.js';
 import { credentialRefFor } from '../src/instance-credential-store.js';
 
@@ -460,8 +460,8 @@ describe('InstanceRegistry validation and defaults', () => {
     const { file } = tempPaths();
     const registry = new InstanceRegistry({ readPath: file, writePath: file });
     await expect(registry.register(publicInstance('oauth-query', {
-      authorizeUrl: 'https://oauth.service-now.com/authorize?client=cid',
-      tokenUrl: 'https://oauth.service-now.com/token?audience=sn'
+      authorizeUrl: 'https://oauth-query.service-now.com/authorize?client=cid',
+      tokenUrl: 'https://oauth-query.service-now.com/token?audience=sn'
     }))).resolves.toEqual(expect.objectContaining({ name: 'oauth-query' }));
   });
 
@@ -734,14 +734,14 @@ describe('InstanceRegistry persistence', () => {
       instances: [publicInstance('nested-redaction', {
         grantType: 'client_credentials',
         credentialRef: ref,
-        tokenUrl: 'https://safe.example/token'
+        tokenUrl: 'https://nested-redaction.service-now.com/token'
       })]
     });
     const publicView = new InstanceRegistry({ readPath: file, writePath: file }).load();
     const serialized = JSON.stringify(publicView);
     expect(serialized).not.toContain('fixture');
     expect(publicView.docs.tokenUrl).toBe('https://safe.example/token');
-    expect(publicView.instances[0].tokenUrl).toBe('https://safe.example/token');
+    expect(publicView.instances[0].tokenUrl).toBe('https://nested-redaction.service-now.com/token');
     expect(publicView.instances[0].credentialRef).toBe(ref);
   });
 
@@ -801,7 +801,7 @@ describe('InstanceRegistry persistence', () => {
       authType: 'oauth',
       grantType: 'client_credentials',
       clientId: 'cid',
-      tokenUrl: 'https://safe.example/custom-token',
+      tokenUrl: 'https://cc-token-url.service-now.com/custom-token',
       credentialRef: credentialRefFor('cc-token-url', 'client-secret')
     })).resolves.toEqual(expect.objectContaining({ name: 'cc-token-url' }));
   });
@@ -1092,4 +1092,77 @@ test('exposes typed registry errors with stable details', () => {
   expect(error.name).toBe('InstanceRegistryError');
   expect(error.code).toBe('INVALID_INSTANCE_CONFIG');
   expect(error.details).toEqual({ field: 'name' });
+});
+
+describe('InstanceRegistry OAuth endpoint origin policy', () => {
+  const TRUSTED_ENV = 'SERVICENOW_OAUTH_TRUSTED_ORIGINS';
+  let saved;
+  beforeEach(() => {
+    saved = process.env[TRUSTED_ENV];
+    delete process.env[TRUSTED_ENV];
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[TRUSTED_ENV];
+    else process.env[TRUSTED_ENV] = saved;
+  });
+
+  test('accepts same-origin endpoints and rejects unapproved external authorize/token origins at registration', async () => {
+    const { file } = tempPaths();
+    const registry = new InstanceRegistry({ readPath: file, writePath: file });
+    await expect(registry.register(publicInstance('same-origin', {
+      authorizeUrl: 'https://same-origin.service-now.com/oauth_auth.do',
+      tokenUrl: 'https://same-origin.service-now.com/oauth_token.do'
+    }))).resolves.toEqual(expect.objectContaining({ name: 'same-origin' }));
+
+    for (const [field, value] of [
+      ['tokenUrl', 'https://idp.example.com/token'],
+      ['authorizeUrl', 'https://idp.example.com/authorize'],
+      ['tokenUrl', 'https://same-origin.service-now.com.attacker.example/oauth_token.do']
+    ]) {
+      await expect(registry.register(publicInstance(`external-${field}`, { [field]: value })))
+        .rejects.toMatchObject({ code: 'INVALID_INSTANCE_CONFIG', details: { field } });
+    }
+    await expect(registry.register({
+      name: 'cc-external',
+      url: 'https://cc-external.service-now.com',
+      authType: 'oauth',
+      grantType: 'client_credentials',
+      clientId: 'cid',
+      tokenUrl: 'https://idp.example.com/token',
+      credentialRef: credentialRefFor('cc-external', 'client-secret')
+    })).rejects.toMatchObject({ code: 'INVALID_INSTANCE_CONFIG', details: { field: 'tokenUrl' } });
+    expect(registry.list().map(instance => instance.name)).toEqual(['same-origin']);
+  });
+
+  test('accepts external IdP origins only from the operator allow-list', async () => {
+    process.env[TRUSTED_ENV] = 'https://idp.example.com';
+    const { file } = tempPaths();
+    const registry = new InstanceRegistry({ readPath: file, writePath: file });
+    await expect(registry.register(publicInstance('approved', {
+      authorizeUrl: 'https://idp.example.com/authorize',
+      tokenUrl: 'https://idp.example.com/token'
+    }))).resolves.toEqual(expect.objectContaining({ name: 'approved' }));
+    await expect(registry.register(publicInstance('other-port', { tokenUrl: 'https://idp.example.com:8443/token' })))
+      .rejects.toMatchObject({ code: 'INVALID_INSTANCE_CONFIG', details: { field: 'tokenUrl' } });
+  });
+
+  test('fails registry load when a stored endpoint is no longer approved', () => {
+    const { file } = tempPaths();
+    writeJson(file, { version: 1, instances: [publicInstance('stored', { tokenUrl: 'https://idp.example.com/token' })] });
+    const registry = new InstanceRegistry({ readPath: file, writePath: file });
+    expect(() => registry.load()).toThrow(expect.objectContaining({ code: 'REGISTRY_RELOAD_FAILED' }));
+
+    process.env[TRUSTED_ENV] = 'https://idp.example.com';
+    expect(registry.load().instances[0].tokenUrl).toBe('https://idp.example.com/token');
+  });
+
+  test('rejects malformed trusted-origin configuration rather than widening trust', async () => {
+    const { file } = tempPaths();
+    const registry = new InstanceRegistry({ readPath: file, writePath: file });
+    for (const value of ['*', 'https://idp.example.com/path', 'http://idp.example.com', 'https://user:pw@idp.example.com', 'https://idp.example.com?x=1', 'nonsense']) {
+      process.env[TRUSTED_ENV] = value;
+      await expect(registry.register(publicInstance('bad-allow-list', { tokenUrl: 'https://idp.example.com/token' })))
+        .rejects.toMatchObject({ code: 'INVALID_INSTANCE_CONFIG' });
+    }
+  });
 });
