@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,6 @@ import { inspect } from 'node:util';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sdkManifestPath = join(root, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json');
-const sdkManifestTempPrefix = '.happy-platform-mcp-sdk-manifest-';
 const initializeSessionId = 'package-verifier-session';
 const initializeProtocolVersion = '2025-06-18';
 const initializeClientInfo = {
@@ -34,6 +33,38 @@ export const subprocessMaxBufferBytes = 16 * 1_024 * 1_024;
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+export function parsePackOutput(output) {
+  let parsed;
+  try { parsed = JSON.parse(output); } catch (cause) { throw new Error('npm pack returned invalid JSON', { cause }); }
+  const records = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' ? Object.values(parsed) : [];
+  assert(records.length === 1, 'npm pack must report exactly one tarball');
+  const pack = records[0];
+  assert(pack && typeof pack.filename === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.tgz$/.test(pack.filename), 'npm pack reported an unsafe tarball filename');
+  assert(Array.isArray(pack.files) && pack.files.length > 0 && pack.files.every((file) => file && typeof file.path === 'string'), 'npm pack did not report valid tarball files');
+  return pack;
+}
+
+const allowedRootFiles = new Set([
+  'package.json', 'README.md', 'CHANGELOG.md', 'SECURITY.md', 'LICENSE', 'NOTICE', 'server.json',
+  'config/servicenow-instances.json.example', 'assets/logo.svg', 'assets/logo-400x400.png',
+  'src/config/comprehensive-table-definitions.json', 'src/config/table-definitions.json', 'src/config/prompts.md',
+  'scripts/verify-package.mjs',
+]);
+
+export function assertPackageFiles(files, bundledPaths = ['node_modules/@modelcontextprotocol/sdk', 'node_modules/@hono/node-server']) {
+  for (const { path } of files) {
+    assert(typeof path === 'string' && path.length > 0 && !path.includes('\\') && !path.startsWith('/') &&
+      path.split('/').every((segment) => segment && segment !== '.' && segment !== '..'), 'packed tarball contains an unsafe path');
+    assert(!path.split('/').some((segment) => segment.startsWith('.env') || segment.startsWith('.mcpregistry_') ||
+      segment === '.cache' || segment.includes('.backup') || segment.startsWith('.happy-platform-mcp-sdk-manifest-') ||
+      /\.(?:pem|key|p12|pfx|log|tmp|sqlite|db)$/i.test(segment)), 'packed tarball contains secret/cache/backup/temp files');
+    assert(allowedRootFiles.has(path) || /^src\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.js$/.test(path) ||
+      /^docs\/[a-zA-Z0-9_-]+\.md$/.test(path) || bundledPaths.some((directory) =>
+        path.startsWith(directory + '/') && !path.slice(directory.length + 1).includes('node_modules/')),
+      'packed tarball contains a file outside the runtime allow-list: ' + path);
   }
 }
 
@@ -547,53 +578,30 @@ async function verifyPackage(resources) {
     mkdir(consumerDir),
   ]);
 
-  const packOutput = runNpm(npmCliPath, ['pack', '--json', '--pack-destination', packDir]);
-  const normalizedSdkManifest = await readFile(sdkManifestPath);
-  const sourceSdk = JSON.parse(normalizedSdkManifest.toString('utf8'));
-  assert(
-    sourceSdk.name === '@modelcontextprotocol/sdk' && sourceSdk.version === '1.29.0',
-    'source installed SDK manifest is not @modelcontextprotocol/sdk@1.29.0 after pack',
-  );
-  assert(
-    sourceSdk.dependencies?.['@hono/node-server'] === '2.0.11',
-    'source installed SDK manifest does not declare exact @hono/node-server 2.0.11 after pack',
-  );
-  assert(
-    !(await readdir(dirname(sdkManifestPath))).some((name) => name.startsWith(sdkManifestTempPrefix)),
-    'SDK manifest normalization left a temporary file behind',
-  );
-
-  const [pack] = JSON.parse(packOutput);
-  assert(pack?.filename, 'npm pack did not report a tarball filename');
-  const tarballPath = join(packDir, pack.filename);
-  const packedPaths = new Set(pack.files.map(({ path }) => path));
-  for (const requiredPath of [
-    'package.json',
-    'scripts/bundle-sdk-manifest.mjs',
-    'scripts/verify-package.mjs',
-    'node_modules/@modelcontextprotocol/sdk/package.json',
-    'node_modules/@hono/node-server/package.json',
-  ]) {
-    assert(packedPaths.has(requiredPath), `packed tarball is missing ${requiredPath}`);
+  const sourceSdkManifest = await readFile(sdkManifestPath);
+  const sourceSdk = JSON.parse(sourceSdkManifest.toString('utf8'));
+  assert(sourceSdk.name === '@modelcontextprotocol/sdk' && sourceSdk.version === '1.32.1', 'source SDK is not @modelcontextprotocol/sdk@1.32.1');
+  assert(sourceSdk.dependencies?.['@hono/node-server'] === '^1.19.9 || ^2.0.5', 'source SDK does not retain its native Hono range');
+  const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
+  for (const [path, version] of Object.entries({
+    'node_modules/@modelcontextprotocol/sdk': '1.32.1', 'node_modules/@hono/node-server': '2.1.3',
+    'node_modules/hono': '4.13.8', 'node_modules/axios': '1.20.0', 'node_modules/fast-uri': '3.1.8',
+    'node_modules/qs': '6.16.0', 'node_modules/brace-expansion': '5.0.12',
+  })) {
+    assert(lock.packages?.[path]?.version === version, 'committed lock has an unexpected version for ' + path);
   }
-  const packedScriptPaths = pack.files
-    .map(({ path }) => path)
-    .filter((path) => path.startsWith('scripts/'))
-    .sort();
-  assert(
-    JSON.stringify(packedScriptPaths) ===
-      JSON.stringify(['scripts/bundle-sdk-manifest.mjs', 'scripts/verify-package.mjs']),
-    `packed tarball exposes unexpected scripts: ${packedScriptPaths.join(', ')}`,
-  );
-  assert(
-    !pack.files.some(
-      ({ path }) =>
-        path.includes('node_modules/.cache') ||
-        path.includes('.backup') ||
-        path.includes(sdkManifestTempPrefix),
-    ),
-    'packed tarball contains lifecycle backup/cache/temp residue',
-  );
+  const bundledPaths = Object.entries(lock.packages).filter(([, entry]) => entry.inBundle).map(([path]) => path);
+  assert(bundledPaths.includes('node_modules/@modelcontextprotocol/sdk'), 'committed lock is missing the SDK bundle');
+  const pack = parsePackOutput(runNpm(npmCliPath, ['pack', '--json', '--pack-destination', packDir]));
+  assert((await readFile(sdkManifestPath)).equals(sourceSdkManifest), 'npm pack mutated the installed SDK manifest');
+  const tarballPath = join(packDir, pack.filename);
+  assertPackageFiles(pack.files, bundledPaths);
+  const packedPaths = new Set(pack.files.map(({ path }) => path));
+  for (const requiredPath of ['package.json', 'scripts/verify-package.mjs', 'src/cli.js', 'src/server.js',
+    'src/config/comprehensive-table-definitions.json', 'node_modules/@modelcontextprotocol/sdk/package.json',
+    'node_modules/@hono/node-server/package.json']) {
+    assert(packedPaths.has(requiredPath), 'packed tarball is missing ' + requiredPath);
+  }
 
   const consumerManifest = {
     name: 'happy-platform-mcp-package-consumer',
@@ -645,37 +653,24 @@ async function verifyPackage(resources) {
     assert(metadata.isFile(), `installed entrypoint target is not a file: ${target}`);
   }
 
-  assert(packedRoot.dependencies?.['@modelcontextprotocol/sdk'] === '1.29.0', 'packed root SDK dependency is not 1.29.0');
-  assert(packedRoot.dependencies?.axios === '1.18.1', 'packed root Axios dependency is not 1.18.1');
+  assert(packedRoot.dependencies?.['@modelcontextprotocol/sdk'] === '1.32.1', 'packed root SDK dependency is not 1.32.1');
+  assert(packedRoot.dependencies?.axios === '1.20.0', 'packed root Axios dependency is not 1.20.0');
   assert(packedRoot.engines?.node === '>=20', 'packed root Node engine is not >=20');
-  assert(
-    packedRoot.bundleDependencies?.length === 1 && packedRoot.bundleDependencies[0] === '@modelcontextprotocol/sdk',
-    'packed root bundleDependencies is not the audited SDK-only list',
-  );
-  assert(
-    packedRoot.scripts?.prepack === 'node scripts/bundle-sdk-manifest.mjs' &&
-      !Object.hasOwn(packedRoot.scripts, 'postpack') &&
-      !Object.hasOwn(packedRoot.scripts, 'postinstall') &&
-      packedRoot.scripts?.['extract-metadata'] === 'node scripts/extract-table-metadata.js' &&
-      packedRoot.scripts?.['test:package'] === 'node scripts/verify-package.mjs',
-    'packed lifecycle, metadata, or verifier scripts violate the package contract',
-  );
-  assert(
-    packedRoot.overrides?.['@modelcontextprotocol/sdk']?.['@hono/node-server'] === '2.0.11',
-    'packed root scoped SDK Hono override is not exact 2.0.11',
-  );
-  assert(
-    packedSdk.name === '@modelcontextprotocol/sdk' && packedSdk.version === '1.29.0',
-    'packed SDK manifest is not @modelcontextprotocol/sdk@1.29.0',
-  );
-  assert(
-    packedSdk.dependencies?.['@hono/node-server'] === '2.0.11',
-    'packed SDK manifest does not declare exact @hono/node-server 2.0.11',
-  );
-  assert(
-    packedHono.name === '@hono/node-server' && packedHono.version === '2.0.11',
-    'packed Hono is not @hono/node-server@2.0.11',
-  );
+  assert(packedRoot.bundleDependencies?.length === 1 && packedRoot.bundleDependencies[0] === '@modelcontextprotocol/sdk', 'packed root does not retain the SDK-only bundle');
+  assert(!['prepack', 'postpack', 'postinstall'].some((name) => Object.hasOwn(packedRoot.scripts ?? {}, name)), 'packed root contains an obsolete mutation lifecycle');
+  assert(packedRoot.scripts?.['test:package'] === 'node scripts/verify-package.mjs', 'packed root verifier script is missing');
+  assert(!Object.hasOwn(packedRoot.overrides ?? {}, '@modelcontextprotocol/sdk'), 'packed root retains an obsolete SDK override');
+  assert(packedSdk.name === '@modelcontextprotocol/sdk' && packedSdk.version === '1.32.1', 'packed SDK is not @modelcontextprotocol/sdk@1.32.1');
+  assert(packedSdk.dependencies?.['@hono/node-server'] === '^1.19.9 || ^2.0.5', 'packed SDK does not retain its native Hono range');
+  assert((await readFile(join(installedPackageRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json'))).equals(sourceSdkManifest), 'packaged SDK manifest differs from its unmodified installed source');
+  assert(packedHono.name === '@hono/node-server' && packedHono.version === '2.1.3', 'packed Hono is not @hono/node-server@2.1.3');
+  for (const directory of bundledPaths) {
+    const relativeManifest = directory + '/package.json';
+    assert(packedPaths.has(relativeManifest), 'packed tarball is missing bundled manifest ' + directory);
+    const manifestBytes = await readFile(join(installedPackageRoot, relativeManifest));
+    assert(JSON.parse(manifestBytes).version === lock.packages[directory].version, 'installed bundle differs from committed lock: ' + directory);
+    assert(manifestBytes.equals(await readFile(join(root, relativeManifest))), 'installed bundle manifest differs from packed source: ' + directory);
+  }
 
   const treeOutput = runNpm(
     npmCliPath,
@@ -689,9 +684,9 @@ async function verifyPackage(resources) {
       consumerDir,
     ),
   );
-  requireOnlyVersion(tree, '@modelcontextprotocol/sdk', '1.29.0');
-  requireOnlyVersion(tree, '@hono/node-server', '2.0.11');
-  requireOnlyVersion(tree, 'axios', '1.18.1');
+  requireOnlyVersion(tree, '@modelcontextprotocol/sdk', '1.32.1');
+  requireOnlyVersion(tree, '@hono/node-server', '2.1.3');
+  requireOnlyVersion(tree, 'axios', '1.20.0');
 
   const auditOutput = runNpm(npmCliPath, ['audit', '--audit-level=low'], consumerDir);
 
@@ -964,7 +959,7 @@ async function verifyPackage(resources) {
       serverName: resources.stdioClient.getServerVersion().name,
       toolCount: stdioTools.tools.length,
     },
-    sdkManifestSha256: sha256(normalizedSdkManifest),
+    sdkManifestSha256: sha256(sourceSdkManifest),
     size: pack.size,
     treeOutput,
     unpackedSize: pack.unpackedSize,
@@ -979,8 +974,8 @@ async function main() {
   );
 
   console.log(`PASS package tarball ${summary.filename}: ${summary.size} bytes compressed, ${summary.unpackedSize} bytes unpacked, ${summary.fileCount} files`);
-  console.log(`PASS installed SDK manifest normalized in place: sha256 ${summary.sdkManifestSha256}`);
-  console.log('PASS packed scripts limited to bundle-sdk-manifest.mjs and verify-package.mjs');
+  console.log('PASS SDK manifest bundled without mutation: sha256 ' + summary.sdkManifestSha256);
+  console.log('PASS tarball runtime file allow-list and secret/cache/backup/temp exclusions');
   console.log(
     `PASS installed entrypoints main ${summary.entrypoints.main}, bins ${Object.entries(summary.entrypoints.bins).map(([name, target]) => `${name}=${target}`).join(', ')}`,
   );

@@ -10,7 +10,7 @@
     "servicenow-mcp-server": "src/cli.js"
   },
   "scripts": {
-    "dev": "nodemon src/server.js",
+    "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "stdio": "node src/stdio-server.js",
     "inspector": "npx @modelcontextprotocol/inspector",
@@ -20,15 +20,14 @@
     "test:coverage": "NODE_OPTIONS=--experimental-vm-modules jest --coverage",
     "test:verbose": "NODE_OPTIONS=--experimental-vm-modules jest --verbose",
     "release": "./scripts/release.sh",
-    "prepack": "node scripts/bundle-sdk-manifest.mjs",
     "test:package": "node scripts/verify-package.mjs",
     "stats": "node scripts/usage-stats.mjs"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.5.2",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@napi-rs/keyring": "^1.3.0",
-    "axios": "1.18.1",
+    "axios": "1.20.0",
     "chokidar": "^4.0.3",
     "dotenv": "^16.6.1",
     "express": "^5.2.1",
@@ -37,24 +36,37 @@
   "bundleDependencies": [
     "@modelcontextprotocol/sdk"
   ],
+  "files": [
+    "src/**/*.js",
+    "src/config/comprehensive-table-definitions.json",
+    "src/config/table-definitions.json",
+    "src/config/prompts.md",
+    "config/servicenow-instances.json.example",
+    "assets/logo.svg",
+    "assets/logo-400x400.png",
+    "docs/*.md",
+    "scripts/verify-package.mjs",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE",
+    "NOTICE",
+    "server.json"
+  ],
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "jest": "^30.4.2",
-    "nodemon": "^3.1.14"
+    "jest": "^30.4.2"
   },
   "engines": {
     "node": ">=20"
   },
   "overrides": {
-    "@modelcontextprotocol/sdk": {
-      "@hono/node-server": "2.0.11"
+    "@istanbuljs/load-nyc-config": {
+      "js-yaml": "4.3.2"
     },
-    "brace-expansion": "5.0.9",
     "glob": "13.0.6",
     "minimatch": "10.2.6",
-    "test-exclude": "8.0.0",
-    "fast-uri": "3.1.8",
-    "qs": "6.16.0"
+    "test-exclude": "8.0.0"
   },
   "author": "Happy Technologies LLC",
   "license": "Apache-2.0",
