@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- ServiceNow docs tools (VULN-013, -014, -015, -016, -017) only fetch from `raw.githubusercontent.com/ServiceNow/ServiceNowDocs`, reject redirects, and only accept families and branches listed in its `main/llms.txt`. Document paths and sync links are validated before any cache lookup or request. Responses are streamed under size, line, aggregate and time limits, HTTP errors no longer echo response bodies, and cached documents are tied to the branch they came from.
+- **Breaking:** docs requests no longer send `GITHUB_TOKEN` or `docs.githubToken`. Remove these settings; authenticated docs retrieval is not supported. Existing local docs caches are discarded on first open and must be re-synced.
+
 ## 5.2.0 - 2026-08-28
 
 ### Added

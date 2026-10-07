@@ -14,9 +14,10 @@ describe('docs sqlite store', () => {
   test('indexes and searches chunks with FTS5', async () => {
     const store = await createDocsStore(path.join(tempDir, 'index.sqlite'));
     store.initialize();
-    store.upsertFamily({ name: 'australia', branch: 'australia', syncedAt: '2026-05-02T00:00:00Z' });
+    store.beginFamilySync({ name: 'australia', branch: 'australia' });
     store.replaceDocument({
       family: 'australia',
+      branch: 'australia',
       path: 'foo.md',
       sha: 'abc',
       title: 'Flow Designer',
@@ -40,12 +41,40 @@ describe('docs sqlite store', () => {
       path: 'foo.md',
       title: 'Flow Designer'
     });
+    store.close();
+  });
+
+  test('refuses documents whose ref differs from the family approved ref', async () => {
+    const store = await createDocsStore(path.join(tempDir, 'index.sqlite'));
+    store.initialize();
+    store.beginFamilySync({ name: 'australia', branch: 'australia' });
+
+    expect(() => store.replaceDocument({
+      family: 'australia', branch: 'zurich', path: 'x.md', sha: null, title: 'X', markdown: '# X'
+    }, [])).toThrow(/provenance mismatch/);
+    expect(store.getDocument({ family: 'australia', path: 'x.md' })).toBeUndefined();
+    store.close();
   });
 
   test('reports status', async () => {
     const store = await createDocsStore(path.join(tempDir, 'index.sqlite'));
     store.initialize();
     expect(store.status()).toMatchObject({ ftsAvailable: true, vectorAvailable: false });
+    store.close();
+  });
+
+  test('closes the database when vector initialization throws', async () => {
+    let closed = 0;
+    class FakeDatabase {
+      close() { closed += 1; }
+      loadExtension() { throw new Error('boom'); }
+    }
+
+    await expect(createDocsStore('ignored', {
+      Database: FakeDatabase,
+      vectorConfig: { enableVector: true, embeddingProvider: 'local', embedText: () => [], loadSqliteVec: async () => { throw new Error('load failed'); } }
+    })).rejects.toThrow(/load failed/);
+    expect(closed).toBe(1);
   });
 
   test('indexes and searches chunks with sqlite-vec when vector mode is enabled', async () => {
@@ -62,9 +91,10 @@ describe('docs sqlite store', () => {
       return;
     }
 
-    store.upsertFamily({ name: 'australia', branch: 'australia', syncedAt: '2026-05-02T00:00:00Z' });
+    store.beginFamilySync({ name: 'australia', branch: 'australia' });
     store.replaceDocument({
       family: 'australia',
+      branch: 'australia',
       path: 'vector.md',
       sha: 'abc',
       title: 'Flow Designer',

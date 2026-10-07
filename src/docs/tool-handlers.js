@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { getDocsConfig } from './config.js';
+import { assertDocsFamilyName, getDocsConfig, normalizeDocsDocumentPath } from './config.js';
 import { createServiceNowDocsClient } from './github-client.js';
 import { createDocsStore, getSqliteAvailability } from './sqlite-store.js';
 import { syncDocsFamily } from './sync.js';
@@ -17,18 +17,22 @@ function jsonContent(payload) {
   };
 }
 
-async function createStore(config) {
+async function withStore(config, operation) {
   await fs.mkdir(config.cacheDir, { recursive: true });
   const store = await createDocsStore(path.join(config.cacheDir, 'index.sqlite'), {
     vectorConfig: config
   });
-  store.initialize();
-  return store;
+  try {
+    store.initialize();
+    return await operation(store);
+  } finally {
+    store.close();
+  }
 }
 
 export async function handleDocsTool(name, args = {}, deps = {}) {
   const config = deps.config || getDocsConfig();
-  const client = deps.client || createServiceNowDocsClient({ githubToken: config.githubToken });
+  const client = deps.client || createServiceNowDocsClient();
 
   switch (name) {
     case 'SN-Docs-Families': {
@@ -52,20 +56,15 @@ export async function handleDocsTool(name, args = {}, deps = {}) {
         });
       }
 
-      const store = await createStore(config);
-      try {
-        return jsonContent({
-          cacheDir: config.cacheDir,
-          localIndexEnabled: config.localIndexEnabled,
-          sqliteAvailable: sqlite.available,
-          sqliteReason: sqlite.reason,
-          ...store.status(),
-          vectorAvailable: vector.available,
-          vectorReason: vector.reason
-        });
-      } finally {
-        store.close();
-      }
+      return withStore(config, (store) => jsonContent({
+        cacheDir: config.cacheDir,
+        localIndexEnabled: config.localIndexEnabled,
+        sqliteAvailable: sqlite.available,
+        sqliteReason: sqlite.reason,
+        ...store.status(),
+        vectorAvailable: vector.available,
+        vectorReason: vector.reason
+      }));
     }
 
     case 'SN-Docs-Sync': {
@@ -76,11 +75,9 @@ export async function handleDocsTool(name, args = {}, deps = {}) {
         });
       }
 
-      const family = args.family || DEFAULT_DOCS_FAMILY;
-      const branch = args.branch || family;
       const result = await syncDocsFamily({
-        family,
-        branch,
+        family: args.family || DEFAULT_DOCS_FAMILY,
+        branch: args.branch,
         cacheDir: config.cacheDir,
         client,
         vectorConfig: config
@@ -99,8 +96,7 @@ export async function handleDocsTool(name, args = {}, deps = {}) {
       }
 
       const family = args.family || DEFAULT_DOCS_FAMILY;
-      const store = await createStore(config);
-      try {
+      return withStore(config, (store) => {
         const results = store.search({
           query: args.query,
           family,
@@ -114,31 +110,28 @@ export async function handleDocsTool(name, args = {}, deps = {}) {
             ? 'Found locally indexed ServiceNow documentation results.'
             : 'No local docs results found. If this family has not been synced, run SN-Docs-Sync first.'
         });
-      } finally {
-        store.close();
-      }
+      });
     }
 
     case 'SN-Docs-Get': {
-      const family = args.family || DEFAULT_DOCS_FAMILY;
-      const documentPath = args.path;
+      // Validate before any cache or network use.
+      const family = assertDocsFamilyName(args.family || DEFAULT_DOCS_FAMILY);
+      const documentPath = normalizeDocsDocumentPath(args.path);
+
       if (config.localIndexEnabled) {
-        const store = await createStore(config);
-        try {
-          const document = store.getDocument({ family, path: documentPath });
-          if (document) {
-            return jsonContent({ source: 'local-cache', document });
-          }
-        } finally {
-          store.close();
+        const document = await withStore(config, (store) => store.getDocument({ family, path: documentPath }));
+        if (document) {
+          return jsonContent({ source: 'local-cache', document });
         }
       }
 
+      const { branch } = await client.resolveFamily(family);
       const markdown = await client.getMarkdown(family, documentPath);
       return jsonContent({
         source: 'github',
         document: {
           family,
+          branch,
           path: documentPath,
           markdown
         }

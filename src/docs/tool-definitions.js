@@ -15,8 +15,8 @@ export const docsToolDefinitions = [
     inputSchema: {
       type: 'object',
       properties: {
-        family: { type: 'string', description: 'Docs family to sync, such as australia. Defaults to australia.' },
-        branch: { type: 'string', description: 'Optional GitHub branch. Defaults to the same value as family.' }
+        family: { type: 'string', description: 'Docs family listed by SN-Docs-Families, such as australia. Defaults to australia.' },
+        branch: { type: 'string', description: 'Optional branch assertion. Must equal the ref approved for the family by the ServiceNowDocs main/llms.txt index; any other value is rejected.' }
       }
     }
   },
@@ -39,8 +39,8 @@ export const docsToolDefinitions = [
     inputSchema: {
       type: 'object',
       properties: {
-        family: { type: 'string', description: 'Docs family, such as australia. Defaults to australia.' },
-        path: { type: 'string', description: 'Markdown path inside the docs family.' }
+        family: { type: 'string', description: 'Docs family listed by SN-Docs-Families, such as australia. Defaults to australia.' },
+        path: { type: 'string', description: 'Relative .md path inside the family branch, such as markdown/<publication>/index.md. No "..", percent-encoding, query, fragment or absolute URLs.' }
       },
       required: ['path']
     }
