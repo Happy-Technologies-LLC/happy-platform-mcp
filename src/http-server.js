@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import express from 'express';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -46,13 +46,18 @@ const DNS_LABEL = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
 const MAX_AUTHORITY_LENGTH = 262;
 const LOOPBACK_NAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
+function isWellFormedToken(token) {
+  if (HEX_TOKEN.test(token)) {
+    return true;
+  }
+  return BASE64URL_TOKEN.test(token) && Buffer.from(token, 'base64url').toString('base64url') === token;
+}
+
 function validateApiToken(apiToken) {
   if (typeof apiToken !== 'string' || apiToken.length === 0) {
     throw new Error(`HAPPY_MCP_API_TOKEN is required for the HTTP transport; ${TOKEN_GUIDANCE}`);
   }
-  const canonicalBase64url = BASE64URL_TOKEN.test(apiToken)
-    && Buffer.from(apiToken, 'base64url').toString('base64url') === apiToken;
-  if (!HEX_TOKEN.test(apiToken) && !canonicalBase64url) {
+  if (!isWellFormedToken(apiToken)) {
     throw new Error(
       `HAPPY_MCP_API_TOKEN must be 32 random bytes encoded as 64 hex or 43 base64url characters; ${TOKEN_GUIDANCE}`
     );
@@ -323,16 +328,19 @@ function originAllowed(req, allowedOrigins) {
   return values.length === 1 && allowedOrigins.has(values[0]);
 }
 
-function bearerMatches(req, expectedDigest) {
+// Token format and length are public; the secret is >= 256 random bits, so a
+// constant-time comparison of the raw fixed-format bytes is sufficient.
+function bearerMatches(req, expectedToken) {
   const values = req.headersDistinct.authorization;
   if (!values || values.length !== 1) {
     return false;
   }
   const match = BEARER_CREDENTIALS.exec(values[0]);
-  if (!match) {
+  if (!match || !isWellFormedToken(match[1])) {
     return false;
   }
-  return timingSafeEqual(createHash('sha256').update(match[1]).digest(), expectedDigest);
+  const presented = Buffer.from(match[1]);
+  return presented.length === expectedToken.length && timingSafeEqual(presented, expectedToken);
 }
 
 function isWritable(res) {
@@ -439,7 +447,7 @@ export function createHttpApp({
   createMcpServer: createServer = createMcpServer,
   SSEServerTransport: Transport = SSEServerTransport
 } = {}) {
-  const expectedDigest = createHash('sha256').update(validateApiToken(apiToken)).digest();
+  const expectedToken = Buffer.from(validateApiToken(apiToken));
   const approvedHosts = new Set(parseAllowedHosts(allowedHosts));
   const approvedOrigins = new Set(parseAllowedOrigins(allowedOrigins));
   const limits = resolveLimits(limitOverrides);
@@ -481,7 +489,7 @@ export function createHttpApp({
     if (!originAllowed(req, approvedOrigins)) {
       return sendJson(res, 403, { error: 'Origin not allowed' });
     }
-    if (!bearerMatches(req, expectedDigest)) {
+    if (!bearerMatches(req, expectedToken)) {
       if (!authFailures.recordFailure(peer)) {
         return rejectRepeatedFailures(res, Math.ceil(limits.authFailureWindowMs / 1000));
       }
