@@ -4,6 +4,7 @@
 
 ### Security
 
+- Windows browser sign-in launches the default browser through the shell URL handler (`rundll32.exe url.dll,FileProtocolHandler <url>`, no shell, URL as one argument); `explorer.exe <url>` silently opened nothing on native Windows. The opener now only hands `http(s)` URLs to any OS handler. A `windows-latest` CI job runs the real sign-in through the system browser against a loopback fake IdP (VULN-004).
 - ServiceNow docs tools (VULN-013, -014, -015, -016, -017) only fetch from `raw.githubusercontent.com/ServiceNow/ServiceNowDocs`, reject redirects, and only accept families and branches listed in its `main/llms.txt`. Document paths and sync links are validated before any cache lookup or request. Responses are streamed under size, line, aggregate and time limits, HTTP errors no longer echo response bodies, and cached documents are tied to the branch they came from.
 - **Breaking:** docs requests no longer send `GITHUB_TOKEN` or `docs.githubToken`. Remove these settings; authenticated docs retrieval is not supported. Existing local docs caches are discarded on first open and must be re-synced.
 

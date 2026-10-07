@@ -16,6 +16,7 @@ scripts/*
 !scripts/verify-package.mjs
 !scripts/usage-stats.mjs
 !scripts/secret-scan.sh
+!scripts/oauth-signin-smoke.mjs
 
 # Logs
 logs/
