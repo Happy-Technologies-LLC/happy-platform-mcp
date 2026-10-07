@@ -165,7 +165,7 @@ SN-Execute-Background-Script({
 SN-Set-Update-Set({ update_set_sys_id: "abc123..." });
 ```
 
-Uses automated background script execution - takes ~2 seconds, fully scriptable!
+Uses the ServiceNow update-set picker and verifies the change in the same session (~1 second). If it cannot be verified, a fix script is written for manual execution instead of reporting success.
 
 ### SN-Set-Current-Application (FULLY AUTOMATED!)
 ```javascript

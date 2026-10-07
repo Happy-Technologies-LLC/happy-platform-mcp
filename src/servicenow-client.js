@@ -12,7 +12,6 @@ import { performAuthorizationCodeFlow } from './oauth-authorization-code.js';
 import { assertApprovedOAuthEndpoint, resolveOAuthEndpoints } from './oauth-endpoint-policy.js';
 import { createDefaultTokenStore, isValidTokenAccount } from './token-store.js';
 import { InstanceCredentialStore, parseCredentialRef } from './instance-credential-store.js';
-import { toJavaScriptLiteral } from './generated-scripts.js';
 import { MAX_URL_LENGTH, exceedsUrlLength, trimLeadingSlashes, trimTrailingSlashes } from './url-limits.js';
 import {
   BulkInputError,
@@ -1300,90 +1299,78 @@ export class ServiceNowClient {
     return { success: true };
   }
 
-  // Update set management via UI API endpoint
+  /**
+   * Open a UI session for the concourse pickers. The picker state is
+   * session-scoped and Node's axios keeps no cookie jar, so the session cookie
+   * from the landing page must be sent explicitly on every picker call;
+   * otherwise each call lands in a fresh session and a "successful" write is
+   * invisible to the next read.
+   */
+  async _openUiPickerSession() {
+    const authHeader = await this.getAuthHeader();
+    const client = axios.create({
+      baseURL: this.instanceUrl,
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'ServiceNow-MCP-Client/2.0'
+      },
+      maxRedirects: 5
+    });
+    const landing = await client.get('/', { headers: { 'Accept': 'text/html' } });
+    const raw = typeof landing.headers?.getSetCookie === 'function'
+      ? landing.headers.getSetCookie()
+      : landing.headers?.['set-cookie'];
+    const cookie = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+      .map((entry) => entry.split(';', 1)[0])
+      .filter(Boolean)
+      .join('; ');
+    const options = cookie ? { headers: { Cookie: cookie } } : {};
+    return {
+      authHeader,
+      get: (path) => client.get(path, options),
+      put: (path, body) => client.put(path, body, options)
+    };
+  }
+
+  // Update set management via the UI picker, verified in the same session.
   async setCurrentUpdateSet(updateSetSysId) {
-    try {
-      // First, get the update set name
-      const updateSet = await this.getRecord('sys_update_set', updateSetSysId);
-
-      // Create axios client with UI session
-      const authHeader = await this.getAuthHeader();
-      const axiosWithCookies = axios.create({
-        baseURL: this.instanceUrl,
-        headers: {
-          'Authorization': authHeader,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'ServiceNow-MCP-Client/2.0'
-        },
-        withCredentials: true,
-        maxRedirects: 5
-      });
-
-      // Establish session first
-      await axiosWithCookies.get('/', {
-        headers: { 'Accept': 'text/html' }
-      });
-
-      // Set the update set via UI API
-      const response = await axiosWithCookies.put(
-        '/api/now/ui/concoursepicker/updateset',
-        {
-          name: updateSet.name,
-          sysId: updateSetSysId
-        }
-      );
-
-      return {
-        success: true,
-        update_set: updateSet.name,
-        sys_id: updateSetSysId,
-        response: response.data
-      };
-    } catch (error) {
-      // If UI API fails, fall back to sys_trigger method
-      console.log('UI API failed, falling back to sys_trigger...');
-
-      const updateSet = await this.getRecord('sys_update_set', updateSetSysId);
-      // Untrusted values enter the script only as serialized data literals.
-      const script = `// Update user preference for current update set
-var updateSetId = ${toJavaScriptLiteral(String(updateSetSysId))};
-var updateSetName = ${toJavaScriptLiteral(String(updateSet.name ?? ''))};
-
-// Delete existing preference
-var delGR = new GlideRecord('sys_user_preference');
-delGR.addQuery('user', gs.getUserID());
-delGR.addQuery('name', 'sys_update_set');
-delGR.query();
-if (delGR.next()) {
-  delGR.deleteRecord();
-}
-
-// Create new preference
-var gr = new GlideRecord('sys_user_preference');
-gr.initialize();
-gr.user = gs.getUserID();
-gr.name = 'sys_update_set';
-gr.value = updateSetId;
-gr.insert();
-
-gs.info('✅ Update set changed to: ' + updateSetName);`;
-
-      const result = await this.executeScriptViaTrigger(script, `Set update set to: ${updateSet.name}`, true, { wait: false });
-      return {
-        success: true,
-        update_set: updateSet.name,
-        sys_id: updateSetSysId,
-        method: 'sys_trigger',
-        trigger_details: result
-      };
+    if (!isSysId(updateSetSysId)) {
+      throw new Error('update_set_sys_id must be a 32-character lowercase hexadecimal sys_id');
     }
+    const updateSet = await this.getRecord('sys_update_set', updateSetSysId);
+    const session = await this._openUiPickerSession();
+    const picker = '/api/now/ui/concoursepicker/updateset';
+
+    const previous = (await session.get(picker)).data?.result?.current || null;
+    const response = await session.put(picker, { name: updateSet.name, sysId: updateSetSysId });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const current = (await session.get(picker)).data?.result?.current;
+    if (current?.sysId !== updateSetSysId) {
+      throw new Error(`Update set verification failed: current is ${current?.sysId || 'unknown'}, expected ${updateSetSysId}`);
+    }
+
+    return {
+      success: true,
+      update_set: updateSet.name,
+      sys_id: updateSetSysId,
+      method: 'ui_api',
+      verified: true,
+      previous_update_set: previous ? { name: previous.name || null, sys_id: previous.sysId || null } : null,
+      response: response.data
+    };
   }
 
   async getCurrentUpdateSet() {
-    // Get the current update set preference
-    const response = await this.client.get(`/api/now/ui/preferences/sys_update_set`);
-    return response.data;
+    // /api/now/ui/preferences/sys_update_set answers HTTP 400 on current
+    // instances; the picker reports the session user's current set.
+    const session = await this._openUiPickerSession();
+    const current = (await session.get('/api/now/ui/concoursepicker/updateset')).data?.result?.current;
+    if (!current?.sysId) {
+      throw new Error('Current update set was not returned by the ServiceNow update-set picker');
+    }
+    return { result: { name: current.name || null, value: current.sysId, sys_id: current.sysId } };
   }
 
   async listUpdateSets(query = {}) {
@@ -1401,30 +1388,17 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
         throw new Error('app_sys_id is required');
       }
 
-      // Validate sys_id format (32-character hex string)
-      if (!/^[0-9a-f]{32}$/i.test(appSysId)) {
-        throw new Error(`Invalid sys_id format: ${appSysId}. Must be a 32-character hexadecimal string.`);
-      }
-
-      // Get previous application scope (for rollback information)
-      let previousScope = null;
-      try {
-        const prefResponse = await this.client.get('/api/now/ui/preferences/apps.current');
-        if (prefResponse.data && prefResponse.data.result) {
-          previousScope = {
-            sys_id: prefResponse.data.result.value || null,
-            name: prefResponse.data.result.display_value || null
-          };
-        }
-      } catch (prefError) {
-        // Previous scope query failed - not critical, continue
-        console.log('Could not retrieve previous scope:', prefError.message);
+      // Global is ServiceNow's reserved sys_scope identity "global"; custom
+      // applications are 32-hex sys_app records.
+      const isGlobal = appSysId === 'global';
+      if (!isGlobal && !isSysId(appSysId)) {
+        throw new Error(`Invalid sys_id format: ${appSysId}. Must be "global" or a 32-character lowercase hexadecimal sys_id.`);
       }
 
       // Get application details
       let app;
       try {
-        app = await this.getRecord('sys_app', appSysId);
+        app = await this.getRecord(isGlobal ? 'sys_scope' : 'sys_app', appSysId);
       } catch (appError) {
         if (appError.response && appError.response.status === 404) {
           throw new Error(`Application not found with sys_id: ${appSysId}. Please verify the sys_id is correct.`);
@@ -1432,47 +1406,37 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
         throw appError;
       }
 
-      // Create axios client with cookie jar
-      authHeader = await this.getAuthHeader();
-      const axiosWithCookies = axios.create({
-        baseURL: this.instanceUrl,
-        headers: {
-          'Authorization': authHeader,
-          'Content-Type': 'application/json',
-          'User-Agent': 'ServiceNow-MCP-Client/2.0'
-        },
-        withCredentials: true,
-        maxRedirects: 5
-      });
+      const session = await this._openUiPickerSession();
+      authHeader = session.authHeader;
+      const picker = '/api/now/ui/concoursepicker/application';
 
-      // Establish session first
-      await axiosWithCookies.get('/', {
-        headers: { 'Accept': 'text/html' }
-      });
-
-      // Set the application via UI API
-      const response = await axiosWithCookies.put(
-        '/api/now/ui/concoursepicker/application',
-        {
-          app_id: appSysId
+      // Previous scope, for rollback information (non-critical). Logged to
+      // stderr: stdout carries the stdio MCP protocol.
+      let previousScope = null;
+      try {
+        const previous = (await session.get(picker)).data?.result;
+        if (previous?.current) {
+          const entry = previous.list?.find((candidate) => (candidate.sysId || candidate.sys_id) === previous.current);
+          previousScope = { sys_id: previous.current, name: entry?.name || null };
         }
-      );
+      } catch (prefError) {
+        console.error('Could not retrieve previous scope:', credentialSafeErrorSummary(prefError, this, [authHeader]).message);
+      }
 
-      // Verify the scope was set correctly
+      const response = await session.put(picker, { app_id: appSysId });
+
+      // Verify in the same session the write used.
       let verified = false;
       let verificationError = null;
       try {
-        await new Promise(resolve => setTimeout(resolve, 500)); // Wait for preference to update
-        const verifyResponse = await this.client.get('/api/now/ui/preferences/apps.current');
-        if (verifyResponse.data && verifyResponse.data.result) {
-          const currentAppId = verifyResponse.data.result.value;
-          verified = (currentAppId === appSysId);
-          if (!verified) {
-            verificationError = `Verification failed: Current app is ${currentAppId}, expected ${appSysId}`;
-          }
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const currentAppId = (await session.get(picker)).data?.result?.current;
+        verified = currentAppId === appSysId;
+        if (!verified) {
+          verificationError = `Verification failed: Current app is ${currentAppId || 'unknown'}, expected ${appSysId}`;
         }
       } catch (verifyError) {
-        verificationError = `Verification query failed: ${verifyError.message}`;
+        verificationError = `Verification query failed: ${credentialSafeErrorSummary(verifyError, this, [authHeader]).message}`;
       }
 
       const executionTime = Date.now() - startTime;
@@ -2368,6 +2332,8 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
       }
     } finally {
       results.execution_time_ms = Date.now() - startTime;
+      // A batch that kept going past failures (transaction: false) did not succeed.
+      if (results.errors.length > 0) results.success = false;
     }
 
     return results;
@@ -2434,6 +2400,8 @@ gs.info('✅ Update set changed to: ' + updateSetName);`;
       }
     }
 
+    // A batch that kept going past failures (stop_on_error: false) did not succeed.
+    if (results.errors.length > 0) results.success = false;
     results.execution_time_ms = Date.now() - startTime;
     return results;
   }
