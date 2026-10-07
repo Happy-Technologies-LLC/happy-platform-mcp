@@ -1,12 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Security
-
-- ServiceNow docs tools (VULN-013, -014, -015, -016, -017) only fetch from `raw.githubusercontent.com/ServiceNow/ServiceNowDocs`, reject redirects, and only accept families and branches listed in its `main/llms.txt`. Document paths and sync links are validated before any cache lookup or request. Responses are streamed under size, line, aggregate and time limits, HTTP errors no longer echo response bodies, and cached documents are tied to the branch they came from.
-- **Breaking:** docs requests no longer send `GITHUB_TOKEN` or `docs.githubToken`. Remove these settings; authenticated docs retrieval is not supported. Existing local docs caches are discarded on first open and must be re-synced.
-
 ## 5.2.0 - 2026-08-28
 
 ### Added
@@ -55,6 +48,10 @@
 - Confine generated fix-script files to new direct children of `./scripts`, created with mode 0600 on POSIX (VULN-008). `SN-Create-Fix-Script` now rejects a `script_name` that is not 1-100 letters, digits, `.`, `_` or `-` starting with a letter or digit, or that is a Windows reserved device name (`CON`, `NUL`, `COM1`, `LPT1`, …). Every fix-script writer refuses a symlinked or non-directory `scripts` path and never follows or overwrites an existing target. **Breaking:** names containing spaces, path separators or other characters, and device names, must be renamed.
 - Serialize update-set names and sys_ids as JavaScript string literals in the `SN-Set-Update-Set` `sys_trigger` and manual fix-script fallbacks, and keep caller/instance-supplied descriptions and names out of generated block comments; they appear only as data literals (`updateSetName`, `fixScriptMetadata`) (VULN-009, VULN-010).
 - CI scans the full git history and the exact packed npm tarball (including bundled dependencies) with a pinned, checksum-verified gitleaks before merge and before npm publish. A `servicenow-env-credential` rule detects literal `SERVICENOW_PASSWORD`/`SERVICENOW_CLIENT_SECRET` values; only owner-confirmed rotated historical findings from #67 are baselined by exact fingerprint, so any new occurrence fails.
+- `SN-Natural-Language-Search` parsing is now bounded. `parseNaturalLanguage()` rejects non-string queries (`TypeError`) and queries over 2048 characters (`RangeError`, exported as `MAX_NATURAL_LANGUAGE_QUERY_LENGTH`) before any parsing. The overlapping backtracking regexes, which took seconds for 2048-character inputs and grew cubically with length, are replaced by a single-pass tokenizer with linear-time pattern matching. Captured names, search terms and dates can no longer contain `^`, line breaks or other control characters, so a value cannot inject extra encoded-query conditions or `ORDERBY` clauses.
+- Intentional natural-language parsing changes that come with the bounded parser: state words now produce valid conditions (`open` → `state=1^ORstate=2^ORstate=3`, `closed` → `state=7`, previously bare `1^OR…`/`7`); captured values end only at whole connector words (`assigned to John Andrews` is no longer cut at `And`); a value cannot be empty or start with `and`/`or`; matched text is removed where it matched rather than at its first occurrence; and `matchedPatterns[].pattern` is a stable pattern id (for example `priority-code`) instead of the regex source. Raw encoded queries are still passed through unchanged when no natural-language pattern matches.
+- ServiceNow docs tools (VULN-013, -014, -015, -016, -017) only fetch from `raw.githubusercontent.com/ServiceNow/ServiceNowDocs`, reject redirects, and only accept families and branches listed in its `main/llms.txt`. Document paths and sync links are validated before any cache lookup or request. Responses are streamed under size, line, aggregate and time limits, HTTP errors no longer echo response bodies, and cached documents are tied to the branch they came from.
+- **Breaking:** docs requests no longer send `GITHUB_TOKEN` or `docs.githubToken`. Remove these settings; authenticated docs retrieval is not supported. Existing local docs caches are discarded on first open and must be re-synced.
 
 ### Breaking
 

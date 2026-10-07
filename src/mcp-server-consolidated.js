@@ -13,7 +13,7 @@ import path from 'path';
 import { configManager, instanceToClientOptions } from './config-manager.js';
 import { ServiceNowClient } from './servicenow-client.js';
 import { syncScript, syncAllScripts, SCRIPT_TYPES } from './script-sync.js';
-import { parseNaturalLanguage, getSupportedPatterns } from './natural-language.js';
+import { MAX_NATURAL_LANGUAGE_QUERY_LENGTH, parseNaturalLanguage, getSupportedPatterns } from './natural-language.js';
 import {
   DATE_TIME_PATTERN,
   MAX_BATCH_OPERATIONS,
@@ -666,8 +666,8 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           properties: {
             query: {
               type: 'string',
-              maxLength: 2048,
-              description: 'Natural language query, at most 2048 characters (e.g., "high priority incidents assigned to me", "recent problems about database") (required)'
+              maxLength: MAX_NATURAL_LANGUAGE_QUERY_LENGTH,
+              description: `Natural language query, at most ${MAX_NATURAL_LANGUAGE_QUERY_LENGTH} characters (e.g., "high priority incidents assigned to me", "recent problems about database") (required)`
             },
             table: {
               type: 'string',
