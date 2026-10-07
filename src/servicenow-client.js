@@ -10,6 +10,7 @@ import { userInfo } from 'node:os';
 import { performAuthorizationCodeFlow } from './oauth-authorization-code.js';
 import { KeychainTokenStore } from './token-store.js';
 import { InstanceCredentialStore, parseCredentialRef } from './instance-credential-store.js';
+import { toJavaScriptLiteral } from './generated-scripts.js';
 
 const CREDENTIAL_ERROR_CODES = new Set([
   'CREDENTIAL_NOT_FOUND',
@@ -1183,8 +1184,10 @@ export class ServiceNowClient {
       console.log('UI API failed, falling back to sys_trigger...');
 
       const updateSet = await this.getRecord('sys_update_set', updateSetSysId);
+      // Untrusted values enter the script only as serialized data literals.
       const script = `// Update user preference for current update set
-var updateSetId = '${updateSetSysId}';
+var updateSetId = ${toJavaScriptLiteral(String(updateSetSysId))};
+var updateSetName = ${toJavaScriptLiteral(String(updateSet.name ?? ''))};
 
 // Delete existing preference
 var delGR = new GlideRecord('sys_user_preference');
@@ -1203,7 +1206,7 @@ gr.name = 'sys_update_set';
 gr.value = updateSetId;
 gr.insert();
 
-gs.info('✅ Update set changed to: ${updateSet.name}');`;
+gs.info('✅ Update set changed to: ' + updateSetName);`;
 
       const result = await this.executeScriptViaTrigger(script, `Set update set to: ${updateSet.name}`, true, { wait: false });
       return {

@@ -18,6 +18,14 @@ import { docsToolDefinitions } from './docs/tool-definitions.js';
 import { handleDocsTool } from './docs/tool-handlers.js';
 import { InstanceCredentialStore } from './instance-credential-store.js';
 import {
+  buildFixScriptFileContent,
+  fileTimestamp,
+  toFileNameFragment,
+  toJavaScriptLiteral,
+  validateFixScriptName,
+  writeFixScriptFile
+} from './generated-scripts.js';
+import {
   instanceToolDefinitions,
   isInstanceSetupTool,
   handleInstanceSetupTool
@@ -704,7 +712,8 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           properties: {
             script_name: {
               type: 'string',
-              description: 'Name for the script file (e.g., "link_ui_policy_actions") (required)'
+              description: 'Base name for the script file, without path or extension: 1-100 letters, digits, ".", "_" or "-", starting with a letter or digit, and not a Windows device name such as CON, NUL, COM1 or LPT1 (e.g., "link_ui_policy_actions") (required)',
+              pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$'
             },
             script_content: {
               type: 'string',
@@ -2038,46 +2047,36 @@ The update set has been set as your current update set. Refresh your ServiceNow 
 
             const updateSet = await requestClient.getRecord('sys_update_set', update_set_sys_id);
 
-            const fs = await import('fs/promises');
-            const path = await import('path');
-
             const scriptsDir = path.resolve(process.cwd(), 'scripts');
-            await fs.mkdir(scriptsDir, { recursive: true });
+            const fileName = `set_update_set_${toFileNameFragment(updateSet.name)}_${fileTimestamp()}.js`;
 
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const fileName = `set_update_set_${updateSet.name?.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}.js`;
-            const filePath = path.join(scriptsDir, fileName);
-
-            const scriptContent = `// Set current update set using GlideUpdateSet API
+            const fileContent = buildFixScriptFileContent({
+              title: 'Fix Script: Set Current Update Set',
+              createdAt: new Date().toISOString(),
+              notes: [
+                'Note: Automated methods failed. Manual execution required.',
+                '',
+                'ALTERNATIVE: Manual UI Method',
+                'Navigate to System Update Sets → Local Update Sets, open the update set',
+                'whose sys_id is in updateSetSysId below, and click "Make this my current set".'
+              ],
+              instructions: [
+                'Copy the script below this comment',
+                'Navigate to ServiceNow: System Definition → Scripts - Background',
+                'Paste the script',
+                'Click "Run script"',
+                'Verify output: "Update set changed to: " followed by the update set name',
+                'Refresh your browser to see the update set in the top bar'
+              ],
+              body: `// Set current update set using GlideUpdateSet API
+var updateSetSysId = ${toJavaScriptLiteral(String(update_set_sys_id))};
+var updateSetName = ${toJavaScriptLiteral(String(updateSet.name ?? ''))};
 var gus = new GlideUpdateSet();
-gus.set('${update_set_sys_id}');
-gs.info('✅ Update set changed to: ${updateSet.name}');`;
+gus.set(updateSetSysId);
+gs.info('✅ Update set changed to: ' + updateSetName);`
+            });
 
-            const fileContent = `/**
- * Fix Script: Set Current Update Set
- * Update Set: ${updateSet.name}
- * Update Set sys_id: ${update_set_sys_id}
- * Created: ${new Date().toISOString()}
- *
- * Note: Automated methods failed. Manual execution required.
- *
- * INSTRUCTIONS:
- * 1. Copy the script below (the GlideUpdateSet part)
- * 2. Navigate to ServiceNow: System Definition → Scripts - Background
- * 3. Paste the script
- * 4. Click "Run script"
- * 5. Verify output: "Update set changed to: ${updateSet.name}"
- * 6. Refresh your browser to see the update set in the top bar
- *
- * ALTERNATIVE: Manual UI Method
- * 1. Navigate to: System Update Sets → Local Update Sets
- * 2. Find: ${updateSet.name}
- * 3. Click "Make this my current set"
- */
-
-${scriptContent}`;
-
-            await fs.writeFile(filePath, fileContent, 'utf-8');
+            const filePath = await writeFixScriptFile(scriptsDir, fileName, fileContent);
 
             return {
               content: [{
@@ -2290,39 +2289,28 @@ The script will execute in ~1 second. You can monitor execution in:
             console.error('⚠️  Trigger method failed, creating fix script...', triggerError.message);
 
             // Fallback: Create fix script file
-            const fs = await import('fs/promises');
-            const path = await import('path');
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const script_name = `background_script_${timestamp}`;
-
             const scriptsDir = path.resolve(process.cwd(), 'scripts');
-            await fs.mkdir(scriptsDir, { recursive: true });
+            const fileName = `background_script_${fileTimestamp()}.js`;
 
-            const fileName = `${script_name}.js`;
-            const filePath = path.join(scriptsDir, fileName);
+            const fileContent = buildFixScriptFileContent({
+              title: 'Background Script (Manual Execution Required)',
+              createdAt: new Date().toISOString(),
+              notes: [
+                'Note: Direct execution failed due to authentication requirements.',
+                'This script must be executed manually in ServiceNow UI.'
+              ],
+              instructions: [
+                'Copy the script below',
+                'Navigate to ServiceNow: System Definition → Scripts - Background',
+                'Paste the script',
+                'Click "Run script"',
+                'Verify output in the output panel'
+              ],
+              metadata: { description },
+              body: script
+            });
 
-            const fileContent = `/**
- * Background Script (Manual Execution Required)
- * Created: ${new Date().toISOString()}
- * ${description ? `Description: ${description}` : ''}
- *
- * Note: Direct execution failed due to authentication requirements.
- * This script must be executed manually in ServiceNow UI.
- *
- * INSTRUCTIONS:
- * 1. Copy the script below
- * 2. Navigate to ServiceNow: System Definition → Scripts - Background
- * 3. Paste the script
- * 4. Click "Run script"
- * 5. Verify output in the output panel
- */
-
-${script}
-
-// End of script
-`;
-
-            await fs.writeFile(filePath, fileContent, 'utf-8');
+            const filePath = await writeFixScriptFile(scriptsDir, fileName, fileContent);
 
             return {
               content: [{
@@ -2346,41 +2334,32 @@ ${script.substring(0, 200)}${script.length > 200 ? '...' : ''}`
         case 'SN-Create-Fix-Script': {
           const { script_name, script_content, description, auto_delete = false } = args;
 
+          validateFixScriptName(script_name);
+          if (typeof script_content !== 'string') {
+            throw new Error('Invalid script_content: must be a string');
+          }
+
           console.error(`📝 Creating fix script: ${script_name}`);
 
-          // Import fs for file operations
-          const fs = await import('fs/promises');
-          const path = await import('path');
-
-          // Ensure /scripts directory exists
           const scriptsDir = path.resolve(process.cwd(), 'scripts');
-          await fs.mkdir(scriptsDir, { recursive: true });
+          const fileName = `${script_name}_${fileTimestamp()}.js`;
 
-          // Generate script file with header
-          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const fileName = `${script_name}_${timestamp}.js`;
-          const filePath = path.join(scriptsDir, fileName);
+          const fileContent = buildFixScriptFileContent({
+            title: 'Fix Script (Manual Execution Required)',
+            createdAt: new Date().toISOString(),
+            instructions: [
+              'Copy the entire script below',
+              'Navigate to ServiceNow: System Definition → Scripts - Background',
+              'Paste the script',
+              'Click "Run script"',
+              'Verify output in the output panel',
+              ...(auto_delete ? ['Delete this file after successful execution'] : [])
+            ],
+            metadata: { script_name, description },
+            body: script_content
+          });
 
-          const fileContent = `/**
- * Fix Script: ${script_name}
- * Created: ${new Date().toISOString()}
- * ${description ? `Description: ${description}` : ''}
- *
- * INSTRUCTIONS:
- * 1. Copy the entire script below
- * 2. Navigate to ServiceNow: System Definition → Scripts - Background
- * 3. Paste the script
- * 4. Click "Run script"
- * 5. Verify output in the output panel
- * ${auto_delete ? '6. Delete this file after successful execution' : ''}
- */
-
-${script_content}
-
-// End of script
-`;
-
-          await fs.writeFile(filePath, fileContent, 'utf-8');
+          const filePath = await writeFixScriptFile(scriptsDir, fileName, fileContent);
 
           return {
             content: [{

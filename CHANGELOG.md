@@ -27,6 +27,8 @@
 
 - Pin MCP SDK 1.32.1 and Axios 1.20.0, refresh affected transitive dependencies, and retain only development-tool overrides. The bundled SDK now supports Hono 2 natively, without a prepack manifest rewrite.
 - Restrict npm releases to an explicit runtime, configuration-example, documentation, asset, and consumer-verification allow-list. Docker installs production dependencies from the committed lockfile instead of re-resolving versions.
+- Confine generated fix-script files to new direct children of `./scripts`, created with mode 0600 on POSIX (VULN-008). `SN-Create-Fix-Script` now rejects a `script_name` that is not 1-100 letters, digits, `.`, `_` or `-` starting with a letter or digit, or that is a Windows reserved device name (`CON`, `NUL`, `COM1`, `LPT1`, …). Every fix-script writer refuses a symlinked or non-directory `scripts` path and never follows or overwrites an existing target. **Breaking:** names containing spaces, path separators or other characters, and device names, must be renamed.
+- Serialize update-set names and sys_ids as JavaScript string literals in the `SN-Set-Update-Set` `sys_trigger` and manual fix-script fallbacks, and keep caller/instance-supplied descriptions and names out of generated block comments; they appear only as data literals (`updateSetName`, `fixScriptMetadata`) (VULN-009, VULN-010).
 
 ### Changed
 
