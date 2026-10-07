@@ -531,12 +531,11 @@ skipped only when its directory does not exist. Tokens are not cleaned when the
 registry file is edited by hand; such a stale token is never used for a
 different identity.
 
-The bundled keychain binding (`@napi-rs/keyring` 1.x) reports a locked or denied
-delete the same as "no entry", so the CLI re-reads the entry and fails if it is
-still readable; a keychain that also hides entries on read cannot be checked —
-unlock it before removing. Keychain errors carry no code that separates "no
-keychain backend" from "locked", so an unavailable keychain always stops the
-command. On Linux without a Secret Service the binding falls back to the kernel
+The keychain binding (`@napi-rs/keyring` 2.1+) reports a locked, denied or
+inaccessible keychain as an error rather than "no entry", so a delete that
+cannot complete stops the command before the registry changes — unlock the
+keychain and retry. Keychain errors carry no code that separates "no keychain
+backend" from "locked", so an unavailable keychain always stops the command. On Linux without a Secret Service the binding falls back to the kernel
 keyring; where neither works (for example containers that block `keyctl`), the
 server could only have used the file store: delete the `token-*` files under
 `$XDG_CONFIG_HOME/happy-platform-mcp/` (or `~/.config/happy-platform-mcp/`) and

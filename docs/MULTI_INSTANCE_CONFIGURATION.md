@@ -392,10 +392,9 @@ selected, and print the stores cleaned. If either store reports an error, the
 command stops before changing the registry. On Windows the file store is skipped
 only when its directory does not exist. Export the same `XDG_CONFIG_HOME` as the
 server so the CLI cleans the right file-store directory. Hand edits to the
-registry file do not clean tokens. A locked keychain that hides entries cannot
-be verified (the keychain binding reports a failed delete as "no entry"; the CLI
-re-reads and fails if the entry is still readable), and an unavailable keychain
-always stops the command; see the README for the manual workaround. After a
+registry file do not clean tokens. A locked, denied or unavailable keychain is
+reported as an error and always stops the command (unlock it and retry); see the
+README for the manual workaround where no keychain works. After a
 rejected refresh token, browser sign-in starts again; there is no shared
 credential or plaintext fallback.
 
