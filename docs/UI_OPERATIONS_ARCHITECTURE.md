@@ -40,7 +40,7 @@ Through discovery of hidden UI endpoints, we've successfully automated:
 |-----------|--------|--------|-------------|
 | **Update Set Management** | `/api/now/ui/concoursepicker/updateset` | ✅ Working | ~2 seconds |
 | **Application Scope** | `/api/now/ui/concoursepicker/application` | ✅ Working | ~2 seconds |
-| **Background Scripts** | `sys_trigger` table (scheduled jobs) | ✅ Working | ~1 second |
+| **Background Scripts** | `/sys.scripts.do` processor (`sys_trigger` fallback) | ✅ Working | ~1 second |
 | **Workflow Creation** | Programmatic via REST API | ✅ Working | <1 second |
 | **CRUD Operations** | Standard REST API | ✅ Working | <1 second |
 | **Batch Operations** | REST API (43+ parallel tested) | ✅ Working | 2-5 seconds |
@@ -122,7 +122,7 @@ This architecture uses a **three-tier fallback strategy** for maximum reliabilit
                     ↓ (if fails)
 ┌─────────────────────────────────────────────┐
 │         Tier 2: Background Scripts          │
-│         • sys_trigger (automated)           │
+│         • /sys.scripts.do (rollback-able)   │
 │         • Complex GlideRecord operations    │
 │         • UI Policy Actions linking         │
 │         Performance: 1-2 seconds            │
@@ -245,7 +245,7 @@ This architecture uses a **three-tier fallback strategy** for maximum reliabilit
 │  • SN-Create-Record (REST API)                       │
 │  • SN-Set-Update-Set (UI API + fallback)             │
 │  • SN-Set-Current-Application (UI API)               │
-│  • SN-Execute-Background-Script (sys_trigger)        │
+│  • SN-Execute-Background-Script (sys.scripts.do)     │
 │  • SN-Create-Workflow (REST API)                     │
 │  • ... 38 more tools                                 │
 └──────────────────────────────────────────────────────┘
@@ -258,7 +258,7 @@ This architecture uses a **three-tier fallback strategy** for maximum reliabilit
 │  • createRecord() → REST API                         │
 │  • setCurrentUpdateSet() → UI API + fallback         │
 │  • setCurrentApplication() → UI API                  │
-│  • executeBackgroundScript() → sys_trigger           │
+│  • executeScriptViaProcessor() → /sys.scripts.do     │
 │  • createWorkflow() → REST API                       │
 └──────────────────────────────────────────────────────┘
                           ↓
@@ -267,8 +267,8 @@ This architecture uses a **three-tier fallback strategy** for maximum reliabilit
 ├──────────────────────────────────────────────────────┤
 │  REST API:     /api/now/table/*                      │
 │  UI APIs:      /api/now/ui/concoursepicker/*         │
-│  Trigger:      sys_trigger table                     │
-│  Background:   /sys.scripts.do (deprecated)          │
+│  Background:   /sys.scripts.do (primary)             │
+│  Trigger:      sys_trigger table (fallback)          │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -282,13 +282,15 @@ Current tool interface is **optimal and requires no changes**:
 // Generic approach (current implementation) ✅ RECOMMENDED
 SN-Execute-Background-Script({
   script: "gs.info('Hello');",
-  description: "Test script",
-  execution_method: "trigger"  // or "auto" for fallback
+  description: "Test script",       // recorded as the run's reason
+  record_for_rollback: true,        // default
+  scope: "global"                   // optional: app sys_id or scope name
 });
 
-// Already has intelligent fallback:
-// 1. Try sys_trigger (automated, 1 second)
-// 2. Fall back to fix script (manual, documented)
+// Fallback order:
+// 1. /sys.scripts.do processor (output, execution history, rollback context)
+// 2. sys_trigger, only when the processor provably did not run the script
+// 3. Fix script (manual, documented)
 ```
 
 **Why not add UI-specific tools?**

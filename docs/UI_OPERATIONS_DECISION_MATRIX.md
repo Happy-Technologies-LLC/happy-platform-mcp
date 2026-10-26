@@ -402,15 +402,18 @@ Flow Templates:
 - ❌ Doesn't work for API-driven changes
 - ✅ Instead: Use `SN-Set-Update-Set` (UI API endpoint)
 
-**4. Execute Scripts via /sys.scripts.do**
-- ❌ HTML output, hard to parse
-- ❌ Session management complexity
-- ✅ Instead: Use sys_trigger (automated, clean)
+**4. Execute Scripts via sys_trigger as the Primary Path (decision reversed)**
+- Originally `/sys.scripts.do` was rejected here (HTML output hard to parse, session management complexity) and `sys_trigger` was chosen instead.
+- Reversed in 2026-10: ServiceNow's own `now-sdk exec` (`@servicenow/sdk-api` 4.14.0, MIT) runs scripts through `/sys.scripts.do` and solved both problems, and that protocol was ported:
+  - HTML parsing: the `Script completed in scope …` line proves a result (the processor answers 200 even for auth failures), output is recognized by its scope-dependent prefix, error lines and the Script Execution History link are extracted.
+  - CSRF/session: `sysparm_ck` comes from the basic-auth user token or the session's `sys_user_session.csrf_token`, read and posted in one cookie session; the script POST is sent exactly once, never redirected or replayed after re-authentication.
+- `sys_trigger` jobs run in the scheduler's session: writes can land in the Default update set, no rollback context is recorded, and results come from syslog-marker polling.
+- ✅ Instead: `SN-Execute-Background-Script` default (`/sys.scripts.do`, caller's session, parsed result, rollback context); `sys_trigger` only as a fallback when the processor provably did not run the script, or with `wait: false`.
 
 **5. Manual Fix Scripts for Everything**
 - ❌ Requires manual copy-paste
 - ❌ Slow workflow
-- ✅ Instead: Use sys_trigger for automated execution
+- ✅ Instead: Use `SN-Execute-Background-Script` for automated execution
 
 ---
 

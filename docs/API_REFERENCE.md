@@ -2,7 +2,7 @@
 
 **Version:** 2.2
 **Last Updated:** 2026-04-19
-**Total Tools:** 53
+**Total Tools:** 60
 
 Complete reference for all MCP tools and resources available in the ServiceNow server.
 
@@ -22,8 +22,9 @@ Complete reference for all MCP tools and resources available in the ServiceNow s
 10. [Batch Operations](#batch-operations)
 11. [Service Catalog AI-Submission Tools](#service-catalog-ai-submission-tools)
 12. [ServiceNow Docs Search Tools](#servicenow-docs-search-tools)
-13. [MCP Resources](#mcp-resources)
-14. [Multi-Instance Support](#multi-instance-support)
+13. [ATF Testing Tools (CI/CD REST API)](#atf-testing-tools-cicd-rest-api)
+14. [MCP Resources](#mcp-resources)
+15. [Multi-Instance Support](#multi-instance-support)
 
 ---
 
@@ -61,6 +62,9 @@ Browse, inspect, and submit Service Catalog forms programmatically
 
 ### 📚 **ServiceNow Docs Search** (5 tools)
 Discover, sync, search, and retrieve official ServiceNowDocs markdown
+
+### 🧪 **ATF Testing (CI/CD REST API)** (5 tools)
+Run ATF tests and suites, poll progress, read results and logs
 
 ### 🔌 **Instance Management** (2 tools)
 Multi-instance configuration and switching
@@ -817,19 +821,42 @@ Update multiple records efficiently.
 
 ### SN-Execute-Background-Script
 
-Execute JavaScript server-side by creating a `sys_trigger` scheduled job that runs in ~1 second and auto-deletes after execution.
+Execute JavaScript server-side the way **System Definition → Scripts - Background** does. Requires the `admin` role. Protocol behavior is ported from `@servicenow/sdk-api` 4.14.0 (`now-sdk exec`, MIT).
 
 **Parameters:**
 ```javascript
 {
   "script": "gs.info('Hello from script');",
-  "description": "Test script execution",
-  "wait": true,
+  "description": "Backfill missing priority values",  // optional reason
+  "scope": "x_acme_app",          // optional: app sys_id, scope name, or "global"
+  "record_for_rollback": true,    // optional, default true
+  "wait": true,                   // optional, default true
   "instance": "dev"
 }
 ```
 
-`wait` defaults to `true`: the tool polls `syslog` (bounded by a `sys_created_on` lower bound and a timeout, ~15s by default) for a per-execution correlation marker the script wrapper emits via `gs.info`, then returns one of three outcomes:
+With `wait: true` (the default) the script is POSTed **once** to the instance's `/sys.scripts.do` processor as the authenticated user, in a dedicated cookie session that also supplies the `sysparm_ck` CSRF token (the basic-auth user token when the instance exposes one, otherwise that session's `sys_user_session.csrf_token`). The request carries `quota_managed_transaction=on` (the instance cancels a run still going after four hours), `record_for_rollback=on` unless `record_for_rollback: false`, and `sys_scope` when `scope` is given. `scope` is resolved against `sys_scope` first; an unknown scope is rejected before anything runs, because the processor silently runs an unrecognized scope in global. `description` is flattened to one line and appended as a trailing `// happy-platform-mcp: …` comment, so it is recorded with the script on its Script Execution History record.
+
+The processor answers HTTP 200 even for authentication failures, so the HTML response is parsed: the `Script completed in scope …` line proves a result, `*** Script: ` (global) or `<scope>: ` (scoped) lines are output, `Script execution error:` / `Script compilation error:` lines (or a scoped `SyntaxError:`) are errors. The response reports success or failure, output lines, errors, the scope it ran in, and instance-relative links to `/sys_script_execution_history.do?sys_id=…` and, when one was recorded, `/sys_rollback_context.do?sys_id=…` — the run's record changes can be rolled back from that rollback context. Script errors are returned with `isError: true`.
+
+Because the processor runs in the authenticated user's own session (not the scheduler's), that user's current update set is expected to capture tracked configuration writes and `scope` selects the application scope.
+
+The script request is never retried, redirected, or replayed after re-authentication. What happens when it does not return a script result:
+
+| Processor outcome | Script ran? | Action |
+|---|---|---|
+| HTTP 401 or 403 | No | Fall back to `sys_trigger` |
+| HTTP 404 (processor missing) | No | Fall back to `sys_trigger` |
+| 3xx redirect to a login/auth page | No | Fall back to `sys_trigger` |
+| HTTP 2xx login page, empty body, or `X-Is-Logged-In: false` | No | Fall back to `sys_trigger` |
+| Connection refused / DNS / host unreachable before sending | No | Fall back to `sys_trigger` |
+| Timeout, HTTP 5xx, other 4xx, non-login redirect, connection dropped after sending, unrecognized 2xx body | Unknown | No fallback; `isError: true` "unknown outcome" — check Script Execution History and do not re-run blindly |
+
+A fallback is refused when a non-global `scope` was requested (the `sys_trigger` path cannot honor it); the script is reported as not run. Every response states which method ran and, for a fallback, why.
+
+**`sys_trigger` path (the fallback, or `wait: false`):** the script runs as a `sys_trigger` scheduled job that fires in ~1 second and auto-deletes after execution. The job runs in the scheduler's own session, not the caller's: tracked configuration writes may be captured into the Default update set (verify `sys_update_xml` and move rows with `SN-Move-Records-To-Update-Set`), `GlideUpdateSet` calls in it cannot change the update set other tools or the UI use, and no rollback context is recorded. `scope` is only accepted with `wait: true`.
+
+As a fallback (`wait: true`), the tool polls `syslog` (bounded by a `sys_created_on` lower bound and a timeout, ~15s by default) for a per-execution correlation marker the script wrapper emits via `gs.info`, then returns one of three outcomes:
 
 - **`completed`** — the script ran without throwing; `output` carries whatever accompanied the success marker, and `logs` carries whatever the script itself logged via `gs.info`/`gs.print` while it ran.
 - **`failed`** — the script threw; `error` (and `stack`, when available) carry the failure, and `logs` still carries whatever the script logged before it threw. This is reported as an error, never as success.
@@ -837,9 +864,9 @@ Execute JavaScript server-side by creating a `sys_trigger` scheduled job that ru
 
 `logs` is recovered by bracketing the run with start/end markers and querying `syslog` for everything between the trigger's own `next_action` and the end marker's timestamp, capped at 100 lines (`logsTruncated: true` when more were emitted). A different execution's marker lines are always excluded (matched generically, not by exact text), but two genuinely unrelated scripts logging within the same one-second window on a busy instance are not distinguishable by timestamp alone and could in principle bleed non-marker content in — an inherent platform limitation, not a bug. If this run's own end marker is unexpectedly absent from that window (e.g. clock skew between this host and the instance shifted the bound past the script's real timestamps), the response carries `logsWindowUnverified: true` instead of silently returning an empty `logs` that would look identical to a script that printed nothing.
 
-Pass `wait: false` to skip polling and get back only trigger scheduling metadata (`trigger_sys_id`, `trigger_name`, `next_action`) immediately, matching the original fire-and-forget behavior (no `logs`, no `output`; see issue #40).
+Pass `wait: false` to skip the processor and polling and get back only trigger scheduling metadata (`trigger_sys_id`, `trigger_name`, `next_action`) immediately, matching the original fire-and-forget behavior (no `logs`, no `output`; see issue #40). If the `sys_trigger` record itself cannot be created, the tool writes a fix script for manual execution instead.
 
-**Returns:** `status` (`completed` | `failed` | `timeout` | `scheduled`), `success`, trigger details, and `output`/`error`/`logs` depending on outcome.
+**Returns:** processor path — success/failure, output lines, errors, scope, execution history and rollback context links; `sys_trigger` path — `completed` | `failed` | `timeout` | `scheduled` with trigger details and `output`/`error`/`logs` depending on outcome.
 
 ---
 
@@ -1113,9 +1140,9 @@ ServiceNow enforces rate limits on API calls:
    - Use `SN-Set-Instance` only to change the current session's implicit target for later calls
 
 8. **Background Scripts** for complex operations
-   - Use `SN-Execute-Background-Script` with trigger method
-   - Executes in ~1 second, fully automated
-   - Fallback to fix script if needed
+   - `SN-Execute-Background-Script` runs through `/sys.scripts.do` in your own session, with parsed output and a rollback context
+   - Falls back to a `sys_trigger` job only when the processor provably did not run the script
+   - Unknown outcome (timeout, 5xx): check Script Execution History, never re-run blindly
 
 9. **MCP Resources** for metadata discovery
    - Cache resource data to avoid repeated queries
@@ -1191,6 +1218,13 @@ ServiceNow enforces rate limits on API calls:
 ### Script Execution (2 tools)
 - `SN-Execute-Background-Script` - Automated script execution
 - `SN-Create-Fix-Script` - Generate script for manual execution
+
+### ATF Testing (5 tools)
+- `SN-Run-ATF-Test` - Run one ATF test and wait for pass/fail (executes on the instance)
+- `SN-Run-ATF-Suite` - Run an ATF test suite and wait for counts and per-test status (executes on the instance)
+- `SN-Get-CICD-Progress` - Read, or wait on, an sn_cicd progress tracker (read-only)
+- `SN-Get-ATF-Results` - Read a test or suite result (read-only)
+- `SN-Get-ATF-Test-Logs` - Read a test result's logs, optionally regex-filtered (read-only)
 
 ### Application Scope (1 tool)
 - `SN-Set-Current-Application` - Set current application scope (sys_app sys_id, or `global`), verified in the same session
@@ -1445,6 +1479,130 @@ Retrieves a ServiceNowDocs markdown document by family and path. Reads from the 
 
 ---
 
+## ATF Testing Tools (CI/CD REST API)
+
+These tools drive the Automated Test Framework through the ServiceNow CI/CD REST API (`/api/sn_cicd`). The sn_cicd protocol behavior is ported from `@servicenow/sdk-api` 4.14.0 (MIT).
+
+**Prerequisites:** the **CI/CD REST API** plugin (`com.glide.continuousdelivery`) must be active, and the ServiceNow user needs the `sn_cicd.sys_ci_automation` role (or `admin`). ATF execution must be enabled (`sn_atf.runner.enabled` = `true`). UI steps also need a scheduled client test runner or `run_in_cloud: true`. When the plugin is missing (HTTP 400/404 for an unknown URI, or a non-JSON page), tools fail with an error naming the plugin; on HTTP 403 they fail with an error naming the role. When a run tool gets HTTP 400 with a start-failure message (such as "Start ATF test Failed with the given test ID"), it fails with code `ATF_RUNNER_DISABLED`, which says ATF execution may be disabled and to check `sn_atf.runner.enabled`; the same message can also mean an id the instance cannot start.
+
+**Recommended workflow:**
+```
+SN-Run-ATF-Suite (wait: true)        # starts the run, polls, returns counts + per-test status
+  → on status "timeout": SN-Get-CICD-Progress { progress_id, wait: true }
+    → SN-Get-ATF-Results { result_id: progress.results.id, result_type: "suite" }
+      → SN-Get-ATF-Test-Logs { result_id: <test result sys_id>, pattern: "error" }
+```
+
+`SN-Run-ATF-Test` and `SN-Run-ATF-Suite` **execute tests on the instance** (tests may create, change, or roll back data). The other three tools only read.
+
+**Waiting:** with `wait: true` (the default for run tools) the tool polls `GET /api/sn_cicd/progress/{progress_id}` every `poll_interval_seconds` (default 2, range 1-30) for at most `timeout_seconds` (default 45, max 600). The default stays under the 60-second request timeout many MCP clients apply; the tool sends MCP progress notifications on every poll for clients that extend timeouts on progress. When the budget runs out the call returns `status: "timeout"` with the `progress_id` and the last progress state (not an error). The run keeps going on the instance, so continue with `SN-Get-CICD-Progress` and do not start it again. If the run started but its progress cannot be read, the call returns `status: "unknown"` with the `progress_id`.
+
+**Outcome:** the progress tracker decides pass/fail (`successful` for status 2; `failed` and `canceled` are returned with `isError: true`). Result details are fetched afterwards from `links.results.id`; if that fetch fails, `results_error` explains why and the tracker outcome still stands.
+
+---
+
+### SN-Run-ATF-Test
+
+Runs one ATF test: `POST /api/sn_cicd/tests/run_test?test_sys_id=…`.
+
+**Parameters:**
+```javascript
+{
+  "test_sys_id": "0123456789abcdef0123456789abcdef", // or test_name (exactly one)
+  "test_name": "Login works",          // resolved via sys_atf_test (name=…, "^" escaped); fails on 0 or 2+ matches
+  "run_in_cloud": false,               // Optional: ATF Cloud Runner for UI steps
+  "capture_node_logs": false,          // Optional: capture node (browser) logs
+  "wait": true,                        // Optional (default true)
+  "timeout_seconds": 45,               // Optional (1-600)
+  "poll_interval_seconds": 2,          // Optional (1-30)
+  "instance": "dev"
+}
+```
+
+**Returns:** `status` (`successful` | `failed` | `canceled` | `timeout` | `unknown` | `started`), `successful`, `progress_id`, `progress`, and `results` (`test_name`, `test_status`, `output`, `start_time`, `end_time`, `links.api` — the `/api/sn_cicd/tests/test/results/{id}` URL, `links.record` — the `sys_atf_test_result.do` record URL).
+
+---
+
+### SN-Run-ATF-Suite
+
+Runs a test suite: `POST /api/sn_cicd/testsuite/run`. A suite name is passed to the instance as `test_suite_name` and resolved there.
+
+**Parameters:**
+```javascript
+{
+  "test_suite_sys_id": "0123456789abcdef0123456789abcdef", // or test_suite_name (exactly one)
+  "test_suite_name": "Smoke Tests",
+  "browser_name": "chrome",            // Optional: any | chrome | firefox | edge | ie | safari
+  "browser_version": "120",            // Optional (≤100 chars)
+  "os_name": "Windows",                // Optional (≤100 chars)
+  "os_version": "11",                  // Optional (≤100 chars)
+  "run_in_cloud": false,               // Optional
+  "is_performance_run": false,         // Optional
+  "wait": true, "timeout_seconds": 45, "poll_interval_seconds": 2,
+  "instance": "dev"
+}
+```
+
+**Returns:** the same envelope as `SN-Run-ATF-Test`; `results` holds `test_suite_name`, `test_suite_status`, `counts` (`passed`, `failed`, `errored`, `skipped` from the `rolledup_test_*_count` fields), `child_suite_results`, `links`, and `tests` — per-test rows (`test_name`, `status`, `output`, times, `link`) read from `sys_atf_test_result` where `parent` is the suite result, capped at 200 (`tests_truncated`). If that table read fails, `tests_error` explains why.
+
+---
+
+### SN-Get-CICD-Progress
+
+Reads `GET /api/sn_cicd/progress/{progress_id}`. Read-only.
+
+**Parameters:**
+```javascript
+{
+  "progress_id": "0123456789abcdef0123456789abcdef",
+  "wait": false,                       // Optional: true polls until finished or timeout_seconds
+  "timeout_seconds": 45, "poll_interval_seconds": 2,
+  "instance": "dev"
+}
+```
+
+**Returns:** `state` (`pending` | `running` | `successful` | `failed` | `canceled`), raw `status`, `status_label`, `status_message`, `status_detail`, `error`, `percent_complete`, `finished`, and `results` (`id`, `url`) once available. With `wait: true`, `timed_out: true` marks a run that is still going.
+
+---
+
+### SN-Get-ATF-Results
+
+Reads a result. Read-only.
+
+**Parameters:**
+```javascript
+{
+  "result_id": "0123456789abcdef0123456789abcdef",
+  "result_type": "suite",              // "test" → GET /api/sn_cicd/tests/test/results/{id}
+                                       // "suite" → GET /api/sn_cicd/testsuite/results/{id} + sys_atf_test_result rows
+  "instance": "dev"
+}
+```
+
+**Returns:** the `results` object described under the run tools.
+
+---
+
+### SN-Get-ATF-Test-Logs
+
+Reads `GET /api/sn_cicd/tests/test/results/{result_id}/logs?sysparm_regex=…&sysparm_limit=…`. Read-only.
+
+**Parameters:**
+```javascript
+{
+  "result_id": "0123456789abcdef0123456789abcdef",
+  "pattern": "error|fail",             // Optional regex; the instance matches it case-insensitively
+  "limit": 100,                        // Optional (1-1000, default 100)
+  "instance": "dev"
+}
+```
+
+`pattern` is validated before any request: at most 256 characters, no control characters, must compile as a JavaScript regular expression, and a quantified group that is itself quantified (such as `(a+)+` or `(.*)*`) is rejected to avoid catastrophic backtracking. The instance's regex dialect may differ slightly from JavaScript.
+
+**Returns:** `result_id`, `pattern`, `limit`, and `logs` (the instance's response as-is). A response larger than 256 KiB is returned as a truncated `logs_text` string with `logs_truncated: true`. When the instance answers HTTP 404 "No logs found for test result …", the call succeeds with `logs: []` and a `note`: logs are captured only when the run used `capture_node_logs: true`. Other 404s stay errors.
+
+---
+
 ## MCP Resources (2 resources)
 
 - `servicenow://instance` - Instance info and capabilities
@@ -1464,7 +1622,7 @@ Retrieves a ServiceNowDocs markdown document by family and path. Reads from the 
 
 ## Summary
 
-**Total Tools:** 48
+**Total Tools:** 60
 **Total Resources:** 2
 **Supported Tables:** 160+
 **Instance Support:** Unlimited (via config)
@@ -1472,7 +1630,7 @@ Retrieves a ServiceNowDocs markdown document by family and path. Reads from the 
 **Key Features:**
 - Generic tools work on any ServiceNow table
 - Convenience tools for better UX (accept numbers/names instead of sys_ids)
-- Automated background script execution via sys_trigger
+- Automated background script execution via the `/sys.scripts.do` processor (with `sys_trigger` fallback)
 - Multi-instance support with easy switching
 - Batch operations with progress notifications
 - MCP resources for metadata discovery

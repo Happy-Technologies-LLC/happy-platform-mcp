@@ -45,6 +45,11 @@ import {
   isInstanceSetupTool,
   handleInstanceSetupTool
 } from './instance-tools.js';
+import {
+  NOT_RUN as SCRIPT_PROCESSOR_NOT_RUN,
+  UNKNOWN_OUTCOME as SCRIPT_PROCESSOR_UNKNOWN_OUTCOME
+} from './script-processor.js';
+import { createAtfToolDefinitions, handleAtfTool } from './cicd-atf.js';
 
 const INSTANCE_MANAGEMENT_TOOLS = new Set([
   'SN-Set-Instance',
@@ -699,7 +704,7 @@ export async function createMcpServer(serviceNowClient, options = {}) {
       },
       {
         name: 'SN-Execute-Background-Script',
-        description: 'Executes server-side JavaScript by creating a sys_trigger scheduled job that runs in ~1 second and auto-deletes after execution. Use for complex GlideRecord operations the CRUD tools cannot express. The job runs in the scheduler\'s own session, not the caller\'s, so it ignores the caller\'s current update set: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), and GlideUpdateSet calls in it cannot change the update set other tools or the UI use (use SN-Set-Update-Set). By default this waits for the script to finish and returns its outcome — "completed" (with captured output and gs.info/gs.print logs), "failed" (with the thrown error and any logs emitted before it), or "timeout" (marker never appeared within the budget; not a success) — by polling syslog for a correlation marker. Pass wait: false to skip polling and get back only trigger scheduling metadata immediately (see issue #40).',
+        description: 'Executes server-side JavaScript the way Scripts - Background does. Use for complex GlideRecord operations the CRUD tools cannot express. By default (wait: true) the script is POSTed once to the instance\'s /sys.scripts.do processor as the authenticated user, and the response is parsed into success/failure, output lines, errors, the scope it ran in, and links to its Script Execution History and rollback context. Requires the admin role. A rollback context is recorded by default (record_for_rollback), so the run\'s record changes can be rolled back from that context. The processor runs in the authenticated user\'s own session, so that user\'s current update set is expected to capture tracked configuration writes, and `scope` picks the application scope. The script request is never retried: a timeout, 5xx, or dropped connection is reported as an unknown outcome (check Script Execution History; do not re-run blindly). Only when the processor provably did not run the script (HTTP 401/403/404, a login page, or a connection error before sending) does it fall back to a sys_trigger job, and the response says so. The sys_trigger path (that fallback, or wait: false) runs in the scheduler\'s own session, not the caller\'s: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), GlideUpdateSet calls in it cannot change the update set other tools or the UI use (use SN-Set-Update-Set), and no rollback context is recorded. As a fallback it polls syslog for a correlation marker and reports "completed", "failed", or "timeout" (not a success); wait: false returns only trigger scheduling metadata immediately (see issue #40).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -709,11 +714,21 @@ export async function createMcpServer(serviceNowClient, options = {}) {
             },
             description: {
               type: 'string',
-              description: 'Description of what the script does (optional)'
+              description: 'Why the script is being run (optional). Flattened to one line and appended to the script as a trailing comment, so it is recorded on the run\'s Script Execution History record.'
+            },
+            scope: {
+              type: 'string',
+              maxLength: 100,
+              description: 'Application scope to run in: an application sys_id, a scope name (e.g. "x_acme_app"), or "global" (optional; the processor default applies when omitted). Unknown scopes are rejected before anything runs. Only supported with wait: true; a non-global scope also rules out the sys_trigger fallback.'
+            },
+            record_for_rollback: {
+              type: 'boolean',
+              description: 'Record a rollback context so the run\'s record changes can be reverted (default true). Applies to the /sys.scripts.do path only.',
+              default: true
             },
             wait: {
               type: 'boolean',
-              description: 'If true (default), block until the script reports completion (or the timeout elapses) and return its captured output/error. If false, return immediately with only trigger scheduling metadata (fire-and-forget).',
+              description: 'If true (default), run through /sys.scripts.do and return the parsed result. If false, schedule a sys_trigger job and return immediately with only trigger scheduling metadata (fire-and-forget).',
               default: true
             }
           },
@@ -748,6 +763,7 @@ export async function createMcpServer(serviceNowClient, options = {}) {
           required: ['script_name', 'script_content']
         }
       },
+      ...createAtfToolDefinitions(),
       {
         name: 'SN-Discover-Table-Schema',
         description: 'Deep schema introspection with ServiceNow-specific metadata including type codes, choice tables, and relationships',
@@ -2187,9 +2203,20 @@ Please verify:
         }
 
         case 'SN-Execute-Background-Script': {
-          const { script, description, wait = true } = args;
+          const { script, description, wait = true, scope, record_for_rollback = true } = args;
 
-          console.error(`🚀 Executing background script via sys_trigger...`);
+          if (typeof script !== 'string' || script.trim().length === 0) {
+            return { content: [{ type: 'text', text: '❌ script must be a non-empty string' }], isError: true };
+          }
+          if (typeof wait !== 'boolean' || typeof record_for_rollback !== 'boolean') {
+            return { content: [{ type: 'text', text: '❌ wait and record_for_rollback must be booleans' }], isError: true };
+          }
+          if (scope !== undefined && scope !== 'global' && !wait) {
+            return {
+              content: [{ type: 'text', text: '❌ scope is only supported when wait is true: the wait:false sys_trigger path cannot run a script in an application scope.' }],
+              isError: true
+            };
+          }
 
           const renderLogs = (result) => {
             if (!result.logs) {
@@ -2215,15 +2242,19 @@ Please verify:
             return `\n📜 Script logs:\n${result.logs.map(line => `  ${line}`).join('\n')}${truncatedNote}\n`;
           };
 
-          try {
-            // Primary method: sys_trigger (ONLY working method)
-            const result = await requestClient.executeScriptViaTrigger(script, description, true, { wait });
+          // sys_trigger path: wait:false (fire-and-forget) and the fallback
+          // when the processor provably did not run the script. `notice`
+          // explains a fallback at the top of every response.
+          const runViaTrigger = async (notice = '') => {
+            console.error(`🚀 Executing background script via sys_trigger...`);
+            try {
+              const result = await requestClient.executeScriptViaTrigger(script, description, true, { wait });
 
-            if (result.status === 'completed') {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `✅ Script executed successfully!
+              if (result.status === 'completed') {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `${notice}✅ Script executed successfully!
 
 ${description ? `Description: ${description}\n` : ''}
 📊 Trigger Details:
@@ -2234,16 +2265,16 @@ ${description ? `Description: ${description}\n` : ''}
 ${renderLogs(result)}
 📤 Output:
 ${JSON.stringify(result.output, null, 2)}`
-                }],
-                isError: false
-              };
-            }
+                  }],
+                  isError: false
+                };
+              }
 
-            if (result.status === 'failed') {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `❌ Script threw an error during execution — the script did NOT complete successfully.
+              if (result.status === 'failed') {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `${notice}❌ Script threw an error during execution — the script did NOT complete successfully.
 
 ${description ? `Description: ${description}\n` : ''}
 📊 Trigger Details:
@@ -2253,16 +2284,16 @@ ${description ? `Description: ${description}\n` : ''}
 ${renderLogs(result)}
 🧨 Error: ${result.error}
 ${result.stack ? `\nStack:\n${result.stack}` : ''}`
-                }],
-                isError: true
-              };
-            }
+                  }],
+                  isError: true
+                };
+              }
 
-            if (result.status === 'timeout') {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `⏱️ Timed out waiting for the script to report completion — this is NOT a success.
+              if (result.status === 'timeout') {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `${notice}⏱️ Timed out waiting for the script to report completion — this is NOT a success.
 
 ${description ? `Description: ${description}\n` : ''}
 📊 Trigger Details:
@@ -2275,16 +2306,16 @@ ${result.message}
 Check manually in:
 - System Logs → System Log → All (search for "${result.trigger_sys_id}" or the trigger name)
 - System Definition → Scheduled Jobs (filter by name: ${result.trigger_name})`
-                }],
-                isError: true
-              };
-            }
+                  }],
+                  isError: true
+                };
+              }
 
-            // result.status === 'scheduled' — caller passed wait: false, fire-and-forget.
-            return {
-              content: [{
-                type: 'text',
-                text: `✅ Script scheduled for execution via sys_trigger!
+              // result.status === 'scheduled' — caller passed wait: false, fire-and-forget.
+              return {
+                content: [{
+                  type: 'text',
+                  text: `${notice}✅ Script scheduled for execution via sys_trigger!
 
 ${description ? `Description: ${description}\n` : ''}
 📊 Trigger Details:
@@ -2298,41 +2329,41 @@ ${result.message}
 The script will execute in ~1 second. You can monitor execution in:
 - System Logs → System Log → All
 - System Definition → Scheduled Jobs (filter by name: ${result.trigger_name})`
-              }],
-              isError: false
-            };
-          } catch (triggerError) {
-            // Fallback: Create fix script if sys_trigger fails
-            console.error('⚠️  Trigger method failed, creating fix script...', triggerError.message);
+                }],
+                isError: false
+              };
+            } catch (triggerError) {
+              // Fallback: Create fix script if sys_trigger fails
+              console.error('⚠️  Trigger method failed, creating fix script...', triggerError.message);
 
-            // Fallback: Create fix script file
-            const scriptsDir = path.resolve(process.cwd(), 'scripts');
-            const fileName = `background_script_${fileTimestamp()}.js`;
+              // Fallback: Create fix script file
+              const scriptsDir = path.resolve(process.cwd(), 'scripts');
+              const fileName = `background_script_${fileTimestamp()}.js`;
 
-            const fileContent = buildFixScriptFileContent({
-              title: 'Background Script (Manual Execution Required)',
-              createdAt: new Date().toISOString(),
-              notes: [
-                'Note: Direct execution failed due to authentication requirements.',
-                'This script must be executed manually in ServiceNow UI.'
-              ],
-              instructions: [
-                'Copy the script below',
-                'Navigate to ServiceNow: System Definition → Scripts - Background',
-                'Paste the script',
-                'Click "Run script"',
-                'Verify output in the output panel'
-              ],
-              metadata: { description },
-              body: script
-            });
+              const fileContent = buildFixScriptFileContent({
+                title: 'Background Script (Manual Execution Required)',
+                createdAt: new Date().toISOString(),
+                notes: [
+                  'Note: Direct execution failed due to authentication requirements.',
+                  'This script must be executed manually in ServiceNow UI.'
+                ],
+                instructions: [
+                  'Copy the script below',
+                  'Navigate to ServiceNow: System Definition → Scripts - Background',
+                  'Paste the script',
+                  'Click "Run script"',
+                  'Verify output in the output panel'
+                ],
+                metadata: { description },
+                body: script
+              });
 
-            const filePath = await writeFixScriptFile(scriptsDir, fileName, fileContent);
+              const filePath = await writeFixScriptFile(scriptsDir, fileName, fileContent);
 
-            return {
-              content: [{
-                type: 'text',
-                text: `⚠️ Direct execution not available (requires UI session).
+              return {
+                content: [{
+                  type: 'text',
+                  text: `${notice}⚠️ Direct execution not available (requires UI session).
 Created fix script for manual execution: ${filePath}
 
 📋 To Execute Manually:
@@ -2343,9 +2374,90 @@ Created fix script for manual execution: ${filePath}
 
 Script Preview:
 ${script.substring(0, 200)}${script.length > 200 ? '...' : ''}`
-              }]
+                }]
+              };
+            }
+          };
+
+          if (!wait) {
+            return runViaTrigger();
+          }
+
+          console.error('🚀 Executing background script via /sys.scripts.do...');
+          let result;
+          try {
+            result = await requestClient.executeScriptViaProcessor(script, {
+              scope,
+              recordForRollback: record_for_rollback,
+              reason: description
+            });
+          } catch (error) {
+            if (error?.code === SCRIPT_PROCESSOR_NOT_RUN) {
+              if (scope !== undefined && scope !== 'global') {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `❌ The script was NOT run. The /sys.scripts.do processor did not run it (${error.reason}), and the sys_trigger fallback was not used because it cannot run a script in the requested scope '${scope}'.`
+                  }],
+                  isError: true
+                };
+              }
+              console.error(`⚠️  ${error.message}; falling back to sys_trigger`);
+              return runViaTrigger(`↪️ Method: sys_trigger fallback. The /sys.scripts.do processor did not run the script (${error.reason}), so it was handed to a sys_trigger job instead. That job runs in the scheduler's session, not yours: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), and no rollback context is recorded${record_for_rollback ? ' (record_for_rollback could not be honored)' : ''}.
+
+`);
+            }
+            if (error?.code === SCRIPT_PROCESSOR_UNKNOWN_OUTCOME) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `⚠️ Unknown outcome — the script may or may not have run (method: /sys.scripts.do processor; ${error.reason}).
+
+Do NOT re-run it blindly. First check System Definition → Script Execution History (/sys_script_execution_history_list.do?sysparm_query=ORDERBYDESCsys_created_on) for this run and its result${description ? ` (look for the reason comment "${description.replace(/\s+/g, ' ').trim().slice(0, 200)}")` : ''}. No fallback was attempted, because running a script that may already have executed a second time is unsafe.`
+                }],
+                isError: true
+              };
+            }
+            return {
+              content: [{ type: 'text', text: `❌ The script was NOT run: ${error.message}` }],
+              isError: true
             };
           }
+
+          const lines = [
+            result.ok
+              ? '✅ Script executed successfully.'
+              : '❌ Script reported errors — it did NOT complete successfully.',
+            '',
+            'Method: /sys.scripts.do processor (ran as the authenticated user, in that user\'s own session)',
+            ...(description ? [`Description: ${description}`] : []),
+            `Scope: ${result.scope}${result.scopeId && result.scopeId !== result.scope ? ` (${result.scopeId})` : ''}`,
+            '',
+            '📤 Output:',
+            ...(result.output.length > 0 ? result.output.map(line => `  ${line}`) : ['  (none)'])
+          ];
+          if (result.errors.length > 0) {
+            lines.push('', '🧨 Errors:', ...result.errors.map(message => `  - ${message}`));
+          }
+          if (result.warnings.length > 0) {
+            lines.push('', ...result.warnings.map(message => `⚠️ ${message}`));
+          }
+          lines.push('');
+          lines.push(result.links.executionHistory
+            ? `🧾 Execution history: ${result.links.executionHistory}`
+            : '🧾 Execution history: not reported by the instance');
+          if (result.links.rollbackContext) {
+            lines.push(`↩️ Rollback context: ${result.links.rollbackContext} — this run's record changes can be rolled back from this rollback context (or its Script Execution History record).`);
+          } else if (!result.recordForRollback) {
+            lines.push('↩️ Rollback: not recorded (record_for_rollback: false).');
+          } else {
+            lines.push('↩️ Rollback: no rollback context was found for this run, so there is nothing to roll back from here.');
+          }
+
+          return {
+            content: [{ type: 'text', text: lines.join('\n') }],
+            isError: !result.ok
+          };
         }
 
         case 'SN-Create-Fix-Script': {
@@ -2395,6 +2507,13 @@ ${script_content.substring(0, 200)}${script_content.length > 200 ? '...' : ''}`
             }]
           };
         }
+
+        case 'SN-Run-ATF-Test':
+        case 'SN-Run-ATF-Suite':
+        case 'SN-Get-CICD-Progress':
+        case 'SN-Get-ATF-Results':
+        case 'SN-Get-ATF-Test-Logs':
+          return await handleAtfTool(name, args, requestClient);
 
         case 'SN-Discover-Table-Schema': {
           const {

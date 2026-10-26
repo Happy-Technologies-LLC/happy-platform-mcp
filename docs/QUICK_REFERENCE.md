@@ -186,11 +186,11 @@ SN-Validate-Configuration({
 
 ### Script Execution
 ```javascript
-// Execute background script (AUTOMATED via sys_trigger!)
+// Execute background script (AUTOMATED via /sys.scripts.do; sys_trigger fallback)
 SN-Execute-Background-Script({
   script: "gs.info('Hello World');",
-  description: "Test script",
-  execution_method: "trigger"  // Default, most reliable
+  description: "Test script",   // recorded with the run
+  record_for_rollback: true     // default: run can be rolled back
 })
 
 // Create fix script (manual execution)
