@@ -31,6 +31,7 @@ export function createMockServiceNowClient() {
     listUpdateSets: jest.fn(),
 
     // Background script execution
+    executeScriptViaProcessor: jest.fn(),
     executeScriptViaTrigger: jest.fn(),
 
     // Schema discovery

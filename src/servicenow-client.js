@@ -26,6 +26,20 @@ import {
   validateUpdateSetMove,
   validateWorkflowSpec
 } from './bulk-limits.js';
+import {
+  PROCESSOR_DEFAULT_TIMEOUT_MS,
+  SCRIPT_HISTORY_TABLE,
+  SCRIPT_PROCESSOR_PATH,
+  ScriptProcessorNotRunError,
+  ScriptProcessorUnknownOutcomeError,
+  classifyProcessorOutcome,
+  classifyScope,
+  mergeSetCookies,
+  rollbackContextOf,
+  scriptExecutionLinks,
+  serializeCookies,
+  withReason
+} from './script-processor.js';
 
 const CREDENTIAL_ERROR_CODES = new Set([
   'CREDENTIAL_NOT_FOUND',
@@ -2042,6 +2056,222 @@ export class ServiceNowClient {
 
   async createReport(data) {
     return this.createRecord('sys_report', data);
+  }
+
+  // Execute a script through the /sys.scripts.do processor (the Scripts -
+  // Background page) in the caller's own session, with the result parsed
+  // from the processor's HTML. Protocol behavior ported from
+  // @servicenow/sdk-api 4.14.0, MIT (connector.js runScript).
+  //
+  // The script request is sent exactly once: it does not go through
+  // `this.client` (whose OAuth interceptor re-POSTs on 401), redirects are
+  // not followed, and nothing re-authenticates and replays it.
+  //
+  // Resolves when the processor returned a script result (`ok` false means
+  // the script reported errors). Rejects with ScriptProcessorNotRunError
+  // when the response proves the script never ran (a caller may then use
+  // another path), or ScriptProcessorUnknownOutcomeError when it may have
+  // run (never re-run automatically). Scope problems reject before sending.
+  async executeScriptViaProcessor(script, options = {}) {
+    const {
+      scope,
+      recordForRollback = true,
+      reason,
+      timeoutMs = PROCESSOR_DEFAULT_TIMEOUT_MS
+    } = options;
+    if (typeof script !== 'string' || script.trim().length === 0) {
+      throw new Error('script must be a non-empty string');
+    }
+    const generation = this._instanceGeneration;
+    const target = scope === undefined || scope === null ? null : await this._resolveScriptScope(scope);
+    const session = await this._openScriptProcessorSession(generation);
+    const form = new URLSearchParams({
+      script: withReason(script, reason),
+      sysparm_ck: session.sysparmCk,
+      runscript: 'Run script',
+      // Cancels the script if it is still running after four hours.
+      quota_managed_transaction: 'on',
+      ...(target ? { sys_scope: target.scopeId } : {}),
+      ...(recordForRollback ? { record_for_rollback: 'on' } : {})
+    });
+    this._assertCurrentGeneration(generation);
+
+    let outcome;
+    try {
+      const response = await session.post(SCRIPT_PROCESSOR_PATH, form.toString(), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Accept': '*/*',
+          ...(session.userToken ? { 'X-UserToken': session.userToken } : {})
+        },
+        timeout: timeoutMs,
+        responseType: 'text',
+        transformResponse: [(data) => data]
+      });
+      outcome = classifyProcessorOutcome({ response });
+    } catch (error) {
+      outcome = classifyProcessorOutcome({ error });
+    }
+    if (outcome.ran === false) throw new ScriptProcessorNotRunError(outcome.reason);
+    if (outcome.ran !== true) throw new ScriptProcessorUnknownOutcomeError(outcome.reason);
+
+    const { result } = outcome;
+    const warnings = [...result.warnings];
+    if (target?.inactive) {
+      warnings.push(`Application '${target.label}' is inactive.`);
+    }
+    if (target && target.label !== result.scope) {
+      warnings.push(`Requested scope '${target.label}' but the instance reported running in '${result.scope}'.`);
+    }
+    let rollbackContextId;
+    if (result.executionHistoryId) {
+      try {
+        rollbackContextId = await this._scriptRollbackContextId(result.executionHistoryId);
+      } catch (error) {
+        warnings.push('Could not read the rollback context for this run (reading script execution history needs the admin role).');
+        console.error('Could not read the script rollback context:', credentialSafeErrorSummary(error, this).message);
+      }
+    }
+    const ids = {
+      executionHistoryId: result.executionHistoryId ?? null,
+      rollbackContextId: rollbackContextId ?? null
+    };
+    return {
+      ok: result.ok,
+      status: result.ok ? 'completed' : 'failed',
+      method: 'processor',
+      output: result.output,
+      errors: result.errors,
+      log: result.log,
+      warnings,
+      ...(result.truncated ? { truncated: true } : {}),
+      scope: result.scope,
+      scopeId: target ? target.scopeId : (result.scope === 'global' ? 'global' : null),
+      recordForRollback: Boolean(recordForRollback),
+      ...ids,
+      links: scriptExecutionLinks(ids)
+    };
+  }
+
+  // Resolves 'global', an application sys_id or a scope name to the sys_id
+  // the processor needs. The processor silently runs an unrecognized
+  // sys_scope in global, so an unknown scope is an error here.
+  async _resolveScriptScope(scope) {
+    const requested = classifyScope(scope);
+    if (requested.kind === 'global') {
+      return { scopeId: 'global', label: 'global', inactive: false };
+    }
+    const records = await this.getRecords('sys_scope', {
+      sysparm_query: requested.kind === 'sys_id' ? `sys_id=${requested.value}` : `scope=${requested.value}`,
+      sysparm_fields: 'sys_id,scope,name,active',
+      sysparm_limit: 2
+    });
+    if (!Array.isArray(records) || records.length === 0) {
+      throw new Error(`No application found with scope '${scope}' on the instance`);
+    }
+    if (records.length > 1) {
+      throw new Error(`Multiple applications found with scope '${scope}'; resolve the duplicate installations first`);
+    }
+    const [app] = records;
+    if (!isSysId(app?.sys_id) && app?.sys_id !== 'global') {
+      throw new Error(`The instance returned no usable sys_id for scope '${scope}'`);
+    }
+    return {
+      scopeId: app.sys_id,
+      label: app.scope || requested.value,
+      inactive: app.active === false || app.active === 'false'
+    };
+  }
+
+  async _scriptRollbackContextId(executionHistoryId) {
+    const records = await this.getRecords(SCRIPT_HISTORY_TABLE, {
+      sysparm_query: `sys_id=${executionHistoryId}`,
+      sysparm_fields: 'rollback_context',
+      sysparm_limit: 1
+    });
+    return Array.isArray(records) ? rollbackContextOf(records[0]) : undefined;
+  }
+
+  // One cookie session for the CSRF lookup and the script POST: a request
+  // without the session cookie lands in a brand-new session, so a CSRF
+  // token read in one could never match another. No interceptors, no
+  // redirects, every status returned to the caller.
+  async _openScriptProcessorSession(generation) {
+    const authHeader = await this.getAuthHeader(generation);
+    const client = axios.create({
+      baseURL: this.instanceUrl,
+      headers: {
+        'Authorization': authHeader,
+        'User-Agent': 'ServiceNow-MCP-Client/2.0'
+      },
+      maxRedirects: 0,
+      timeout: 30000,
+      validateStatus: () => true
+    });
+    const jar = new Map();
+    const request = async (config) => {
+      const cookie = serializeCookies(jar);
+      const response = await client.request({
+        ...config,
+        headers: { ...config.headers, ...(cookie ? { Cookie: cookie } : {}) }
+      });
+      mergeSetCookies(jar, response.headers);
+      return response;
+    };
+
+    // sysparm_ck, as now-sdk's sysParmCk resolves it: the user token the
+    // instance exposes for a basic-auth session (x-usertoken-response on
+    // angular.do get_user), else the session's sys_user_session.csrf_token,
+    // else '' rather than aborting.
+    let userToken = '';
+    if (this.authType === 'basic') {
+      try {
+        const response = await request({ method: 'post', url: '/angular.do', params: { sysparm_type: 'get_user' } });
+        const token = response.headers?.['x-usertoken-response'];
+        userToken = typeof token === 'string' ? token : '';
+      } catch {
+        userToken = '';
+      }
+    }
+    let sysparmCk = userToken;
+    if (!sysparmCk) {
+      try {
+        sysparmCk = await this._lookupSessionCsrfToken(request, jar);
+      } catch {
+        sysparmCk = '';
+      }
+    }
+    return {
+      sysparmCk,
+      userToken,
+      post: (path, data, config = {}) => request({ ...config, method: 'post', url: path, data })
+    };
+  }
+
+  async _lookupSessionCsrfToken(request, jar) {
+    const current = await request({ method: 'get', url: '/api/now/ui/user/current_user', headers: { 'Accept': 'application/json' } });
+    if (current.status < 200 || current.status >= 300) return '';
+    // sys_user_session.id is the glide_session_store cookie value: filtering
+    // by it targets this exact session rather than the user's most recent one.
+    const sessionId = jar.get('glide_session_store');
+    const userName = current.data?.result?.user_name;
+    let query;
+    if (typeof sessionId === 'string' && /^[A-Za-z0-9]+$/.test(sessionId)) {
+      query = `id=${sessionId}`;
+    } else if (typeof userName === 'string' && userName && !/[\^\r\n]/.test(userName)) {
+      query = `name=${userName}^ORDERBYDESClast_accessed`;
+    } else {
+      return '';
+    }
+    const session = await request({
+      method: 'get',
+      url: '/api/now/table/sys_user_session',
+      params: { sysparm_fields: 'csrf_token,id', sysparm_query: query, sysparm_limit: '1' },
+      headers: { 'Accept': 'application/json' }
+    });
+    if (session.status < 200 || session.status >= 300) return '';
+    const token = session.data?.result?.[0]?.csrf_token;
+    return typeof token === 'string' ? token : '';
   }
 
   // Execute script via sys_trigger (scheduled job that runs immediately).

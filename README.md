@@ -303,6 +303,7 @@ await Promise.all([
 | **Natural Language** | 1 | Query using plain English |
 | **Update Sets** | 6 | Set, list, move, clone, inspect update sets |
 | **Scripts** | 2 | Execute background scripts, create fix scripts |
+| **ATF Testing** | 5 | Run ATF tests and suites via the CI/CD REST API, poll progress, read results and logs |
 | **Script Sync** | 3 | Sync scripts with local files, watch mode |
 | **Workflows** | 4 | Create workflows, activities, transitions |
 | **Batch** | 2 | Batch create/update across tables |
@@ -340,6 +341,11 @@ SN-Catalog-Get-Item
 { "sys_id": "<catalog_item_sys_id>" }
 SN-Catalog-Submit
 { "sys_id": "<catalog_item_sys_id>", "variables": { "requested_for": "jsmith", "justification": "Project X" } }
+
+SN-Run-ATF-Suite
+{ "test_suite_name": "Smoke Tests", "timeout_seconds": 45 }
+SN-Get-ATF-Test-Logs
+{ "result_id": "<sys_atf_test_result sys_id>", "pattern": "error|fail" }
 
 SN-Docs-Families
 {}

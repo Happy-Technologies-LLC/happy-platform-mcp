@@ -64,7 +64,7 @@
 - `SN-Set-Current-Application` - Set current application scope (AUTOMATED!)
 
 ### Script Execution
-- `SN-Execute-Background-Script` - Execute server-side JavaScript (via sys_trigger)
+- `SN-Execute-Background-Script` - Execute server-side JavaScript (via `/sys.scripts.do`, `sys_trigger` fallback)
 - `SN-Create-Fix-Script` - Generate script for manual execution
 
 ### Script Synchronization
@@ -85,6 +85,13 @@
 - `SN-Create-Activity` - Add activity to workflow
 - `SN-Create-Transition` - Link workflow activities
 - `SN-Publish-Workflow` - Publish workflow version
+
+### ATF Testing (CI/CD REST API)
+- `SN-Run-ATF-Test` - Run one ATF test and wait for pass/fail (executes on the instance)
+- `SN-Run-ATF-Suite` - Run an ATF test suite and wait for counts and per-test status (executes on the instance)
+- `SN-Get-CICD-Progress` - Read or wait on an sn_cicd progress tracker
+- `SN-Get-ATF-Results` - Read a test or suite result
+- `SN-Get-ATF-Test-Logs` - Read a test result's logs, optionally regex-filtered
 
 ### Advanced Tools
 - `SN-Validate-Configuration` - Validate catalog item config
@@ -136,27 +143,28 @@ SN-Query-Table({ table_name: "incident", limit: 10, instance: "prod" })
 
 ---
 
-## 🎉 BREAKTHROUGH: Automated Background Script Execution
+## Automated Background Script Execution
 
-**As of 2025-09-29**, discovered automated background script execution via `sys_trigger` table:
+Background scripts run through the instance's `/sys.scripts.do` processor (the Scripts - Background page), ported from ServiceNow's `now-sdk exec` (`@servicenow/sdk-api` 4.14.0, MIT). `sys_trigger` is only a fallback.
 
 ### SN-Execute-Background-Script (FULLY AUTOMATED!)
 ```javascript
 SN-Execute-Background-Script({
   script: "gs.info('Hello from automated script');",
-  description: "Test automated execution"
+  description: "Why this script runs",  // recorded with the run
+  scope: "global",                      // optional: app sys_id, scope name, or "global"
+  record_for_rollback: true             // default
 });
 ```
 
-**How it works:**
-1. Creates scheduled job in `sys_trigger` table
-2. Executes in ~1 second
-3. Auto-deletes trigger after execution
-4. No manual copy-paste required!
-5. By default (`wait: true`), polls `syslog` for a correlation marker the script wrapper emits and returns `status: 'completed'` (with `output` and `logs`), `status: 'failed'` (with the thrown error and any `logs` emitted before it — never reported as success), or `status: 'timeout'` (marker never showed up within ~15s; no `logs`; also never reported as success)
-6. `logs` captures whatever the script itself logged via `gs.info`/`gs.print` while it ran, recovered from a bounded `syslog` time window (capped at 100 lines) — a time-window correlation, not perfect isolation, but no longer requires a manual follow-up `syslog` query
+**How it works (default, `wait: true`):**
+1. POSTs the script once to `/sys.scripts.do` as the authenticated user (admin role required), in a cookie session that supplies the CSRF token
+2. Runs in that user's own session, so their current update set is expected to capture tracked writes, and `scope` picks the application scope
+3. Returns success/failure, output lines, errors, the scope, and links to the Script Execution History record and rollback context — the run can be rolled back from that rollback context
+4. Never retries the script request. Timeout, 5xx, or a dropped connection = **unknown outcome**: check Script Execution History, do not re-run blindly
+5. Falls back to a `sys_trigger` job only when the processor provably did not run the script (HTTP 401/403/404, login page, connection refused before sending); the response says so
 
-**Note:** Pass `wait: false` for the old fire-and-forget behavior — returns immediately with only trigger scheduling metadata, no `output`/`logs` captured (see issue #40).
+**`sys_trigger` path (fallback, or `wait: false`):** a scheduled job that runs in ~1 second in the scheduler's session, so writes may land in the Default update set and no rollback context is recorded. As a fallback it polls `syslog` for a correlation marker and returns `completed` / `failed` / `timeout`; `wait: false` returns only trigger scheduling metadata (see issue #40).
 
 ### SN-Set-Update-Set (FULLY AUTOMATED!)
 ```javascript

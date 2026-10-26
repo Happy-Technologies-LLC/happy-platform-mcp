@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Five ATF tools on the ServiceNow CI/CD REST API (`sn_cicd`, plugin `com.glide.continuousdelivery`): `SN-Run-ATF-Test` and `SN-Run-ATF-Suite` (by sys_id or name; wait with bounded polling and progress notifications, or return a progress id), `SN-Get-CICD-Progress`, `SN-Get-ATF-Results`, and `SN-Get-ATF-Test-Logs` (optional bounded regex filter). Errors name the missing plugin (`CICD_PLUGIN_INACTIVE`), role (`CICD_ROLE_MISSING`, `sn_cicd.sys_ci_automation`), or a disabled ATF runner (`ATF_RUNNER_DISABLED`, property `sn_atf.runner.enabled`). Run tools execute tests on the instance.
+
+### Changed
+
+- `SN-Execute-Background-Script` now runs scripts through the `/sys.scripts.do` processor (the Scripts - Background page) as the authenticated user, the way `now-sdk exec` does. It returns parsed output and errors, the scope the script ran in, and links to its Script Execution History record and rollback context. New parameters: `record_for_rollback` (default `true`), so a run's record changes can be rolled back, and `scope` (`global`, an application scope name, or sys_id). `description` is recorded as a reason comment on the execution history. The script is sent once and never retried. The `sys_trigger` job is used only when the processor provably did not run the script (401/403/404, a login page, a `not authorized` refusal, or a connection refused before sending), and never for a non-global scope. A timeout, 5xx, or unrecognized response reports an unknown outcome and points to Script Execution History instead of re-running. `wait: false` keeps the previous fire-and-forget `sys_trigger` behavior. Requires the admin role.
+
 ### Security
 
 - Update dependencies for new advisories: MCP SDK 1.32.2 (bundled), Hono 4.13.14 ([GHSA-5r4p-p66f-jhc7](https://github.com/advisories/GHSA-5r4p-p66f-jhc7)), fast-uri 3.1.9, ip-address 10.7.5, body-parser 2.4.0 ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)), follow-redirects 1.16.2 ([GHSA-q3jh-wrc6-jgq8](https://github.com/advisories/GHSA-q3jh-wrc6-jgq8), [GHSA-8r9p-f939-6h3c](https://github.com/advisories/GHSA-8r9p-f939-6h3c)), and Zod 4.6.7 ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)). Hono, fast-uri, ip-address, body-parser and Zod ship inside the npm tarball through the bundled SDK, so users need this release to receive the fixes.
