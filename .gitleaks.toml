@@ -61,3 +61,11 @@ regexes = ['''^(?i:your[-_]token)$''']
 description = "Public jwt.io sample token used as a test vector by zod, shipped inside the bundled SDK dependency tree"
 targetRules = ["jwt"]
 paths = ['''(?:^|/)bundled-dependencies/zod/src/v4/mini/tests/string\.test\.ts$''']
+
+[[allowlists]]
+description = "Public URL-parsing test vector in zod 4 classic tests (query value, not a credential), shipped inside the bundled SDK dependency tree"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)bundled-dependencies/zod/src/v4/classic/tests/string\.test\.ts$''']
+regexes = ['''^NUXOmHqWNVTapJkJJHw8BfD155AuqhH_qju_5fNmQ4ZHV7u8$''']
