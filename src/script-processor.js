@@ -90,11 +90,24 @@ function safeCodePoint(code, fallback) {
   return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : fallback;
 }
 
-// Output is returned as plain text, never rendered. Tags are removed, then any
-// leftover `<` from malformed markup; literal `<` in script output arrives
-// entity-encoded and is restored by decodeEntities afterwards.
+// Output is returned to the MCP client as plain text, never rendered as HTML.
+// A single left-to-right scan drops everything from `<` through the next `>`
+// (an unterminated tag is dropped to the end), so markup cannot survive or
+// reassemble; literal `<` in script output arrives entity-encoded and is
+// restored by decodeEntities afterwards.
 function textContent(html) {
-  return decodeEntities(html.replace(/<[^>]*>/g, '').replace(/</g, ''));
+  let text = '';
+  let inTag = false;
+  for (const char of html) {
+    if (inTag) {
+      if (char === '>') inTag = false;
+    } else if (char === '<') {
+      inTag = true;
+    } else {
+      text += char;
+    }
+  }
+  return decodeEntities(text);
 }
 
 function toSegments(html) {
