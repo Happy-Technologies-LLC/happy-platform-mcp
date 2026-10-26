@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Update dependencies for new advisories: MCP SDK 1.32.2 (bundled), Hono 4.13.14 ([GHSA-5r4p-p66f-jhc7](https://github.com/advisories/GHSA-5r4p-p66f-jhc7)), fast-uri 3.1.9, ip-address 10.7.5, body-parser 2.4.0 ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)), follow-redirects 1.16.2 ([GHSA-q3jh-wrc6-jgq8](https://github.com/advisories/GHSA-q3jh-wrc6-jgq8), [GHSA-8r9p-f939-6h3c](https://github.com/advisories/GHSA-8r9p-f939-6h3c)), and Zod 4.6.7 ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)). Hono, fast-uri, ip-address, body-parser and Zod ship inside the npm tarball through the bundled SDK, so users need this release to receive the fixes.
+
 ## 6.0.2 - 2026-10-07
 
 ### Fixed

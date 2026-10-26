@@ -580,13 +580,13 @@ async function verifyPackage(resources) {
 
   const sourceSdkManifest = await readFile(sdkManifestPath);
   const sourceSdk = JSON.parse(sourceSdkManifest.toString('utf8'));
-  assert(sourceSdk.name === '@modelcontextprotocol/sdk' && sourceSdk.version === '1.32.1', 'source SDK is not @modelcontextprotocol/sdk@1.32.1');
+  assert(sourceSdk.name === '@modelcontextprotocol/sdk' && sourceSdk.version === '1.32.2', 'source SDK is not @modelcontextprotocol/sdk@1.32.2');
   assert(sourceSdk.dependencies?.['@hono/node-server'] === '^1.19.9 || ^2.0.5', 'source SDK does not retain its native Hono range');
   const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
   for (const [path, version] of Object.entries({
-    'node_modules/@modelcontextprotocol/sdk': '1.32.1', 'node_modules/@hono/node-server': '2.1.3',
-    'node_modules/hono': '4.13.8', 'node_modules/axios': '1.20.0', 'node_modules/fast-uri': '3.1.8',
-    'node_modules/qs': '6.16.0', 'node_modules/brace-expansion': '5.0.12',
+    'node_modules/@modelcontextprotocol/sdk': '1.32.2', 'node_modules/@hono/node-server': '2.1.3',
+    'node_modules/hono': '4.13.14', 'node_modules/axios': '1.20.0', 'node_modules/fast-uri': '3.1.9',
+    'node_modules/qs': '6.16.1', 'node_modules/brace-expansion': '5.0.12',
   })) {
     assert(lock.packages?.[path]?.version === version, 'committed lock has an unexpected version for ' + path);
   }
@@ -653,14 +653,14 @@ async function verifyPackage(resources) {
     assert(metadata.isFile(), `installed entrypoint target is not a file: ${target}`);
   }
 
-  assert(packedRoot.dependencies?.['@modelcontextprotocol/sdk'] === '1.32.1', 'packed root SDK dependency is not 1.32.1');
+  assert(packedRoot.dependencies?.['@modelcontextprotocol/sdk'] === '1.32.2', 'packed root SDK dependency is not 1.32.2');
   assert(packedRoot.dependencies?.axios === '1.20.0', 'packed root Axios dependency is not 1.20.0');
   assert(packedRoot.engines?.node === '>=20', 'packed root Node engine is not >=20');
   assert(packedRoot.bundleDependencies?.length === 1 && packedRoot.bundleDependencies[0] === '@modelcontextprotocol/sdk', 'packed root does not retain the SDK-only bundle');
   assert(!['prepack', 'postpack', 'postinstall'].some((name) => Object.hasOwn(packedRoot.scripts ?? {}, name)), 'packed root contains an obsolete mutation lifecycle');
   assert(packedRoot.scripts?.['test:package'] === 'node scripts/verify-package.mjs', 'packed root verifier script is missing');
   assert(!Object.hasOwn(packedRoot.overrides ?? {}, '@modelcontextprotocol/sdk'), 'packed root retains an obsolete SDK override');
-  assert(packedSdk.name === '@modelcontextprotocol/sdk' && packedSdk.version === '1.32.1', 'packed SDK is not @modelcontextprotocol/sdk@1.32.1');
+  assert(packedSdk.name === '@modelcontextprotocol/sdk' && packedSdk.version === '1.32.2', 'packed SDK is not @modelcontextprotocol/sdk@1.32.2');
   assert(packedSdk.dependencies?.['@hono/node-server'] === '^1.19.9 || ^2.0.5', 'packed SDK does not retain its native Hono range');
   assert((await readFile(join(installedPackageRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json'))).equals(sourceSdkManifest), 'packaged SDK manifest differs from its unmodified installed source');
   assert(packedHono.name === '@hono/node-server' && packedHono.version === '2.1.3', 'packed Hono is not @hono/node-server@2.1.3');
@@ -684,7 +684,7 @@ async function verifyPackage(resources) {
       consumerDir,
     ),
   );
-  requireOnlyVersion(tree, '@modelcontextprotocol/sdk', '1.32.1');
+  requireOnlyVersion(tree, '@modelcontextprotocol/sdk', '1.32.2');
   requireOnlyVersion(tree, '@hono/node-server', '2.1.3');
   requireOnlyVersion(tree, 'axios', '1.20.0');
 
