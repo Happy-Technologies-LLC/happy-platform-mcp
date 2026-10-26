@@ -90,8 +90,16 @@ function safeCodePoint(code, fallback) {
   return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : fallback;
 }
 
+// Output is returned as plain text, never rendered; tags are still stripped to
+// a fixpoint so nested fragments like `<scr<b>ipt>` cannot reassemble.
 function textContent(html) {
-  return decodeEntities(html.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, ''));
+  let text = html;
+  let previous;
+  do {
+    previous = text;
+    text = text.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, '');
+  } while (text !== previous);
+  return decodeEntities(text.replace(/<!--|<(?=[a-z!/?])/gi, ''));
 }
 
 function toSegments(html) {
