@@ -190,6 +190,19 @@ describe('parseScriptResponse', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toMatch(/Function print is not allowed/);
   });
+
+  test('nested, unterminated and comment markup never survives; encoded text does', () => {
+    const result = parseScriptResponse(processorPage({
+      lines: [
+        '*** Script: a<scr<b>ipt>b',
+        '*** Script: c<!--<!---->-->d',
+        '*** Script: e<!-- x > y -->f',
+        '*** Script: &lt;script&gt;kept&lt;/script&gt;',
+        '*** Script: tail<script'
+      ]
+    }));
+    expect(result.output).toEqual(['aipt>b', 'c-->d', 'ef', '<script>kept</script>', 'tail']);
+  });
 });
 
 describe('executeScriptViaProcessor request', () => {

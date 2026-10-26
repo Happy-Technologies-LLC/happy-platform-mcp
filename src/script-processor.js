@@ -91,20 +91,25 @@ function safeCodePoint(code, fallback) {
 }
 
 // Output is returned to the MCP client as plain text, never rendered as HTML.
-// A single left-to-right scan drops everything from `<` through the next `>`
-// (an unterminated tag is dropped to the end), so markup cannot survive or
-// reassemble; literal `<` in script output arrives entity-encoded and is
-// restored by decodeEntities afterwards.
+// A single left-to-right scan drops `<!-- … -->` comments and everything from
+// `<` through the next `>` (unterminated markup is dropped to the end), so
+// markup cannot survive or reassemble; literal `<` in script output arrives
+// entity-encoded and is restored by decodeEntities afterwards.
 function textContent(html) {
   let text = '';
-  let inTag = false;
-  for (const char of html) {
-    if (inTag) {
-      if (char === '>') inTag = false;
-    } else if (char === '<') {
-      inTag = true;
+  let index = 0;
+  while (index < html.length) {
+    if (html.startsWith('<!--', index)) {
+      const end = html.indexOf('-->', index + 4);
+      index = end === -1 ? html.length : end + 3;
+    } else if (html[index] === '<') {
+      const end = html.indexOf('>', index + 1);
+      index = end === -1 ? html.length : end + 1;
     } else {
-      text += char;
+      const next = html.indexOf('<', index);
+      const stop = next === -1 ? html.length : next;
+      text += html.slice(index, stop);
+      index = stop;
     }
   }
   return decodeEntities(text);
