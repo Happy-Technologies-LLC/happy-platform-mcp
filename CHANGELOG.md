@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Opt-in, anonymous usage telemetry (`HAPPY_MCP_TELEMETRY=on`, off by default). Counts tool calls by tool name and posts them with the package version, transport, Node major version and OS platform every 10 minutes and at exit. No instance URLs, usernames, arguments, results or hostnames. Collector override: `HAPPY_MCP_TELEMETRY_URL`. Payload documented in the README.
+- "Who is using Happy MCP" issue template and README table, plus an issue chooser that points questions to GitHub Discussions.
+- One-line pointer to release notes and security advisories (https://happy-tech.biz/mcp) after `instance add` succeeds and at server start, on stderr.
+
 ## 6.1.0 - 2026-10-26
 
 ### Added

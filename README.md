@@ -22,6 +22,8 @@
   <a href="https://github.com/Happy-Technologies-LLC/happy-platform-mcp">GitHub</a> |
   <a href="https://www.npmjs.com/package/happy-platform-mcp">npm</a> |
   <a href="#tool-overview">Tools</a> |
+  <a href="https://happy-tech.biz/mcp">Get updates</a> |
+  <a href="https://github.com/Happy-Technologies-LLC/happy-platform-mcp/discussions">Discussions</a> |
   <a href="CONTRIBUTING.md">Contributing</a> |
   <a href="#support">Support</a>
 </p>
@@ -37,12 +39,28 @@
 > docker pull nczitzer/happy-platform-mcp:latest
 > ```
 
+## Stay in the loop
+
+- **Release notes, security advisories, and workshop dates:** [happy-tech.biz/mcp](https://happy-tech.biz/mcp). One short email when something ships or needs patching. No drip campaigns.
+- **Questions, ideas, show and tell:** [GitHub Discussions](https://github.com/Happy-Technologies-LLC/happy-platform-mcp/discussions)
+- **Running it at your company?** [Add yourself to the users list](https://github.com/Happy-Technologies-LLC/happy-platform-mcp/issues/new?template=who-is-using.yml) and we will list you below.
+- **Talk to us:** [happy-tech.biz/contact.html](https://happy-tech.biz/contact.html) for supported releases, team enablement, and AI-native development on the ServiceNow&reg; platform.
+
+## Who is using Happy MCP
+
+| Organization | How they use it |
+| --- | --- |
+| [Happy Technologies LLC](https://happy-tech.biz) | Builds and maintains the server; AI-native delivery against client dev and test instances |
+
+Your company belongs here. [Open a two-minute issue](https://github.com/Happy-Technologies-LLC/happy-platform-mcp/issues/new?template=who-is-using.yml) and we will add the row.
+
 ## Support
 
 If you find this project useful, consider supporting its development. Contributions support Happy Technologies LLC.
 
 - [GitHub Sponsors](https://github.com/sponsors/Happy-Technologies-LLC)
 - [Buy Me a Coffee](https://buymeacoffee.com/nickzitzer)
+
 ## Features
 
 - **Multi-Instance Support** — Connect to multiple ServiceNow&reg; instances simultaneously with per-request routing
@@ -661,6 +679,32 @@ curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/healt
 ```bash
 DEBUG=true npm run dev
 ```
+
+## Telemetry (opt-in, off by default)
+
+The server sends nothing unless you turn it on. If you want to help us see which of the 480+ tools people actually use, set:
+
+```bash
+HAPPY_MCP_TELEMETRY=on
+```
+
+With it on, the server counts tool calls by tool name and posts the counts every 10 minutes and at exit. The complete payload, and nothing more:
+
+```json
+{
+  "v": 1,
+  "package": "happy-platform-mcp",
+  "version": "6.1.0",
+  "session": "<random UUID, new per process>",
+  "transport": "stdio",
+  "node": "v22",
+  "platform": "darwin",
+  "tools": { "SN-Query-Table": 12, "SN-Create-Record": 3 },
+  "sent_at": "2026-11-01T15:00:00.000Z"
+}
+```
+
+Never included: instance URLs or names, usernames, credentials, tool arguments, results, hostnames, or IP-derived location. Sends have a 3-second timeout and are never retried; a failed send cannot slow down or break a tool call. The code is one file, [`src/usage-telemetry.js`](src/usage-telemetry.js). Point it at your own collector with `HAPPY_MCP_TELEMETRY_URL=https://...` if you want the numbers for yourself.
 
 ## Known Limitations
 

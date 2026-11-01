@@ -10,6 +10,8 @@ import { configManager } from './config-manager.js';
 import { createHttpApp, loadHttpSecurityConfig } from './http-server.js';
 import { InstanceCredentialStore } from './instance-credential-store.js';
 import { installProcessCrashGuards } from './process-guards.js';
+import { updatesHint } from './project-links.js';
+import { defaultUsageTracker } from './usage-telemetry.js';
 
 dotenv.config();
 
@@ -62,6 +64,12 @@ const httpServer = app.listen(port, host, () => {
   console.log(`Health check: http://${host}:${port}/health`);
   console.log(`MCP SSE endpoint: http://${host}:${port}/mcp`);
   console.log(`Available instances: http://${host}:${port}/instances`);
+  console.log(updatesHint());
+  const usage = defaultUsageTracker();
+  usage.setTransport('http');
+  if (usage.enabled) {
+    console.log(usage.describe());
+  }
 
   if (process.env.DEBUG === 'true') {
     console.log(`Active ServiceNow instance: ${defaultInstance.name} - ${defaultInstance.url}`);

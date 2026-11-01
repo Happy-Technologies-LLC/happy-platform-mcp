@@ -32,6 +32,7 @@ import {
 import { docsToolDefinitions } from './docs/tool-definitions.js';
 import { handleDocsTool } from './docs/tool-handlers.js';
 import { InstanceCredentialStore } from './instance-credential-store.js';
+import { defaultUsageTracker } from './usage-telemetry.js';
 import {
   buildFixScriptFileContent,
   fileTimestamp,
@@ -3345,7 +3346,11 @@ The problem has been closed successfully.`
     }
   };
 
+  // Opt-in, anonymous: counts the tool name only. See usage-telemetry.js.
+  const usageTracker = options.usageTracker || defaultUsageTracker();
+
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    usageTracker.record(request.params?.name);
     const progressToken = request.params?._meta?.progressToken;
     return progressContext.run(
       { token: progressToken ?? null, lastProgress: 0, failed: false },
