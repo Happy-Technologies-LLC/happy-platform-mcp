@@ -6,7 +6,8 @@
  * Reads sys_db_object and sys_dictionary for every table already listed in
  * src/config/comprehensive-table-definitions.json and updates those entries in
  * place. Tables the instance lacks, or that fail, keep their existing entry.
- * To add a table, add a stub entry ({ "priority": 2, "category": "..." }) first.
+ * To add a table, add a stub entry ({ "table": "...", "priority": 2 }) first.
+ * Each entry keeps the shipped record shape; only instance-derived fields change.
  *
  * Reads only metadata tables. Uses basic auth from the environment:
  *   SERVICENOW_INSTANCE_URL, SERVICENOW_USERNAME, SERVICENOW_PASSWORD
@@ -85,21 +86,18 @@ async function extractTableMetadata() {
         }
       });
 
-      // Build metadata object
+      // Same keys as the shipped file; curated fields (operations, description, priority) are kept
       const metadata = {
+        ...existing[tableName],
         label: tableDef.label || tableName,
         table: tableName,
         key_field: tableDef.number_ref ? 'number' : 'sys_id',
         display_field: tableDef.display_field || 'short_description',
         required_fields: requiredFields.length > 0 ? requiredFields : ['short_description'],
         common_fields: commonFields.slice(0, 30), // Limit to first 30 common fields
-        operations: existing[tableName].operations || ['create', 'read', 'update', 'list'],
+        operations: existing[tableName].operations || ['create', 'read', 'update', 'list', 'search'],
         description: existing[tableName].description || tableDef.sys_name || `${tableDef.label} table`,
-        package: tableDef.sys_package?.display_value || 'Global',
-        priority: existing[tableName].priority,
-        category: existing[tableName].category,
-        extends: tableDef.super_class?.display_value || null,
-        is_extendable: tableDef.is_extendable === 'true'
+        package: tableDef.sys_package?.display_value || 'Global'
       };
 
       tableMetadata[tableName] = metadata;
