@@ -704,7 +704,9 @@ With it on, the server counts tool calls by tool name and posts the counts every
 }
 ```
 
-Never included: instance URLs or names, usernames, credentials, tool arguments, results, hostnames, or IP-derived location. Sends have a 3-second timeout and are never retried; a failed send cannot slow down or break a tool call. The code is one file, [`src/usage-telemetry.js`](src/usage-telemetry.js). Point it at your own collector with `HAPPY_MCP_TELEMETRY_URL=https://...` if you want the numbers for yourself.
+Never included: instance URLs or names, usernames, credentials, tool arguments, results, hostnames, or IP-derived location. Sends have a 3-second timeout and are never retried; a failed send cannot slow down or break a tool call. The code is one file, [`src/usage-telemetry.js`](src/usage-telemetry.js).
+
+Pings go to `https://build01-lab.tail0490c9.ts.net:10000/api/mcp/telemetry`, a small collector Happy Technologies runs. Its source is [`collector/`](collector/): it rejects anything that isn't the payload above, stores each accepted ping with the time it arrived, and does not store IP addresses, request headers or user agents. Point the server at your own collector with `HAPPY_MCP_TELEMETRY_URL=https://...` if you want the numbers for yourself.
 
 ## Known Limitations
 
