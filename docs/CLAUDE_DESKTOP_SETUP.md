@@ -213,7 +213,7 @@ Claude: Uses SN-Create-Incident()
 
 After restarting Claude Desktop, you should see:
 - "ServiceNow" as an available context
-- 34 MCP tools available
+- 60 MCP tools available
 - Tools like `SN-Query-Table`, `SN-Create-Record`, etc.
 
 ### 2. Test a Tool

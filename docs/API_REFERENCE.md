@@ -31,7 +31,7 @@ Complete reference for all MCP tools and resources available in the ServiceNow s
 ## Tool Categories
 
 ### 📊 **Generic CRUD Operations** (6 tools)
-Work on **any** ServiceNow table (160+ supported)
+Work on **any** ServiceNow table (94 with built-in schema metadata)
 
 ### 🎯 **Specialized Tools** (6 tools)
 Table-specific list operations for core ITSM tables
@@ -932,9 +932,9 @@ Returns information about the currently connected ServiceNow instance.
     "username": "admin"
   },
   "capabilities": {
-    "total_tables": 160,
+    "total_tables": 94,
     "operations": ["create", "read", "update", "query", "schema_lookup"],
-    "tools": 44
+    "tools": 60
   }
 }
 ```
@@ -971,7 +971,7 @@ Returns complete metadata for all available ServiceNow tables.
     "common_fields": ["number", "short_description", "risk", "impact"],
     "description": "Change management requests"
   }
-  // ... 160+ more tables
+  // ... 92 more tables
 }
 ```
 
@@ -1624,7 +1624,7 @@ Reads `GET /api/sn_cicd/tests/test/results/{result_id}/logs?sysparm_regex=…&sy
 
 **Total Tools:** 60
 **Total Resources:** 2
-**Supported Tables:** 160+
+**Supported Tables:** Any (94 with built-in schema metadata)
 **Instance Support:** Unlimited (via config)
 
 **Key Features:**

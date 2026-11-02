@@ -464,7 +464,7 @@ SN-Query-Table({
 src/
 ├── server.js                      # Express HTTP server (SSE transport)
 ├── stdio-server.js                # Stdio transport (Claude Desktop)
-├── mcp-server-consolidated.js    # MCP tool registration (480+ tools)
+├── mcp-server-consolidated.js    # MCP tool registration (60 tools)
 ├── servicenow-client.js           # ServiceNow REST API client
 └── config-manager.js              # Multi-instance configuration
 
@@ -482,7 +482,7 @@ docs/
 
 ### Key Features
 - **Multi-Instance Support**: Single server manages multiple ServiceNow instances
-- **34 Powerful MCP Tools**: Generic tools work on 160+ ServiceNow tables
+- **60 MCP Tools**: Generic tools work on any ServiceNow table (94 with built-in schema)
 - **Metadata-Driven**: Table schemas discovered dynamically
 - **Session Management**: Separate MCP sessions per client
 - **Background Script Automation**: Automated execution via sys_trigger
@@ -762,8 +762,8 @@ SN-Execute-Background-Script({ script: "...", description: "..." });
 
 ## 📊 Statistics
 
-- **MCP Tools:** 40+ powerful tools
-- **Tables Supported:** 160+ ServiceNow tables (via generic tools)
+- **MCP Tools:** 60 tools
+- **Tables Supported:** Any ServiceNow table via generic tools (94 with built-in schema metadata)
 - **Batch Operations:** 43+ parallel calls tested successfully
 - **Script Execution:** ~1 second automated via sys_trigger
 - **Instance Support:** Unlimited instances via config file

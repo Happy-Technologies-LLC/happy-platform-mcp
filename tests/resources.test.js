@@ -95,9 +95,9 @@ describe('MCP Resources', () => {
           username: 'admin',
         },
         capabilities: {
-          total_tables: 160,
+          total_tables: 94,
           operations: ['create', 'read', 'update', 'query', 'schema_lookup'],
-          tools: 34,
+          tools: 60,
         },
       };
 
@@ -116,7 +116,7 @@ describe('MCP Resources', () => {
 
       const parsed = JSON.parse(result.contents[0].text);
       expect(parsed.server_info.version).toBe(PACKAGE_VERSION);
-      expect(parsed.capabilities.tools).toBe(34);
+      expect(parsed.capabilities.tools).toBe(60);
     });
 
     it('should include instance URL', async () => {
