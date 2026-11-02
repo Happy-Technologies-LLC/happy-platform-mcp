@@ -5,6 +5,7 @@ import { InstanceRegistry, isSecretShapedKey } from './instance-registry.js';
 import { credentialRefFor, CredentialNotFoundError, InstanceCredentialStore } from './instance-credential-store.js';
 import { clearInstanceRefreshTokens, oauthRefreshTokenAccount, ServiceNowClient } from './servicenow-client.js';
 import { FileTokenStore, KeychainTokenStore } from './token-store.js';
+import { updatesHint } from './project-links.js';
 
 export const SECRET_ARGUMENT_ERROR = 'Secret flags and values are not accepted in command arguments; use a masked prompt.';
 const SECRET_NAMES = new Set(['password', 'clientsecret']);
@@ -467,6 +468,8 @@ async function addCommand(args, context) {
     const registered = await registry.register(instance, { makeDefault: flags['make-default'] === true || instance.default === true });
     output(stdout, `Added instance '${instance.name}'.`);
     output(stdout, JSON.stringify(stable(redact(registered)), null, 2));
+    // Pointer only, on stderr, so stdout stays parseable.
+    output(stderr, updatesHint());
     return 0;
   } catch (error) {
     await restoreSnapshots(store, snapshots, stderr, 'Credential rollback');

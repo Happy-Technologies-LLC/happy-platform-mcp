@@ -15,6 +15,8 @@ import { createMcpServer } from './mcp-server-consolidated.js';
 import { configManager as defaultConfigManager, instanceToClientOptions } from './config-manager.js';
 import { InstanceCredentialStore } from './instance-credential-store.js';
 import { installProcessCrashGuards } from './process-guards.js';
+import { updatesHint } from './project-links.js';
+import { defaultUsageTracker } from './usage-telemetry.js';
 
 // Load environment variables
 dotenv.config();
@@ -132,6 +134,12 @@ export async function main() {
       console.error('Mode: docs-only');
     } else {
       console.error(`Instance: ${instance.name} - ${instance.url}`);
+    }
+    console.error(updatesHint());
+    const usage = defaultUsageTracker();
+    usage.setTransport('stdio');
+    if (usage.enabled) {
+      console.error(usage.describe());
     }
   } catch (error) {
     console.error('Failed to start Happy MCP Server:', error);

@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Happy-Technologies-LLC/happy-platform-mcp/discussions
+    about: Ask how to do something, share what you built, or propose a feature.
+  - name: Release notes and security advisories
+    url: https://happy-tech.biz/mcp
+    about: One short email when a release ships or a patch matters.
+  - name: Report a vulnerability
+    url: https://github.com/Happy-Technologies-LLC/happy-platform-mcp/blob/main/SECURITY.md
+    about: Do not open a public issue for security concerns.

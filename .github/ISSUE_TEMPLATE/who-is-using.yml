@@ -1,0 +1,62 @@
+name: "Who is using Happy MCP"
+description: "Add your organization to the users list in the README. Takes two minutes."
+title: "[Users] <organization name>"
+labels: ["who-is-using"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for running Happy MCP. Fill in what you are comfortable sharing publicly; every field except the organization name is optional. We add a row to the README table once the issue is reviewed.
+  - type: input
+    id: organization
+    attributes:
+      label: Organization
+      description: "Company, agency, or team name as you want it to appear."
+      placeholder: "Acme Corp"
+    validations:
+      required: true
+  - type: input
+    id: website
+    attributes:
+      label: Website (optional)
+      placeholder: "https://example.com"
+  - type: dropdown
+    id: usage
+    attributes:
+      label: How do you use it?
+      options:
+        - Platform or admin team automating our own instances
+        - Developers building apps and integrations with AI assistance
+        - Consultancy or partner delivering for clients
+        - Evaluating or piloting
+        - Other (describe below)
+    validations:
+      required: true
+  - type: dropdown
+    id: instances
+    attributes:
+      label: Instances connected (optional)
+      options:
+        - "1"
+        - "2 to 3"
+        - "4 to 10"
+        - "More than 10"
+        - "Prefer not to say"
+  - type: textarea
+    id: description
+    attributes:
+      label: One line for the README (optional)
+      description: "How you use it, in your words. Example: 'AI-assisted catalog item development on dev and test.'"
+      placeholder: "AI-assisted catalog item development on dev and test."
+  - type: textarea
+    id: pain
+    attributes:
+      label: Biggest thing you wish it did (optional)
+      description: "This drives the roadmap more than anything else."
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Listing consent
+      options:
+        - label: "You may list the organization name, link, and one-line description above in the README."
+          required: true
