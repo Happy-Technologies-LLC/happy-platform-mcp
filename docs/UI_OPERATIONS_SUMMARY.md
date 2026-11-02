@@ -387,7 +387,7 @@ Tier 3: Documented Manual Steps (2% coverage, manual)
 - <1 second avg operation time (vs 10-30s with Puppeteer)
 - 99%+ success rate
 - Zero maintenance burden for UI automation
-- 44 tools covering 160+ tables
+- 44 tools that work on any table (94 with built-in schema)
 
 **Qualitative:**
 - Simple, maintainable codebase

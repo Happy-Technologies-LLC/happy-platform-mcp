@@ -52,7 +52,7 @@ Multi-instance ServiceNow MCP server with 40+ tools, natural language search, an
   - Local script development with Git integration
   - Update set management
   - Background script execution
-  - 160+ ServiceNow tables supported
+  - Works on any ServiceNow table (94 with built-in schema)
 ```
 
 **Status:** 🟡 Ready to submit
@@ -224,7 +224,7 @@ A revolutionary metadata-driven ServiceNow MCP server supporting multiple Servic
 - Local script development with Git integration and watch mode
 - Automated background script execution
 - Update set management with batch operations
-- 160+ ServiceNow tables supported via generic tools
+- Any ServiceNow table supported via generic tools (94 with built-in schema)
 - Convenience tools for common ITSM operations
 - Docker support for easy deployment
 - Comprehensive documentation and examples

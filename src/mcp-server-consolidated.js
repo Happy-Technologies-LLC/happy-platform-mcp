@@ -202,7 +202,7 @@ export async function createMcpServer(serviceNowClient, options = {}) {
   }
 
   // Set up consolidated tool handlers
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const listTools = async () => {
     console.error(`📋 Tool list requested by Claude Code`);
 
     if (docsOnly) {
@@ -1534,7 +1534,8 @@ export async function createMcpServer(serviceNowClient, options = {}) {
 
     console.error(`✅ Returning ${tools.length} consolidated tools to Claude Code`);
     return { tools: addInstanceParameter(tools) };
-  });
+  };
+  server.setRequestHandler(ListToolsRequestSchema, listTools);
 
   const dispatchToolCall = async (request) => {
     const { name, arguments: args } = request.params;
@@ -3395,7 +3396,7 @@ The problem has been closed successfully.`
         capabilities: {
           total_tables: Object.keys(tableMetadata).length,
           operations: ['create', 'read', 'update', 'query', 'schema_lookup'],
-          tools: 6
+          tools: (await listTools()).tools.length
         }
       };
 

@@ -8,7 +8,7 @@
   <strong>Model Context Protocol Server for the ServiceNow&reg; Platform</strong></p>
 
 <p align="center">
-  A metadata-driven MCP server that auto-generates 480+ tools across 160+ tables, with multi-instance support, natural language search, and local script development.
+  A metadata-driven MCP server with 60 tools that work on any table, built-in schema for 94 core tables, multi-instance support, natural language search, and local script development.
 </p>
 
 <p align="center">
@@ -66,8 +66,8 @@ If you find this project useful, consider supporting its development. Contributi
 - **Multi-Instance Support** — Connect to multiple ServiceNow&reg; instances simultaneously with per-request routing
 - **OAuth 2.0 & Basic Auth** — Per-instance Client Credentials, Resource Owner Password Credentials, and per-user Authorization Code with PKCE
 - **Intelligent Schema Discovery** — Automatically discovers table structures and relationships at runtime
-- **160+ Tables** — Complete coverage including ITSM, CMDB, Service Catalog, Platform Development, and Flow Designer
-- **55 MCP Tools** — Generic CRUD operations that work on any table, plus specialized convenience tools
+- **Any Table** — Generic tools work on any table, with built-in schema metadata for 94 core tables across ITSM, CMDB, Service Catalog, Platform Development, and Flow Designer
+- **60 MCP Tools** — Generic CRUD operations that work on any table, plus specialized convenience tools
 - **Batch Operations** — 43+ parallel operations tested successfully
 - **Local Script Development** — Sync scripts with Git, watch mode for continuous development
 - **Natural Language Search** — Query using plain English instead of encoded queries
@@ -682,7 +682,7 @@ DEBUG=true npm run dev
 
 ## Telemetry (opt-in, off by default)
 
-The server sends nothing unless you turn it on. If you want to help us see which of the 480+ tools people actually use, set:
+The server sends nothing unless you turn it on. If you want to help us see which of the 60 tools people actually use, set:
 
 ```bash
 HAPPY_MCP_TELEMETRY=on
