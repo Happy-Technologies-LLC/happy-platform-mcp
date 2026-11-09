@@ -15,7 +15,7 @@ import { createMcpServer } from './mcp-server-consolidated.js';
 import { configManager as defaultConfigManager, instanceToClientOptions } from './config-manager.js';
 import { InstanceCredentialStore } from './instance-credential-store.js';
 import { installProcessCrashGuards } from './process-guards.js';
-import { updatesHint } from './project-links.js';
+import { versionChangeHint } from './project-links.js';
 import { defaultUsageTracker } from './usage-telemetry.js';
 
 // Load environment variables
@@ -135,7 +135,8 @@ export async function main() {
     } else {
       console.error(`Instance: ${instance.name} - ${instance.url}`);
     }
-    console.error(updatesHint());
+    const hint = versionChangeHint();
+    if (hint) console.error(hint);
     const usage = defaultUsageTracker();
     usage.setTransport('stdio');
     if (usage.enabled) {
