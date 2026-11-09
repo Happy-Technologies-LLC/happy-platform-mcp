@@ -680,6 +680,10 @@ curl -H "Authorization: Bearer $HAPPY_MCP_API_TOKEN" http://localhost:3000/healt
 DEBUG=true npm run dev
 ```
 
+### Quiet mode
+
+The server prints one line pointing at release notes on first run and after an upgrade. Set `HAPPY_MCP_QUIET=1` to turn it off.
+
 ## Telemetry (opt-in, off by default)
 
 The server sends nothing unless you turn it on. If you want to help us see which of the 60 tools people actually use, set:

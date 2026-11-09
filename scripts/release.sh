@@ -77,7 +77,10 @@ if gh release view "$TAG" &>/dev/null; then
 else
   gh release create "$TAG" \
     --title "Release $TAG" \
-    --notes "See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md) for details." \
+    --notes "See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md) for details.
+
+**Get release notes and security advisories by email:** https://happy-tech.biz/mcp
+Running Happy MCP at your company? [Add yourself to the users list](https://github.com/${REPO}/issues/new?template=who-is-using.yml)." \
     --latest
   echo "  Created GitHub release $TAG"
 fi

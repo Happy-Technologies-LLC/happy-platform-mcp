@@ -181,6 +181,9 @@ jobs:
           name: Release v${{ needs.check-version.outputs.version }}
           body: |
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+
+            **Get release notes and security advisories by email:** https://happy-tech.biz/mcp
+            Running Happy MCP at your company? [Add yourself to the users list](https://github.com/${{ github.repository }}/issues/new?template=who-is-using.yml).
           draft: false
           prerelease: false
           generate_release_notes: true

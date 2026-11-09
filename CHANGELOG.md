@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The pointer to release notes and security advisories (https://happy-tech.biz/mcp) now prints at server start only on first run or after an upgrade ("Happy MCP updated 6.2.0 -> 6.3.0 ..."), instead of on every start. The last version seen is kept in `~/.config/happy-platform-mcp/last-seen-version` (or under `XDG_CONFIG_HOME`). `HAPPY_MCP_QUIET=1` turns it off. `instance add` still prints it after a successful add.
+- GitHub releases now end with the updates link and the users-list link.
+
 ## 6.2.0 - 2026-11-02
 
 ### Added
