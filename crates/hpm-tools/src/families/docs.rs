@@ -2,7 +2,7 @@
 //! `tool-handlers.js`) and the two resources ([`crate::resources`]).
 //!
 //! Every call reads the docs settings afresh (6.2.0 `getDocsConfig()` per call:
-//! environment through the [`ConfigManager`] env map, then the `docs` object of the
+//! environment from [`FamilyDeps::env`], then the `docs` object of the
 //! instances file) and builds its own docs client, like 6.2.0 `handleDocsTool`, so
 //! the approved-family index is fetched once per call. The cache directory and the
 //! raw-GitHub origin come from [`FamilyDeps`], never from `std::env`.
@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use hpm_core::config::{ConfigManager, home_dir};
+use hpm_core::config::{Env, home_dir};
 use hpm_docs::{
     DocsClient, DocsConfig, DocsError, DocsLimits, DocsStore, RequestOptions, ReqwestTransport,
     SyncOptions, VectorConfig, VectorIndex, assert_docs_family_name, get_docs_config,
@@ -54,7 +54,9 @@ enum DocsTool {
 
 /// What the handlers share: settings sources and the sandbox overrides.
 struct DocsEnv {
-    config: Arc<ConfigManager>,
+    env: Env,
+    /// Instances file whose `docs` object holds settings.
+    registry_path: PathBuf,
     /// Raw-GitHub origin override (tests, mirrors); `None`: the pinned public origin.
     base_url: Option<String>,
     /// Cache directory override; `None`: the 6.2.0 settings chain.
@@ -69,9 +71,9 @@ impl DocsEnv {
     /// 6.2.0 `getDocsConfig()`: environment, then the `docs` object of the instances
     /// file, then the defaults.
     fn config(&self) -> Result<DocsConfig, ToolError> {
-        let env = self.config.env();
-        let properties = read_system_docs_properties(&self.config.registry().read_path())
-            .map_err(|e| docs_error(&e))?;
+        let env = &self.env;
+        let properties =
+            read_system_docs_properties(&self.registry_path).map_err(|e| docs_error(&e))?;
         let home = home_dir(env);
         let mut config = get_docs_config(&|name| env.get(name), &properties, &home);
         if let Some(dir) = &self.cache_dir {
@@ -353,7 +355,8 @@ fn metadata_ops(name: &'static str) -> Result<OperationSet, ToolError> {
 
 pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), RegistrationError> {
     let env = Arc::new(DocsEnv {
-        config: deps.config.clone(),
+        env: deps.env.clone(),
+        registry_path: deps.registry_read_path.clone(),
         base_url: deps.docs_base_url.clone(),
         cache_dir: deps.docs_cache_dir.clone(),
     });
@@ -426,7 +429,6 @@ mod tests {
     use std::collections::HashSet;
 
     use hpm_core::config::Env;
-    use hpm_core::registry::InstanceRegistry;
     use hpm_docs::{Chunk, DocumentRecord};
     use tempfile::TempDir;
 
@@ -453,15 +455,11 @@ mod tests {
             ),
         ];
         let env = Env::from_pairs(&pairs);
-        let registry = Arc::new(InstanceRegistry::at_paths(
-            registry_path.clone(),
-            registry_path,
-            env.clone(),
-        ));
         Fixture {
             _dir: dir,
             env: DocsEnv {
-                config: Arc::new(ConfigManager::new(registry, env)),
+                env,
+                registry_path,
                 base_url: None,
                 cache_dir: None,
             },

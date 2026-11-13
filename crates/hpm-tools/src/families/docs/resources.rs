@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use hpm_core::config::{ConfigManager, PACKAGE_VERSION};
+use hpm_core::config::{Env, PACKAGE_VERSION};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
 use hpm_types::credential::CredentialNeed;
@@ -17,7 +17,7 @@ use crate::registration::{RegistrationError, ToolRegistry};
 use crate::table_metadata;
 
 struct InstanceInfo {
-    config: Arc<ConfigManager>,
+    env: Env,
     /// 6.2.0 `(await listTools()).tools.length`: the tools this server lists. Set by
     /// the composition root after docs-only filtering, so it is read per request.
     tool_count: Arc<OnceLock<usize>>,
@@ -26,7 +26,7 @@ struct InstanceInfo {
 impl InstanceInfo {
     fn payload(&self) -> Value {
         // `JSON.stringify` drops `undefined`: an unset variable leaves the key out.
-        let env = self.config.env();
+        let env = &self.env;
         let mut instance = Map::new();
         if let Some(url) = env.get("SERVICENOW_INSTANCE_URL") {
             instance.insert("url".into(), Value::String(url));
@@ -76,7 +76,7 @@ pub(super) fn register(
         OutputClass::Schema,
         CredentialNeed::None,
         Arc::new(InstanceInfo {
-            config: deps.config.clone(),
+            env: deps.env.clone(),
             tool_count: deps.tool_count.clone(),
         }),
     ))?;
@@ -94,17 +94,15 @@ pub(super) fn register(
 #[cfg(test)]
 mod tests {
     use hpm_core::config::Env;
-    use hpm_core::registry::InstanceRegistry;
 
     use super::*;
 
     fn info(pairs: &[(&str, &str)], tool_count: usize) -> InstanceInfo {
         let env = Env::from_pairs(pairs);
-        let registry = Arc::new(InstanceRegistry::new(env.clone()));
         let count = Arc::new(OnceLock::new());
         count.set(tool_count).unwrap();
         InstanceInfo {
-            config: Arc::new(ConfigManager::new(registry, env)),
+            env,
             tool_count: count,
         }
     }

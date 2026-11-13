@@ -574,20 +574,29 @@ fn credential_secret_mismatch(name: &str) -> CodedError {
     )
 }
 
-/// Constant-time equality of two secrets: an HMAC-SHA256 tag keyed by one,
-/// checked with ring's constant-time verify under the other.
+/// Constant-time byte equality of two secrets: each secret is the *message*
+/// of an HMAC-SHA256 under one fixed key, and ring's `hmac::verify` compares
+/// the tags in constant time. As messages (not keys) the bytes are never
+/// padded or pre-hashed, so `"pw"` and `"pw\0"`, or a long secret and its
+/// digest, differ (CR-12).
 fn secrets_equal(a: &str, b: &str) -> bool {
-    const LABEL: &[u8] = b"happy-platform-mcp/credential-bind/v1";
-    let tag = ring::hmac::sign(
-        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, a.as_bytes()),
-        LABEL,
+    let key = ring::hmac::Key::new(
+        ring::hmac::HMAC_SHA256,
+        b"happy-platform-mcp/credential-bind/v2",
     );
-    ring::hmac::verify(
-        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b.as_bytes()),
-        LABEL,
-        tag.as_ref(),
-    )
-    .is_ok()
+    let tag = ring::hmac::sign(&key, a.as_bytes());
+    ring::hmac::verify(&key, b.as_bytes(), tag.as_ref()).is_ok()
+}
+
+/// Fixed wait after a re-entered secret does not match (`instance credential
+/// bind`), so the bind command is not a fast local guess oracle.
+pub const BIND_MISMATCH_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Waits for the given duration; injectable so tests never sleep for real.
+pub type Pause = Arc<dyn Fn(std::time::Duration) -> hpm_types::BoxFut<'static, ()> + Send + Sync>;
+
+fn real_pause() -> Pause {
+    Arc::new(|d| Box::pin(tokio::time::sleep(d)))
 }
 
 fn store_error(e: SecretStoreError) -> CodedError {
@@ -637,6 +646,7 @@ pub fn credential_ref_for(instance_name: &str, kind: CredentialType) -> Result<S
 pub struct InstanceCredentialStore {
     store: Arc<dyn SecretStore>,
     service: String,
+    mismatch_pause: Pause,
 }
 
 impl InstanceCredentialStore {
@@ -647,7 +657,16 @@ impl InstanceCredentialStore {
         Self {
             store,
             service: service.to_owned(),
+            mismatch_pause: real_pause(),
         }
+    }
+
+    /// Replaces the wait run for [`BIND_MISMATCH_DELAY`] after a secret
+    /// mismatch (tests record it instead of sleeping).
+    #[must_use]
+    pub fn with_mismatch_pause(mut self, pause: Pause) -> Self {
+        self.mismatch_pause = pause;
+        self
     }
 
     /// A missing item is ambiguous (absent vs. silently failing backend); a
@@ -721,6 +740,12 @@ impl InstanceCredentialStore {
             return Err(invalid_instance_origin());
         }
         self.clear_origin_binding(&parsed.reference).await?;
+        // CR-11: delete, then create, so an item an attacker planted under
+        // this account (with an any-app ACL) is never updated in place.
+        self.store
+            .delete(&self.service, &parsed.reference)
+            .await
+            .map_err(store_error)?;
         self.store
             .set(
                 &self.service,
@@ -774,7 +799,6 @@ impl InstanceCredentialStore {
             return Err(invalid_instance_origin());
         }
         let secret = self.matching_secret(&parsed, entered).await?;
-        self.clear_origin_binding(&parsed.reference).await?;
         self.write_binding(&parsed.reference, secret.expose(), origin)
             .await
     }
@@ -795,6 +819,7 @@ impl InstanceCredentialStore {
         if secrets_equal(secret.expose(), entered) {
             Ok(secret)
         } else {
+            (self.mismatch_pause)(BIND_MISMATCH_DELAY).await;
             Err(credential_secret_mismatch(&parsed.instance_name))
         }
     }
@@ -805,6 +830,9 @@ impl InstanceCredentialStore {
         secret: &str,
         origin: &str,
     ) -> Result<(), CodedError> {
+        // CR-10: delete, then create (never update a planted binding item in
+        // place); a failed create leaves the secret unbound (fail closed).
+        self.clear_origin_binding(reference).await?;
         self.store
             .set(
                 &self.service,

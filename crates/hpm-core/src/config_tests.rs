@@ -343,6 +343,40 @@ fn rejects_bad_redirect_ports() {
 
 // --- RegistryStore (single user) -------------------------------------------
 
+/// CR-6: a reload that changed the document (a registration written behind
+/// the manager's back) bumps the version; an unchanged reload does not.
+#[test]
+fn reload_bumps_the_version_only_when_the_document_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("instances.json");
+    let entry = |name: &str| {
+        json!({"name": name, "url": format!("https://{name}.service-now.com"), "authType": "oauth",
+               "grantType": "authorization_code", "clientId": "c"})
+    };
+    std::fs::write(
+        &file,
+        json!({"version": 1, "instances": [entry("dev")]}).to_string(),
+    )
+    .unwrap();
+    let env = Env::from_pairs(&[]);
+    let cm = ConfigManager::new(
+        Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+        env,
+    );
+    cm.load_instances().unwrap();
+    let v = cm.registry_version();
+    cm.reload().unwrap();
+    assert_eq!(cm.registry_version(), v);
+    std::fs::write(
+        &file,
+        json!({"version": 1, "instances": [entry("dev"), entry("new")]}).to_string(),
+    )
+    .unwrap();
+    cm.reload().unwrap();
+    assert_eq!(cm.registry_version(), v + 1);
+    assert!(cm.get_instance("new").is_ok());
+}
+
 #[tokio::test]
 async fn registry_store_view_and_cas() {
     use hpm_types::registry::{DefaultSource, RegistryChange, RegistryError, RegistryStore};
@@ -462,4 +496,77 @@ fn concurrent_apply_with_the_same_version_admits_exactly_one() {
     }
     assert_eq!(won, 1);
     assert_eq!(cm.registry_version(), v + 1);
+}
+
+// --- CF-1 (P4-3): restricted `.env` -----------------------------------------
+
+#[test]
+fn dotenv_keeps_only_documented_instance_keys_and_the_token() {
+    let text = "\
+# comment
+export SERVICENOW_USERNAME=svc
+SERVICENOW_PASSWORD='p#w d'
+SERVICENOW_CLIENT_SECRET=\"line\\nbreak\"
+SERVICENOW_AUTH_TYPE=basic # trailing comment
+HAPPY_MCP_API_TOKEN=tok
+HAPPY_MCP_BIND_HOST=0.0.0.0
+HAPPY_MCP_ALLOWED_HOSTS=evil.example
+HAPPY_MCP_ALLOWED_ORIGINS=https://evil.example
+HAPPY_MCP_TELEMETRY_URL=https://evil.example
+HAPPY_CONFIG_PATH=/tmp/evil.json
+PORT=1
+";
+    let parsed = DotEnv::parse(text, |_| false);
+    let mut keys: Vec<_> = parsed.values.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "HAPPY_MCP_API_TOKEN",
+            "SERVICENOW_AUTH_TYPE",
+            "SERVICENOW_CLIENT_SECRET",
+            "SERVICENOW_PASSWORD",
+            "SERVICENOW_USERNAME"
+        ]
+    );
+    assert_eq!(parsed.values["SERVICENOW_PASSWORD"], "p#w d");
+    assert_eq!(parsed.values["SERVICENOW_CLIENT_SECRET"], "line\nbreak");
+    assert_eq!(parsed.values["SERVICENOW_AUTH_TYPE"], "basic");
+    assert_eq!(parsed.warnings, Vec::<String>::new());
+}
+
+#[test]
+fn dotenv_real_environment_wins() {
+    let parsed = DotEnv::parse(
+        "SERVICENOW_USERNAME=from-file\nHAPPY_MCP_API_TOKEN=file-token\n",
+        |key| key == "HAPPY_MCP_API_TOKEN",
+    );
+    assert_eq!(parsed.values.get("HAPPY_MCP_API_TOKEN"), None);
+    assert_eq!(parsed.values["SERVICENOW_USERNAME"], "from-file");
+}
+
+#[test]
+fn dotenv_warns_for_instance_url_and_malformed_lines_without_quoting_them() {
+    let parsed = DotEnv::parse(
+        "SERVICENOW_INSTANCE_URL=https://dev.example.invalid\nsecret-value-no-equals\nSERVICENOW_PASSWORD=\"unterminated secret\n=x\n",
+        |_| false,
+    );
+    assert_eq!(
+        parsed.values["SERVICENOW_INSTANCE_URL"],
+        "https://dev.example.invalid"
+    );
+    assert!(!parsed.values.contains_key("SERVICENOW_PASSWORD"));
+    assert_eq!(
+        parsed.warnings,
+        [
+            ".env line 2: ignored (expected KEY=value)",
+            ".env line 3: ignored (malformed)",
+            ".env line 4: ignored (malformed)",
+            "SERVICENOW_INSTANCE_URL was loaded from .env in the working directory; \
+             prefer `happy-platform-mcp instance add`",
+        ]
+    );
+    // A URL the real environment sets is not taken, so no warning.
+    let parsed = DotEnv::parse("SERVICENOW_INSTANCE_URL=https://x.invalid\n", |_| true);
+    assert_eq!(parsed.warnings, Vec::<String>::new());
 }

@@ -27,11 +27,13 @@ pub const SECRET_ARGUMENT_ERROR: &str =
     "Secret flags and values are not accepted in command arguments; use a masked prompt.";
 /// First line of `instance migrate` before its confirm prompt (not in 6.2.0).
 pub const MIGRATION_SOURCE_PREFIX: &str = "Migration source: ";
-/// First line of `instance credential set` before any prompt (not in 6.2.0).
+/// First line of `instance credential set` once the credential type is known
+/// (after the type `Select` prompt when `--type` is absent) and before the
+/// origin confirm and the secret prompt (not in 6.2.0).
 pub const CREDENTIAL_ORIGIN_PREFIX: &str = "Saving the credential for ";
 const NON_INTERACTIVE: &str = "Non-interactive use requires an interactive TTY for masked prompts; rerun in a terminal or inject the required prompt function.";
 /// 6.2.0 text, verbatim (CLI goldens). `instance credential bind <name>` is
-/// not listed; the unbound-secret errors print that command instead.
+/// not listed; help prints [`BIND_USAGE_LINE`] right after it.
 pub const USAGE: &str = "Usage:
   happy-platform-mcp instance add
   happy-platform-mcp instance list
@@ -40,6 +42,9 @@ pub const USAGE: &str = "Usage:
   happy-platform-mcp instance remove <name>
   happy-platform-mcp instance credential set <name> --type password|client-secret
   happy-platform-mcp instance migrate";
+/// 7.0 help line printed on stdout right after [`USAGE`] for `--help` (CR-2);
+/// the CLI goldens drop exactly this line, so the 6.2.0 bytes stay compared.
+pub const BIND_USAGE_LINE: &str = "  happy-platform-mcp instance credential bind <name>   (7.0: bind a secret saved by 6.x to the registered URL)";
 
 const METADATA_FLAGS: [(&str, &str); 14] = [
     ("name", "name"),
@@ -2041,6 +2046,7 @@ pub async fn run_instance_cli(argv: &[String], ctx: &mut CliContext<'_>) -> i32 
     };
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h" | "help") {
         ctx.out(USAGE);
+        ctx.out(BIND_USAGE_LINE);
         return 0;
     }
     let result = match args[0].as_str() {

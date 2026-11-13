@@ -368,12 +368,13 @@ async fn replay(file: &Path) -> Result<(), String> {
     // Recorded deviations: `instance migrate` names its plaintext source
     // before confirming (review M2), and `instance credential set` names the
     // origin it binds to (review M-A); 6.2.0 printed neither. Only those
-    // lines are dropped.
+    // lines are dropped, plus the exact 7.0 `credential bind` help line (CR-2).
     let stdout_text: String = clean(&stdout)
         .split_inclusive('\n')
         .filter(|l| {
             !l.starts_with(hpm_cli::instance_cli::MIGRATION_SOURCE_PREFIX)
                 && !l.starts_with(hpm_cli::instance_cli::CREDENTIAL_ORIGIN_PREFIX)
+                && l.strip_suffix('\n') != Some(hpm_cli::instance_cli::BIND_USAGE_LINE)
         })
         .collect();
     check("stdout", json!(stdout_text), &golden["stdout"]);
