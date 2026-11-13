@@ -193,6 +193,12 @@ async fn create_and_update_name_the_record_by_key_field() {
         err_text(&done),
         "Error: Instance changed during credential resolution"
     );
+    let fake = Fake::new(vec![Err(ClientError::stale_after_send())]);
+    let done = handlers::create_record(&fake, &json!({"table_name": "u_x", "data": {}})).await;
+    assert_eq!(done.outcome, MutationOutcome::Unknown);
+    let fake = Fake::new(vec![Err(http(503, "503 unavailable"))]);
+    let done = handlers::create_record(&fake, &json!({"table_name": "u_x", "data": {}})).await;
+    assert_eq!(done.outcome, MutationOutcome::Unknown);
 }
 
 #[tokio::test]

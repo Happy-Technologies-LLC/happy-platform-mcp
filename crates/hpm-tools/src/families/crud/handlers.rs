@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use super::json::{arg_or, length_text, or, pretty, prop, set, text, truthy};
 use super::normalize::{batch_ref_name, identifier_error};
+use crate::families::common::failed_outcome;
 use crate::logic::bulk_limits::{
     resolve_batch_placeholders, validate_batch_create_operations, validate_batch_updates,
 };
@@ -137,21 +138,6 @@ impl<'a> Progress<'a> {
 /// 6.2.0 thrown-error text of a client failure (`error.message`).
 fn message(e: &ClientError) -> String {
     e.message.clone()
-}
-
-/// What a failed single write proves about the server side.
-fn failed_outcome(e: &ClientError) -> MutationOutcome {
-    let pre_send = e.is_stale()
-        || e.code
-            .as_deref()
-            .is_some_and(hpm_core::client::error::is_credential_error_code);
-    if pre_send {
-        MutationOutcome::NotSent
-    } else if e.status.is_some_and(|s| s != 0) {
-        MutationOutcome::Failed
-    } else {
-        MutationOutcome::Unknown
-    }
 }
 
 /// Overall outcome of per-op facts.
