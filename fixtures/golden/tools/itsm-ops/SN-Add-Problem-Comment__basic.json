@@ -1,0 +1,95 @@
+{
+  "description": "SN-Add-Problem-Comment basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm-ops",
+  "harnessError": null,
+  "id": "SN-Add-Problem-Comment/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/problem",
+          "query": [
+            [
+              "sysparm_query",
+              "number=PRB0040001"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=number%3DPRB0040001&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "comments": "golden problem comment"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/problem/7607a24b5d490e68354d3f1a7ea2054f",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "comment": "golden problem comment",
+            "problem_number": "PRB0040001"
+          },
+          "name": "SN-Add-Problem-Comment"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Comment added to PRB0040001\n\nProblem: PRB0040001\nsys_id: 7607a24b5d490e68354d3f1a7ea2054f\nComment: golden problem comment\nUpdated: {{ISO_TIMESTAMP}}\n\nThe comment has been successfully added to the problem.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Add-Problem-Comment"
+}

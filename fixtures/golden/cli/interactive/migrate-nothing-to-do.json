@@ -1,0 +1,31 @@
+{
+  "after": {
+    "keyringAccounts": [
+      "keychain:instance/dev/password",
+      "keychain:instance/oauth1/client-secret"
+    ],
+    "keyringValueMatchesFakeSecret": {
+      "keychain:instance/dev/password": true,
+      "keychain:instance/oauth1/client-secret": true
+    },
+    "legacyFileUntouched": true,
+    "registryJson": null
+  },
+  "answers": {
+    "confirm": true
+  },
+  "argv": [
+    "instance",
+    "migrate"
+  ],
+  "exit": {
+    "code": 0
+  },
+  "id": "cli/interactive/migrate-nothing-to-do",
+  "mode": "in-process dispatch(argv, {prompts injected}); real registry file + real credential store over fake keyring",
+  "outbound": [],
+  "promptCalls": [],
+  "runnerError": null,
+  "stderr": "",
+  "stdout": "No legacy plaintext credentials require migration.\n"
+}

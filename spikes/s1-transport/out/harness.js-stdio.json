@@ -1,0 +1,51 @@
+{
+  "label": "js-stdio",
+  "transport": "stdio",
+  "exec": [
+    "node",
+    "/Users/nczitzer/.omp/wt/t3d12d813b/m/src/stdio-server.js"
+  ],
+  "passed": true,
+  "results": [
+    {
+      "name": "initialize",
+      "ok": true,
+      "detail": "happy-platform-mcp@6.2.0"
+    },
+    {
+      "name": "negotiated protocol recorded",
+      "ok": true,
+      "detail": "n/a"
+    },
+    {
+      "name": "tools/list returns 60 tools",
+      "ok": true,
+      "detail": "count=60"
+    },
+    {
+      "name": "tools/list normalized == fixture (byte-equal)",
+      "ok": true,
+      "detail": "identical"
+    },
+    {
+      "name": "SN-Query-Table text format",
+      "ok": true,
+      "detail": "Found 1 records in sys_user:"
+    },
+    {
+      "name": "SN-Query-Table rows have sys_id,user_name only",
+      "ok": true,
+      "detail": "keys=sys_id,user_name"
+    },
+    {
+      "name": "SN-Query-Table pretty JSON (2-space)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "unknown tool observed",
+      "ok": true,
+      "detail": "{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: Unknown tool: SN-Does-Not-Exist\"}],\"isError\":true}}"
+    }
+  ]
+}

@@ -1,0 +1,158 @@
+{
+  "description": "SN-Docs-Sync index-disabled-default",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "docs",
+  "harnessError": null,
+  "id": "SN-Docs-Sync/index-disabled-default",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "family": "australia"
+          },
+          "name": "SN-Docs-Sync"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"synced\": false,\n  \"message\": \"Local ServiceNow docs indexing is disabled. Set docs.localIndexEnabled=true in config/servicenow-instances.json or HAPPY_DOCS_ENABLE_LOCAL_INDEX=true to enable SN-Docs-Sync.\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Docs-Status"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"cacheDir\": \"{{TMP}}/SN-Docs-Sync_index-disabled-default/docs-cache\",\n  \"localIndexEnabled\": false,\n  \"ftsAvailable\": false,\n  \"sqliteAvailable\": true,\n  \"sqliteReason\": \"Local docs index disabled\",\n  \"vectorAvailable\": false,\n  \"vectorReason\": \"Vector search disabled\",\n  \"families\": []\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "family": "australia",
+            "limit": 3,
+            "query": "flow subflows"
+          },
+          "name": "SN-Docs-Search"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"query\": \"flow subflows\",\n  \"family\": \"australia\",\n  \"results\": [],\n  \"message\": \"Local ServiceNow docs search is disabled. Use SN-Docs-Get for direct GitHub retrieval, or set docs.localIndexEnabled=true / HAPPY_DOCS_ENABLE_LOCAL_INDEX=true and run SN-Docs-Sync.\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "none",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/plain",
+            "accept-language": "*",
+            "sec-fetch-mode": "cors",
+            "user-agent": "node"
+          },
+          "method": "GET",
+          "path": "/ServiceNow/ServiceNowDocs/main/llms.txt",
+          "query": [],
+          "rawQuery": "",
+          "target": "github-raw"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "none",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/plain",
+            "accept-language": "*",
+            "sec-fetch-mode": "cors",
+            "user-agent": "node"
+          },
+          "method": "GET",
+          "path": "/ServiceNow/ServiceNowDocs/australia/platform/flow.md",
+          "query": [],
+          "rawQuery": "",
+          "target": "github-raw"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "family": "australia",
+            "path": "platform/flow.md"
+          },
+          "name": "SN-Docs-Get"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"source\": \"github\",\n  \"document\": {\n    \"family\": \"australia\",\n    \"branch\": \"australia\",\n    \"path\": \"platform/flow.md\",\n    \"markdown\": \"# Flow\\n\\nCreate flow actions and subflows.\\n\"\n  }\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Docs-Sync"
+}

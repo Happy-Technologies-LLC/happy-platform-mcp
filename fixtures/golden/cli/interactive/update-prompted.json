@@ -1,0 +1,79 @@
+{
+  "after": {
+    "keyringAccounts": [
+      "keychain:instance/dev/password",
+      "keychain:instance/oauth1/client-secret"
+    ],
+    "keyringValueMatchesFakeSecret": {
+      "keychain:instance/dev/password": true,
+      "keychain:instance/oauth1/client-secret": true
+    },
+    "registryJson": {
+      "instances": [
+        {
+          "authType": "basic",
+          "credentialRef": "keychain:instance/dev/password",
+          "default": true,
+          "description": "Golden prompted update",
+          "name": "dev",
+          "url": "{{INSTANCE_URL}}",
+          "username": "golden.user"
+        },
+        {
+          "authType": "oauth",
+          "clientId": "golden-client",
+          "credentialRef": "keychain:instance/oauth1/client-secret",
+          "default": false,
+          "description": "Golden oauth",
+          "grantType": "client_credentials",
+          "name": "oauth1",
+          "url": "{{INSTANCE_URL}}"
+        }
+      ],
+      "version": 1
+    }
+  },
+  "answers": {
+    "description": "Golden prompted update"
+  },
+  "argv": [
+    "instance",
+    "update",
+    "dev"
+  ],
+  "exit": {
+    "code": 0
+  },
+  "id": "cli/interactive/update-prompted",
+  "mode": "in-process dispatch(argv, {prompts injected}); real registry file + real credential store over fake keyring",
+  "outbound": [],
+  "promptCalls": [
+    {
+      "answered": "{{INSTANCE_URL}}",
+      "hasDefault": true,
+      "hasMask": false,
+      "kind": "input",
+      "message": "ServiceNow URL:",
+      "name": "url"
+    },
+    {
+      "answered": "golden.user",
+      "hasDefault": true,
+      "hasMask": false,
+      "kind": "input",
+      "message": "Username:",
+      "name": "username"
+    },
+    {
+      "answered": "Golden prompted update",
+      "hasDefault": true,
+      "hasMask": false,
+      "kind": "input",
+      "message": "Description:",
+      "name": "description"
+    }
+  ],
+  "runnerError": null,
+  "stderr": "",
+  "stdout": "Updated instance 'dev'.\n{\n  \"authType\": \"basic\",\n  \"credentialRef\": \"keychain:instance/dev/password\",\n  \"default\": true,\n  \"description\": \"Golden prompted update\",\n  \"name\": \"dev\",\n  \"url\": \"{{INSTANCE_URL}}\",\n  \"username\": \"golden.user\"\n}\n"
+}

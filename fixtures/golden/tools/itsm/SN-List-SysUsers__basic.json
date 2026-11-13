@@ -1,0 +1,75 @@
+{
+  "description": "SN-List-SysUsers basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm",
+  "harnessError": null,
+  "id": "SN-List-SysUsers/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_user",
+          "query": [
+            [
+              "sysparm_query",
+              "active=true"
+            ],
+            [
+              "sysparm_limit",
+              "3"
+            ]
+          ],
+          "rawQuery": "sysparm_query=active%3Dtrue&sysparm_limit=3",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 3,
+            "query": "active=true"
+          },
+          "name": "SN-List-SysUsers"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 Sys User(s):\n[\n  {\n    \"sys_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_user\",\n    \"user_name\": \"golden.user1\",\n    \"name\": \"Golden User 1\",\n    \"first_name\": \"Golden\",\n    \"last_name\": \"User 1\",\n    \"email\": \"golden.user1@example.invalid\",\n    \"active\": \"true\"\n  },\n  {\n    \"sys_id\": \"aacc86e91bd1c2082ee939975955ef31\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_user\",\n    \"user_name\": \"golden.user2\",\n    \"name\": \"Golden User 2\",\n    \"first_name\": \"Golden\",\n    \"last_name\": \"User 2\",\n    \"email\": \"golden.user2@example.invalid\",\n    \"active\": \"true\"\n  },\n  {\n    \"sys_id\": \"d7fa0fb320f3b64b895379a965e4dc28\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_user\",\n    \"user_name\": \"golden.user3\",\n    \"name\": \"Golden User 3\",\n    \"first_name\": \"Golden\",\n    \"last_name\": \"User 3\",\n    \"email\": \"golden.user3@example.invalid\",\n    \"active\": \"true\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-List-SysUsers"
+}

@@ -1,0 +1,48 @@
+{
+  "description": "SN-Set-Update-Set bad-sys-id",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Set-Update-Set/bad-sys-id",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔄 Setting current update set to: not-a-sys-id"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "update_set_sys_id": "not-a-sys-id"
+          },
+          "name": "SN-Set-Update-Set"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "❌ update_set_sys_id must be a 32-character lowercase hexadecimal sys_id",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Set-Update-Set"
+}

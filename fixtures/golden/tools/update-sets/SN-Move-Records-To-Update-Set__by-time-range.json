@@ -1,0 +1,140 @@
+{
+  "description": "SN-Move-Records-To-Update-Set by-time-range",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Move-Records-To-Update-Set/by-time-range",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📦 Moving records to update set ed62390adb712ed83486d9105c442b81 (progress: true)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_xml",
+          "query": [
+            [
+              "sysparm_query",
+              "sys_created_on>={{SN_DATETIME}}^sys_created_on<={{SN_DATETIME}}^update_set.name=Default^ORDERBYsys_id"
+            ],
+            [
+              "sysparm_limit",
+              "1000"
+            ]
+          ],
+          "rawQuery": "sysparm_query=sys_created_on%3E%3D{{SN_DATETIME_ENCODED}}%5Esys_created_on%3C%3D{{SN_DATETIME_ENCODED}}%5Eupdate_set.name%3DDefault%5EORDERBYsys_id&sysparm_limit=1000",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "update_set": "ed62390adb712ed83486d9105c442b81"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/sys_update_xml/f55aa18f0c6ff1563b4d9af560c12d22",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "update_set": "ed62390adb712ed83486d9105c442b81"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/sys_update_xml/f4ca82d321a9088cf09441393c29f64d",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "update_set": "ed62390adb712ed83486d9105c442b81"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/sys_update_xml/555e5b2e39ab34799982119f5374584b",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "source_update_set": "Default",
+            "time_range": {
+              "end": "{{SN_DATETIME}}",
+              "start": "{{SN_DATETIME}}"
+            },
+            "update_set_id": "ed62390adb712ed83486d9105c442b81"
+          },
+          "name": "SN-Move-Records-To-Update-Set"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Records moved to update set!\n\nMoved: 3 records\nFailed: 0 records\n\n\nMoved records:\n  - undefined: golden-sys_update_xml-1 (f55aa18f0c6ff1563b4d9af560c12d22)\n  - undefined: golden-sys_update_xml-2 (f4ca82d321a9088cf09441393c29f64d)\n  - undefined: golden-sys_update_xml-3 (555e5b2e39ab34799982119f5374584b)\n\n\n\nFull result:\n{\n  \"moved\": 3,\n  \"failed\": 0,\n  \"records\": [\n    {\n      \"sys_id\": \"f55aa18f0c6ff1563b4d9af560c12d22\",\n      \"name\": \"golden-sys_update_xml-1\",\n      \"status\": \"moved\"\n    },\n    {\n      \"sys_id\": \"f4ca82d321a9088cf09441393c29f64d\",\n      \"name\": \"golden-sys_update_xml-2\",\n      \"status\": \"moved\"\n    },\n    {\n      \"sys_id\": \"555e5b2e39ab34799982119f5374584b\",\n      \"name\": \"golden-sys_update_xml-3\",\n      \"status\": \"moved\"\n    }\n  ],\n  \"errors\": []\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Move-Records-To-Update-Set"
+}

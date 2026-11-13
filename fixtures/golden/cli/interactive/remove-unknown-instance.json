@@ -1,0 +1,53 @@
+{
+  "after": {
+    "keyringAccounts": [
+      "keychain:instance/dev/password",
+      "keychain:instance/oauth1/client-secret"
+    ],
+    "keyringValueMatchesFakeSecret": {
+      "keychain:instance/dev/password": true,
+      "keychain:instance/oauth1/client-secret": true
+    },
+    "registryJson": {
+      "instances": [
+        {
+          "authType": "basic",
+          "credentialRef": "keychain:instance/dev/password",
+          "default": true,
+          "description": "Golden dev",
+          "name": "dev",
+          "url": "{{INSTANCE_URL}}",
+          "username": "golden.user"
+        },
+        {
+          "authType": "oauth",
+          "clientId": "golden-client",
+          "credentialRef": "keychain:instance/oauth1/client-secret",
+          "description": "Golden oauth",
+          "grantType": "client_credentials",
+          "name": "oauth1",
+          "url": "{{INSTANCE_URL}}"
+        }
+      ],
+      "version": 1
+    }
+  },
+  "answers": {
+    "confirm": true
+  },
+  "argv": [
+    "instance",
+    "remove",
+    "nope"
+  ],
+  "exit": {
+    "code": 1
+  },
+  "id": "cli/interactive/remove-unknown-instance",
+  "mode": "in-process dispatch(argv, {prompts injected}); real registry file + real credential store over fake keyring",
+  "outbound": [],
+  "promptCalls": [],
+  "runnerError": null,
+  "stderr": "Instance 'nope' not found\n",
+  "stdout": ""
+}

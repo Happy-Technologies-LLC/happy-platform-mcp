@@ -1,0 +1,1035 @@
+{
+  "baseline": {
+    "name": "happy-platform-mcp",
+    "version": "6.2.0"
+  },
+  "coverage": {
+    "toolsServed": 60,
+    "toolsWithAtLeastOneCapture": 60,
+    "toolsWithAtLeastOneOutboundRequest": 51,
+    "toolsWithoutCapture": [],
+    "unknownToolsCaptured": []
+  },
+  "description": "Golden captures of the Node baseline. Immutable once committed; regenerate only via scripts/golden/capture.mjs --force with owner approval.",
+  "files": {
+    "cli/add-non-tty.json": {
+      "bytes": 508,
+      "sha256": "56427b30b6e7680ecf5b7031c85574958d4bbbc160307f01a7bf950369f0e968"
+    },
+    "cli/credential-set-missing-name.json": {
+      "bytes": 852,
+      "sha256": "d25c8f622ca27be90491f614dca50a3039a096bfc18765380556297e965a8706"
+    },
+    "cli/credential-set-non-tty.json": {
+      "bytes": 1216,
+      "sha256": "8e5443c8854952f20d42b092e4cece44f87e059a1a800ded4d54b26c8b8745c5"
+    },
+    "cli/credential-type-unsafe.happy-platform-mcp.json": {
+      "bytes": 531,
+      "sha256": "150e23a394e410284873092d56a9826a740329aa8aed9358ab98b63bb7952b5c"
+    },
+    "cli/credential-type-unsafe.servicenow-mcp-server.json": {
+      "bytes": 534,
+      "sha256": "23d575e29e9a0a147774fb3798d6ef227a24be467ae386267ec1652b80772a20"
+    },
+    "cli/help-long.happy-platform-mcp.json": {
+      "bytes": 751,
+      "sha256": "f5c91a91ced767cd00cbbceb2cde2031910872f4aa431aa7e6fe2950b3fba266"
+    },
+    "cli/help-long.servicenow-mcp-server.json": {
+      "bytes": 754,
+      "sha256": "5995850067d0f579a1eca240ed7935238a2838311c1357cc05d2e60830db7cd1"
+    },
+    "cli/help-short.happy-platform-mcp.json": {
+      "bytes": 748,
+      "sha256": "3c817fccdd644014c3e9cf9faae47c6f734010671beb63caf2dedd3cb413f105"
+    },
+    "cli/help-short.servicenow-mcp-server.json": {
+      "bytes": 751,
+      "sha256": "b7cbacb97e25b0353dcaa0964892d50b7e7a27e43eeb9439c413ef8f4e3b6ff3"
+    },
+    "cli/help-word.happy-platform-mcp.json": {
+      "bytes": 749,
+      "sha256": "2640b52528bc6394c0e2955a0be41c78340fbbec63b28e9fe65004d5ae218f39"
+    },
+    "cli/help-word.servicenow-mcp-server.json": {
+      "bytes": 752,
+      "sha256": "43d0aed800a315030dcd8bc14d276ea66adf7f3170f73f34de2937473948df31"
+    },
+    "cli/instance-bare.happy-platform-mcp.json": {
+      "bytes": 757,
+      "sha256": "da8f2f4e885a4f6695df142d904fcf823c1c1949f144fbf11ca164cf78eed40b"
+    },
+    "cli/instance-bare.servicenow-mcp-server.json": {
+      "bytes": 760,
+      "sha256": "6b2dc308e14620d7e5698c43b4149eaefc13748bcfefffcc64b53201528ecab5"
+    },
+    "cli/instance-help-long.happy-platform-mcp.json": {
+      "bytes": 776,
+      "sha256": "f3957a55cbb048246017e74eccf967546a0baa140ce358258ac7056664d138cb"
+    },
+    "cli/instance-help-long.servicenow-mcp-server.json": {
+      "bytes": 779,
+      "sha256": "75b31a2d234521be7648e076ffc2c7328802c37b8f09c032061d22c9aa7cb5a3"
+    },
+    "cli/instance-help-short.happy-platform-mcp.json": {
+      "bytes": 773,
+      "sha256": "a7d4d73834b670eee5b709d87098f277dfd37be6e18d929a97053827fb3692cf"
+    },
+    "cli/instance-help-short.servicenow-mcp-server.json": {
+      "bytes": 776,
+      "sha256": "040d126835db2a234015287ffc3d557419612fc03e4bf03c5f8acc0564348c28"
+    },
+    "cli/instance-help-word.happy-platform-mcp.json": {
+      "bytes": 774,
+      "sha256": "2a21f4fd239478fdb6596ab7f3dd00bf9204cc129ed7ae8f0f59196b2b44adfb"
+    },
+    "cli/instance-help-word.servicenow-mcp-server.json": {
+      "bytes": 777,
+      "sha256": "664ca7ab224351fe7c092914fb05edf8be632aa8a65491c3f86d77e2e5afc83c"
+    },
+    "cli/interactive/add-basic.json": {
+      "bytes": 3134,
+      "sha256": "216b4635ac49adc9e7bbbf1a7f74214e9e6766129a87aaf3178ab8cf5576aa51"
+    },
+    "cli/interactive/add-duplicate-name.json": {
+      "bytes": 2318,
+      "sha256": "821debb5f49e9ca3de9b2d37561edf9a9f749d791320e3fce48020f1b5c3957e"
+    },
+    "cli/interactive/add-into-empty-registry-becomes-default.json": {
+      "bytes": 2346,
+      "sha256": "75bed490a54ec36131a83f229e2fc90baab88b808959f4b986c42c9b919fcaab"
+    },
+    "cli/interactive/add-invalid-url.json": {
+      "bytes": 2340,
+      "sha256": "4f36ae11d65af4091bf5e34126ab9fefbc71d4e803ae935c6f7de585c779e059"
+    },
+    "cli/interactive/add-oauth-client-credentials.json": {
+      "bytes": 4176,
+      "sha256": "c63555fce3a7f095476abd6d1ded4698579ebd261e8811747e96fc1574cc08db"
+    },
+    "cli/interactive/credential-set-client-secret.json": {
+      "bytes": 1557,
+      "sha256": "94b7e2f30df6f5cb85696a5481018d2bf0d348fefa0577b9929979f2e19fbf78"
+    },
+    "cli/interactive/credential-set-password.json": {
+      "bytes": 1515,
+      "sha256": "d015a61d5b49dd7ef80894ce04cd654f66131388ee1454114629276ae515b551"
+    },
+    "cli/interactive/credential-set-type-prompted.json": {
+      "bytes": 1692,
+      "sha256": "81c37bffbb5336c28540c780447ef79710e5276d2434291249c97d74d97cc519"
+    },
+    "cli/interactive/credential-set-unknown-instance.json": {
+      "bytes": 1204,
+      "sha256": "5941e2f548436f3bf99febe140c4ca37e102d83ae3e14af15d70563284e6f7fa"
+    },
+    "cli/interactive/credential-set-wrong-type-for-auth.json": {
+      "bytes": 1619,
+      "sha256": "270a23d6bdeec4d72a76497546add9297d83402ccd36d8f2fdfd21a3610c15e4"
+    },
+    "cli/interactive/migrate-confirmed.json": {
+      "bytes": 1594,
+      "sha256": "ed4075f85cfea5c50818da39959ea55d5d7fc7f579dce5635fb6acb70821ffbe"
+    },
+    "cli/interactive/migrate-declined.json": {
+      "bytes": 745,
+      "sha256": "838b92e5a2ec1f01f6e49dbb1eeee028e530d62ae7a6fc94fd47da1dda09109e"
+    },
+    "cli/interactive/migrate-nothing-to-do.json": {
+      "bytes": 777,
+      "sha256": "9ac849c03b95cbf167caec83745a9b8bfce921d1b6fa043ef68d17ecc6c2f8a8"
+    },
+    "cli/interactive/migrate-source-equals-target.json": {
+      "bytes": 1548,
+      "sha256": "d0fac017df6d11a6f2ab60007e2f6db56d29285b45730682ac011de690078ddd"
+    },
+    "cli/interactive/remove-confirmed.json": {
+      "bytes": 1138,
+      "sha256": "708a6b0437b3f3a82a55c9bc65e1ff0872dc1376a09833e098fbe1cb3472fb10"
+    },
+    "cli/interactive/remove-declined.json": {
+      "bytes": 1535,
+      "sha256": "170add63aa9605f63fb6a0647273936848cac63954e5d7d913c052e75b7e3125"
+    },
+    "cli/interactive/remove-unknown-instance.json": {
+      "bytes": 1370,
+      "sha256": "15b29c38147348e5761771597ff2e67d3efa96a41fc7d8c1d7e3021fd5adfac8"
+    },
+    "cli/interactive/update-auth-change-rejected.json": {
+      "bytes": 1828,
+      "sha256": "aed55665ae63037af114c616ffabf4a210afccac57b8e2810018479055523e08"
+    },
+    "cli/interactive/update-metadata-flags.json": {
+      "bytes": 1654,
+      "sha256": "f096637adb0972c7c9b12ae597a0593b3659e773bcb6e8d5e3c10aadb0a2d029"
+    },
+    "cli/interactive/update-prompted.json": {
+      "bytes": 2221,
+      "sha256": "77934296a472b95b3f6d95e520bc521e8dc44e3368ccb2f65150f0bb49c0abcf"
+    },
+    "cli/interactive/update-unknown-instance.json": {
+      "bytes": 1377,
+      "sha256": "4353bd4b7e68bdf17e0e30f2841e42319096a8fb2bee6f4f02077ceafe85f154"
+    },
+    "cli/list-credential-ref-registry.json": {
+      "bytes": 1501,
+      "sha256": "dfcc284df63dc5dbff7c7e6536146606994aa56f94bd9dc9f49840cdb2808146"
+    },
+    "cli/list-empty-registry.json": {
+      "bytes": 459,
+      "sha256": "bc143c76747b1c427829124bf1bf71ba72508d9300afce28d35ec2bb45279762"
+    },
+    "cli/list-extra-args.json": {
+      "bytes": 824,
+      "sha256": "db0327675dc26d9cb97919bbeb92b469305be1d49c41292db48c6b6c70a85959"
+    },
+    "cli/list-legacy-plaintext-registry.json": {
+      "bytes": 1154,
+      "sha256": "0c711a02477b68399d2b56e9e04cddf1cefd6989601c1356d35b36a5696c0168"
+    },
+    "cli/list-no-registry-file.json": {
+      "bytes": 416,
+      "sha256": "43ed9380a0f9810f72ee460487920b9e1928e0b72347b0e6899760f18dc47fdf"
+    },
+    "cli/list-registry-malformed-json.json": {
+      "bytes": 562,
+      "sha256": "8f5907be3cfebd0b9a8deb79e890122046290c58e89c342d7071d910b72553ad"
+    },
+    "cli/migrate-non-tty.json": {
+      "bytes": 1420,
+      "sha256": "3f18e20e39a35bb78109676a317fb703a11002711106ad344a62cc112da8d4df"
+    },
+    "cli/remove-extra-args.json": {
+      "bytes": 846,
+      "sha256": "654537b035b48129b2709956d3587ca1d44aa765f74a0f9443d863f3081fae39"
+    },
+    "cli/remove-non-tty.json": {
+      "bytes": 1359,
+      "sha256": "ae3876faf0890062cb7bd678b309f8c1084c3d76fbb45d78e66556a2e8f81df9"
+    },
+    "cli/secret-assignment-form.happy-platform-mcp.json": {
+      "bytes": 504,
+      "sha256": "3d71ca6dfd31ed9c85dc43f9f14a8b022275b00293f14ba2f0bdd71d9f16242f"
+    },
+    "cli/secret-assignment-form.servicenow-mcp-server.json": {
+      "bytes": 507,
+      "sha256": "69a788a1489e92a112719abb0ec1b97f14b5e2244bcf1e9199ac5720be7c8dc5"
+    },
+    "cli/secret-flag-client-secret.happy-platform-mcp.json": {
+      "bytes": 531,
+      "sha256": "c6fea891aab258e824096a04118bed85cc2ed78c9eb4c1e9a0625f17e1c9824f"
+    },
+    "cli/secret-flag-client-secret.servicenow-mcp-server.json": {
+      "bytes": 534,
+      "sha256": "b6cabe495a6b57e8480b37dfb41bc2ce2f33dc871b9752431d4577ff8b7f7b64"
+    },
+    "cli/secret-flag-equals.happy-platform-mcp.json": {
+      "bytes": 502,
+      "sha256": "4e1a9cc9804d8dc474b024e7c973dc76236f24a3ec527b450085d312475c4e85"
+    },
+    "cli/secret-flag-equals.servicenow-mcp-server.json": {
+      "bytes": 505,
+      "sha256": "024f48b44e4261926822e46c3e36500ed53987cb07a81b0f999239205cd9dee6"
+    },
+    "cli/secret-flag-space.happy-platform-mcp.json": {
+      "bytes": 510,
+      "sha256": "94491460894e93a5e2cd96e78147e6f2221cfea3eb48592ca1b707678f8c33cb"
+    },
+    "cli/secret-flag-space.servicenow-mcp-server.json": {
+      "bytes": 513,
+      "sha256": "32e9924de25bf9402acbf8afe5811d6bf0c86c4e65ea9ca69820b493b9cd15e5"
+    },
+    "cli/secret-flag-token.happy-platform-mcp.json": {
+      "bytes": 849,
+      "sha256": "aa67f861cd25d32b256eb2f90efb63381a135be6e8c5a77e1b24f876b7e3d701"
+    },
+    "cli/secret-flag-token.servicenow-mcp-server.json": {
+      "bytes": 852,
+      "sha256": "6b085f14fb35fcf62aa79c30ec6f156151ef2da6bac45d15a554abfef42f0ce5"
+    },
+    "cli/secret-flag-top-level.happy-platform-mcp.json": {
+      "bytes": 481,
+      "sha256": "3b71b2633a9db0f5aa2cccbc73617439f28bfb0f24bace54d75a4deedf0f2c4f"
+    },
+    "cli/secret-flag-top-level.servicenow-mcp-server.json": {
+      "bytes": 484,
+      "sha256": "66ab16e86df6a5c8f6fc4fb0a1ace5a592e970abb420e5f932e811eff50a0b70"
+    },
+    "cli/test-credential-missing.json": {
+      "bytes": 1108,
+      "sha256": "0c99efe4fefbd4714c4cbe266d5ba0780d6c68b1b1820bf4c8908373f19c04f6"
+    },
+    "cli/test-http-401.json": {
+      "bytes": 1829,
+      "sha256": "64f61f3e9b76687f0893334cfbd391395095edea48afd006b3f0a710cf9cb555"
+    },
+    "cli/test-http-403.json": {
+      "bytes": 1842,
+      "sha256": "33b71c7d2512e26940eeb70d80b6e7e799f1e96e94bd5f0602ebe39d64f781ef"
+    },
+    "cli/test-no-name.json": {
+      "bytes": 1653,
+      "sha256": "b29deae7a4cb4be818758c81aa96488f14197bff5d019791ce2ee72ed492f96f"
+    },
+    "cli/test-success.json": {
+      "bytes": 1779,
+      "sha256": "16c1c3d817c7181e0761dcf4748905d6d2bd34614b78db9da76a41e652f4b245"
+    },
+    "cli/test-unknown-instance.json": {
+      "bytes": 1263,
+      "sha256": "182c6ee49ae772d978a4252abb179ec0e1801926d5df301c94d783c5e664e091"
+    },
+    "cli/unknown-command.happy-platform-mcp.json": {
+      "bytes": 414,
+      "sha256": "4ee7139b1dbffd1531c540a75abc43bc58ad992f9d1147d6d265156fa705650d"
+    },
+    "cli/unknown-command.servicenow-mcp-server.json": {
+      "bytes": 417,
+      "sha256": "7ab9331be392b396ab9ff0dc72009cd69080be46284058027a0fd7ad1ed17013"
+    },
+    "cli/unknown-flag-only.happy-platform-mcp.json": {
+      "bytes": 420,
+      "sha256": "d301b5ff6d01f50d82330e61da4fb1f3d001dab74fc72b4a1197b34c5111fb8f"
+    },
+    "cli/unknown-flag-only.servicenow-mcp-server.json": {
+      "bytes": 423,
+      "sha256": "cbf578923885d03da8f742fdc27dc7a1882ee5e6989afdd11fbe2b690b113299"
+    },
+    "cli/unknown-instance-subcommand.happy-platform-mcp.json": {
+      "bytes": 838,
+      "sha256": "493ea0fd9206eeec8b4eb6684e64508bb319ba19da1e63f3c964ba5fa39c4502"
+    },
+    "cli/unknown-instance-subcommand.servicenow-mcp-server.json": {
+      "bytes": 841,
+      "sha256": "0b3d2d5530895e7a72eab2be532793d6108a0601b4cf7b79881f3734e2018725"
+    },
+    "cli/update-unknown-option.json": {
+      "bytes": 1670,
+      "sha256": "79716a35e7cd284c600f6a61502d2e58392fdabe385defd2a458365aff741165"
+    },
+    "surface/docs-only-flag.json": {
+      "bytes": 17904,
+      "sha256": "a4f89b6669bd2a839f40d65df24f6d49ead2852b02888f8fc4a681d896191f32"
+    },
+    "surface/docs-only.json": {
+      "bytes": 20631,
+      "sha256": "bfb440649ff23c738b18f401f0145ad47df8ce7258415964d4a8bda058dd0ad2"
+    },
+    "surface/full-default.json": {
+      "bytes": 279803,
+      "sha256": "d06f1c743920b10360de575be139db6bd81a10dba3a2b447c0fd9f6416d50569"
+    },
+    "surface/init-1999-01-01.json": {
+      "bytes": 105230,
+      "sha256": "cc5c7c94812051b55070f83685c04ba4059d500aee05a8ce9035d306f925f6d6"
+    },
+    "surface/init-2024-11-05.json": {
+      "bytes": 105230,
+      "sha256": "058dad14850ca96ad3c3649a33fbb0bbc5c7758b563e0ccfe98b3220cafe76fe"
+    },
+    "surface/init-2025-03-26.json": {
+      "bytes": 105230,
+      "sha256": "80ff8242a51ff85394befb627aab211b80b4580b4986330d0e0925c446731ebd"
+    },
+    "surface/init-2025-11-25.json": {
+      "bytes": 105230,
+      "sha256": "3ed63bcf14998c3d0a49e39670ec097f74e565d729dc3e994797d170cd233719"
+    },
+    "surface/init-2026-07-28.json": {
+      "bytes": 105230,
+      "sha256": "270ef5745266ac382a62a8307935079b4c4b80c2ef7ac58a04cff02998e938bc"
+    },
+    "surface/wire-errors.json": {
+      "bytes": 1827,
+      "sha256": "0c49d6b3e673ebe2b65b7f54c85661de6f306f7d514db34d460b44a4446a266b"
+    },
+    "tools/atf/SN-Get-ATF-Results__bad-result-type.json": {
+      "bytes": 1247,
+      "sha256": "b3a53519bd9bb7f0ce08d829c067e0bee5191f226de2abb118a34076ebb250cc"
+    },
+    "tools/atf/SN-Get-ATF-Results__suite.json": {
+      "bytes": 4109,
+      "sha256": "140309d4a1b453d3213fd22f83438e877be96c1a1f89e1ce674c253451b56d12"
+    },
+    "tools/atf/SN-Get-ATF-Results__test.json": {
+      "bytes": 2141,
+      "sha256": "f2a2815b646c908a483ddb832d184c571d9304579b9e46c21ece3bdd314f8353"
+    },
+    "tools/atf/SN-Get-ATF-Test-Logs__bad-pattern.json": {
+      "bytes": 1297,
+      "sha256": "cda56cf0211ea64da62ecb87ddac637b07f51e168a17db99b14ad2ef29e5bb11"
+    },
+    "tools/atf/SN-Get-ATF-Test-Logs__pattern-limit.json": {
+      "bytes": 2221,
+      "sha256": "bd74422ae380af0427685ab955bd53b7386dca9b63b01ca364380c826281582f"
+    },
+    "tools/atf/SN-Get-CICD-Progress__http-403.json": {
+      "bytes": 1977,
+      "sha256": "4c6e876003e4b8ac03070d9ae1296d77d4bebafa1a7e327299c963a61d111c99"
+    },
+    "tools/atf/SN-Get-CICD-Progress__single-read.json": {
+      "bytes": 2021,
+      "sha256": "b68e83f2aba45bcdb7765e8d742a9a4c2d4d3e0eda050cf1208a319a65ef02dd"
+    },
+    "tools/atf/SN-Run-ATF-Suite__by-sys-id-wait.json": {
+      "bytes": 6154,
+      "sha256": "a334307758de6f0d0a2985903d2d7d5016e7db96bcbcf1ec25f3c96360e982bb"
+    },
+    "tools/atf/SN-Run-ATF-Test__by-name-no-wait.json": {
+      "bytes": 3078,
+      "sha256": "b148b49389429ab5de32fa13248158498036a34a7982ae5194ff1949c5b76355"
+    },
+    "tools/atf/SN-Run-ATF-Test__by-sys-id-wait.json": {
+      "bytes": 4119,
+      "sha256": "d286f0aff2668209d3074111958994a4fb0cefc070b3458ab2543585c7022b4d"
+    },
+    "tools/atf/SN-Run-ATF-Test__no-selector.json": {
+      "bytes": 1122,
+      "sha256": "2226ff006f63ebe2c484385a824475a9cfe17af9a988901f141f2727875b3f04"
+    },
+    "tools/batch/SN-Batch-Create__basic-with-refs.json": {
+      "bytes": 3186,
+      "sha256": "396613e55a3236ed2b239b87ea8f9fdcfbd63db30cd3f766f86a0fe0cd5dc3af"
+    },
+    "tools/batch/SN-Batch-Create__failure-rollback.json": {
+      "bytes": 2786,
+      "sha256": "5ddcd48eb51a957b20bacfed962f07e9082cdf6d81535b1ab7131182dff3e841"
+    },
+    "tools/batch/SN-Batch-Update__basic.json": {
+      "bytes": 2925,
+      "sha256": "e6fc544297a3971189ffcadb1a120338f876fe07f6e135dd22b4765303bcf218"
+    },
+    "tools/batch/SN-Batch-Update__stop-on-error.json": {
+      "bytes": 3313,
+      "sha256": "78966d526cd87927f8f2fc1f1082904eee34dc6364da5a232bae03d3a2bb4730"
+    },
+    "tools/catalog/SN-Catalog-Get-Categories__basic.json": {
+      "bytes": 3324,
+      "sha256": "4fbcf1e5f2adf10f02bba274c2693e7da25a7bfca4191a65830bcc10e806562e"
+    },
+    "tools/catalog/SN-Catalog-Get-Item__basic.json": {
+      "bytes": 9555,
+      "sha256": "4d389c04e6b12caf38904c150a7d4615bda6525b15ea8d19116517b70a5a0e0a"
+    },
+    "tools/catalog/SN-Catalog-Search-Items__keyword.json": {
+      "bytes": 4702,
+      "sha256": "b09a03375051c34796b0a7a68d9baae280e083fe6675bb897c21fbe589717f68"
+    },
+    "tools/catalog/SN-Catalog-Submit__basic.json": {
+      "bytes": 2487,
+      "sha256": "011a64f0d7a344fbd8b8b6c66fa36d0ac65571d4cda3852a866882d9e25033c0"
+    },
+    "tools/catalog/SN-Catalog-Submit__http-400.json": {
+      "bytes": 1928,
+      "sha256": "11b117e0550777f5798618dffa0d793ce6c33d9f4d9f36f6e431cce2c0f28f2f"
+    },
+    "tools/catalog/SN-Validate-Configuration__basic.json": {
+      "bytes": 3075,
+      "sha256": "b49cf0912036da9ea0964054a554aea4890181d85aa59b80d9fb5fdcc0d34625"
+    },
+    "tools/crud/SN-Create-Record__basic.json": {
+      "bytes": 2427,
+      "sha256": "99df97f5d28eeb723259504c023878cfc2a70d166f5715237cd0924d5e3634e3"
+    },
+    "tools/crud/SN-Get-Record__basic.json": {
+      "bytes": 2465,
+      "sha256": "9fabab523886c622de3ccd458bec0fafbd7cd9edb50254e31c08f7a5dc3e6462"
+    },
+    "tools/crud/SN-Get-Record__http-404.json": {
+      "bytes": 1797,
+      "sha256": "cbee6e4750084ca49277bffe5da4b4ab3821b85184fe5fe4dcb22479a2fa56a6"
+    },
+    "tools/crud/SN-Query-Table__basic.json": {
+      "bytes": 3570,
+      "sha256": "931964ee07adfd5cd4c5a4b8abccca8b4d9958506fe0de8218bfe867378bcea0"
+    },
+    "tools/crud/SN-Query-Table__http-403.json": {
+      "bytes": 1926,
+      "sha256": "9e0a95f4be96d585398308e58dd014b98919a91a5862fc5e0a75e959f9c254e4"
+    },
+    "tools/crud/SN-Query-Table__invalid-table-arg.json": {
+      "bytes": 2764,
+      "sha256": "5d90cc7e48b3b8e6d6cd4550103fd46601d3e7bc947d712c750d2d4accc6ef4c"
+    },
+    "tools/crud/SN-Query-Table__offset-defaults.json": {
+      "bytes": 3256,
+      "sha256": "9c7dab9a2d8cd6246a095c1143054d8a8de58da5af468e5a213f2d988b2856ee"
+    },
+    "tools/crud/SN-Update-Record__basic.json": {
+      "bytes": 2540,
+      "sha256": "9029204a97d0d500aabc040c90bbc45f4692f4373893a829348604b5a4106ae8"
+    },
+    "tools/docs/SN-Docs-Families__basic.json": {
+      "bytes": 1687,
+      "sha256": "3bd2982bcdae8b8c65270a92543ad6a285d0dba17c46eb6ca41c30bf9ddb46a3"
+    },
+    "tools/docs/SN-Docs-Get__path-traversal-rejected.json": {
+      "bytes": 1269,
+      "sha256": "5f702fb628590536d0f71d10dbcdf0f947fb52cf57e5b38e0997b0e95be787ff"
+    },
+    "tools/docs/SN-Docs-Search__no-cache.json": {
+      "bytes": 1358,
+      "sha256": "13cbcc7bbc4b1fe61cd5b2dc39ad1d0e1584a6c0d37e14a777211389dffbf94c"
+    },
+    "tools/docs/SN-Docs-Status__empty-cache.json": {
+      "bytes": 1361,
+      "sha256": "2b192ceaf2ee71764cff921daaafd8dfb402abf40c8b6b1deee231ed2c9a75b9"
+    },
+    "tools/docs/SN-Docs-Sync__index-disabled-default.json": {
+      "bytes": 4664,
+      "sha256": "c930b2876aa2d68d87e67d01c7f4a672355ae74a0ce71e0c509c7806ef54c40b"
+    },
+    "tools/docs/SN-Docs-Sync__local-index-enabled.json": {
+      "bytes": 5383,
+      "sha256": "65fc450a5fc1a6989929dfaf5c60c82c8b9bbaa1f0d7699c257dd7f0fba6aa4c"
+    },
+    "tools/instances/SN-Get-Current-Instance__registry-default.json": {
+      "bytes": 1290,
+      "sha256": "258881a2001ebcd475c6c70bdee95003a67b96c6b8b623735026175df43c61b4"
+    },
+    "tools/instances/SN-Query-Table__per-call-instance-override.json": {
+      "bytes": 2453,
+      "sha256": "a568fc1524f265bf9de4f4cfda1fbab9b07bf03fcd7751c6a44677dcd723c296"
+    },
+    "tools/instances/SN-Query-Table__unknown-instance-override.json": {
+      "bytes": 1242,
+      "sha256": "ae06fc8cb13046a52b243a909eebab962e35e6f5506625284346ad75be703173"
+    },
+    "tools/instances/SN-Register-Instance__basic-with-stored-credential.json": {
+      "bytes": 2543,
+      "sha256": "b85e66ca22e6666e65d4898c80bda3fe997e6ee61bb7555e7fa27efe816ed711"
+    },
+    "tools/instances/SN-Register-Instance__insecure-url-rejected.json": {
+      "bytes": 1434,
+      "sha256": "29615528a79a1ac39905428d1d49f036ed7611c76bac7b96308c3e5f21983cee"
+    },
+    "tools/instances/SN-Register-Instance__secret-field-rejected.json": {
+      "bytes": 1478,
+      "sha256": "6a757f395a916d02e897229e11f7f2046866b00dc44b980f2837343ff6747c74"
+    },
+    "tools/instances/SN-Set-Instance__list.json": {
+      "bytes": 1538,
+      "sha256": "f2817131150b0eba9ff199add6adf80e07e17d82b60596bf1358ef9effb9981f"
+    },
+    "tools/instances/SN-Set-Instance__switch-then-current.json": {
+      "bytes": 3762,
+      "sha256": "dcf7ac710ae06574d48d5b72edd741a3092d44671a395129dc7da61148d7cc97"
+    },
+    "tools/instances/SN-Set-Instance__unknown-instance.json": {
+      "bytes": 1171,
+      "sha256": "15fe62fd532ca378b9df61dcbfc029bb09c3c6433537349971e179da422b6f89"
+    },
+    "tools/itsm-ops/SN-Add-Change-Comment__basic.json": {
+      "bytes": 2743,
+      "sha256": "823654959655c4d3687d4f6b97e734a3e78e330ee38c436778d63502c392f4ec"
+    },
+    "tools/itsm-ops/SN-Add-Comment__basic.json": {
+      "bytes": 2723,
+      "sha256": "4b59c63de39751356f9eb9d4648877ad31774ded1e6fed5db8dd18c38e17b6a8"
+    },
+    "tools/itsm-ops/SN-Add-Problem-Comment__basic.json": {
+      "bytes": 2723,
+      "sha256": "4c32d8c8b65e850d16d2a2e686962b4f2733b13d20c72fdabbc3f68b995cfc1a"
+    },
+    "tools/itsm-ops/SN-Add-Work-Notes__basic.json": {
+      "bytes": 2732,
+      "sha256": "5c5e6c8526f9fc5faa8edc3080c2c037eec3f18904d63eeec795faa1bcffe9ce"
+    },
+    "tools/itsm-ops/SN-Add-Work-Notes__incident-not-found.json": {
+      "bytes": 1966,
+      "sha256": "ffbd930822ad3a227cdbe42f3e3ca4a50395c639f586957445312f9d4019326f"
+    },
+    "tools/itsm-ops/SN-Approve-Change__basic.json": {
+      "bytes": 2769,
+      "sha256": "3fa6bb37738842795dc6057b9acbddce5bf1bc862af09d0616e2ffcb1afccf8d"
+    },
+    "tools/itsm-ops/SN-Assign-Change__basic.json": {
+      "bytes": 4444,
+      "sha256": "1c30d8a0c459d6928b2b140a26938118b4711f0f763bf8d94909476c5806b771"
+    },
+    "tools/itsm-ops/SN-Assign-Incident__user-and-group.json": {
+      "bytes": 4448,
+      "sha256": "3ab8357cde121227ced1ffdcad56765ca23c87caca3514ffe1189af044d4b79f"
+    },
+    "tools/itsm-ops/SN-Close-Incident__basic.json": {
+      "bytes": 2855,
+      "sha256": "47513363d6b2c1bd6e85144fe14a2dc57feb764c87b98929255529fbc52d6bd8"
+    },
+    "tools/itsm-ops/SN-Close-Problem__basic.json": {
+      "bytes": 2897,
+      "sha256": "a557289bad5bbce49e888871b48c484ee5209f561e77da534cb93ce6ce5b23a1"
+    },
+    "tools/itsm-ops/SN-Resolve-Incident__basic.json": {
+      "bytes": 2895,
+      "sha256": "55276c9c1caf9c40d4fe6ac45435682bc41c8072878282f33d802338f4ae6623"
+    },
+    "tools/itsm/SN-Create-Incident__basic.json": {
+      "bytes": 2639,
+      "sha256": "843c77533df8612c6356801283d4aa1caa58c9d6f5f56396a4da3513108af38c"
+    },
+    "tools/itsm/SN-Get-Incident__basic.json": {
+      "bytes": 2232,
+      "sha256": "8e574fe77b70108c6b049dac9dd453d23d9668e28bcd4bf59291e374d77dc289"
+    },
+    "tools/itsm/SN-List-ChangeRequests__basic.json": {
+      "bytes": 3418,
+      "sha256": "5ce0cec0e7b4cb7e492a1935ea3e5223fe637c8531dbc050190fb76240fbb6e7"
+    },
+    "tools/itsm/SN-List-CmdbCis__basic.json": {
+      "bytes": 2973,
+      "sha256": "7db41efa78a66b090600b721203842d028a85425f2fdcc8fd00d8bb46c01bdf8"
+    },
+    "tools/itsm/SN-List-Incidents__filters.json": {
+      "bytes": 4348,
+      "sha256": "863cdd7871b5a4e65eef18dcd1546359a55a45b296de543ea3eae8c78a6b73ca"
+    },
+    "tools/itsm/SN-List-Problems__basic.json": {
+      "bytes": 3121,
+      "sha256": "88bad65c44285d3842db6c01a27eef7df45c76cd5d2e4944905d8f3e4cfc87c5"
+    },
+    "tools/itsm/SN-List-SysUserGroups__basic.json": {
+      "bytes": 2934,
+      "sha256": "aa43e19b3815d6acb1557ee34fe9ec4efa58eb1ba2fa49c8c9da3f888e5c1eae"
+    },
+    "tools/itsm/SN-List-SysUsers__basic.json": {
+      "bytes": 3372,
+      "sha256": "e99b18e8b9acf12ec2cb633fa14d7766f72a647d6357a3fb06c544312043ea71"
+    },
+    "tools/itsm/SN-Natural-Language-Search__basic.json": {
+      "bytes": 4362,
+      "sha256": "c0141d5420726be9516c293c88962530d28245e6d7afc321e56dad457934d867"
+    },
+    "tools/itsm/SN-Natural-Language-Search__show-patterns.json": {
+      "bytes": 4134,
+      "sha256": "91803a5bb62f3632888e0e858e08d96f3c08bc7fd11759c151aa6bbabcfc7f75"
+    },
+    "tools/schema/SN-Discover-Table-Schema__all-includes.json": {
+      "bytes": 6231,
+      "sha256": "13a78298151502508b46e0f604ff73a0c34928c10c82e8eed40c55f19087a327"
+    },
+    "tools/schema/SN-Discover-Table-Schema__basic.json": {
+      "bytes": 3372,
+      "sha256": "86e8e342606fd1f12112599f95b32fa4a33686a3b79d750f500928789d1d47a6"
+    },
+    "tools/schema/SN-Explain-Field__basic.json": {
+      "bytes": 2194,
+      "sha256": "0e75c04330ddd99a1cc9e7776afdb20b8d65d1d2b634052d17bfae3502d84eda"
+    },
+    "tools/schema/SN-Get-Table-Schema__basic.json": {
+      "bytes": 1878,
+      "sha256": "5f55b5e9070ac3da6f1c3e0491bd036b7cab1458a73588eefd7713d9dbc2f402"
+    },
+    "tools/schema/SN-List-Available-Tables__basic.json": {
+      "bytes": 23351,
+      "sha256": "88547e51f385f9449b9fcf860dc73fe60d75d2e402a62f488e890044f6c4baef"
+    },
+    "tools/schema/SN-List-Available-Tables__category-itsm.json": {
+      "bytes": 23409,
+      "sha256": "797c6821063e177b2c0dba0e60b38dc1bc5ce12d07bc9d7dd705c50ba3674f47"
+    },
+    "tools/scripts/SN-Create-Fix-Script__basic.json": {
+      "bytes": 2506,
+      "sha256": "7e0ef94517b3f376945950843fa55e8cb314f83b49a52220d3ae9713471d12bd"
+    },
+    "tools/scripts/SN-Execute-Background-Script__bad-scope.json": {
+      "bytes": 1460,
+      "sha256": "aa3224907cc3e74efd89c11eaf6af88bbb81ccd6cbc6bbdead6d202908ec291f"
+    },
+    "tools/scripts/SN-Execute-Background-Script__empty-script.json": {
+      "bytes": 1210,
+      "sha256": "e22031da9ab931792f68cc90d14f8cd99eb80a24feaf524c02a3ef7e75d6d534"
+    },
+    "tools/scripts/SN-Execute-Background-Script__processor-script-error.json": {
+      "bytes": 5663,
+      "sha256": "6bca1baf341bacf8e2645cec1a1eb781ad1b806dd84e16412c2ae8648c8ad9c0"
+    },
+    "tools/scripts/SN-Execute-Background-Script__processor-success.json": {
+      "bytes": 5771,
+      "sha256": "904a96cd58b28e677b4947ef9c8a8c410978e48df2cc45a257c3f257ee7a3ce7"
+    },
+    "tools/scripts/SN-Execute-Background-Script__processor-unauthorized-trigger-fallback.json": {
+      "bytes": 9223,
+      "sha256": "d6b191912b5b4ce84f82eabe8c936dcfd137c24b7774a3210f8641b737aeb78c"
+    },
+    "tools/scripts/SN-Execute-Background-Script__scoped-run.json": {
+      "bytes": 5594,
+      "sha256": "cdf99d6e55aca730c5ec8e404519a59b9a4478b7f72ecf0d140c6cc488b152d5"
+    },
+    "tools/update-sets/SN-Clone-Update-Set__basic.json": {
+      "bytes": 5566,
+      "sha256": "6d956b4fc37da767d5e415286557de2a687a37991420e444e4f3f474af39644a"
+    },
+    "tools/update-sets/SN-Get-Current-Update-Set__basic.json": {
+      "bytes": 2310,
+      "sha256": "c73432aeb8dda546afde18726042d0e5c3e703308ca7efa69803895eee124c8a"
+    },
+    "tools/update-sets/SN-Inspect-Update-Set__by-name.json": {
+      "bytes": 3152,
+      "sha256": "b271d3d3bfd01703be78f683f9a3cc23a8b85e60868afaa234a626c03c702250"
+    },
+    "tools/update-sets/SN-Inspect-Update-Set__by-sys-id.json": {
+      "bytes": 3298,
+      "sha256": "3aafc45d9a00adaae7f208db17cc6ea9b7428118b08739b4e0837efacd9ca586"
+    },
+    "tools/update-sets/SN-List-Update-Sets__basic.json": {
+      "bytes": 3740,
+      "sha256": "e868339ed68b66110bd9716e765012535fbcf267e425f606f11c0bbabd769424"
+    },
+    "tools/update-sets/SN-Move-Records-To-Update-Set__by-ids.json": {
+      "bytes": 4137,
+      "sha256": "ef417ed4e5d38def68e679aa56488e8c086c7f38a15c376f638f00a635fe158b"
+    },
+    "tools/update-sets/SN-Move-Records-To-Update-Set__by-time-range.json": {
+      "bytes": 5100,
+      "sha256": "b1e89212c6213e33184e821b0d6f1b66a353833cef51841b08acfb2436ceda6f"
+    },
+    "tools/update-sets/SN-Set-Current-Application__bad-sys-id.json": {
+      "bytes": 1844,
+      "sha256": "8e9fcf2c564e478adbb5093234705d8ea18b5b9ce00b6a343c251825c1fde8ed"
+    },
+    "tools/update-sets/SN-Set-Current-Application__global.json": {
+      "bytes": 4175,
+      "sha256": "1fed05e4cd9fb7875477346484f88e661a07ce5d0f0d0124362e5c4c0d5a584a"
+    },
+    "tools/update-sets/SN-Set-Current-Application__verified.json": {
+      "bytes": 4281,
+      "sha256": "5a2a8704de8cf9bc92a1da0b2b13da6f2d4349643c783d1b40035343262917eb"
+    },
+    "tools/update-sets/SN-Set-Update-Set__bad-sys-id.json": {
+      "bytes": 1278,
+      "sha256": "906d01425b73799f94078fc8bf30fb22f65dd577363f691d17240d712ea606c6"
+    },
+    "tools/update-sets/SN-Set-Update-Set__picker-fails-fix-script.json": {
+      "bytes": 5289,
+      "sha256": "87af10f367aad4e1de6455ba17cf740702223e2da0384a93f2a88a3b4405cfb2"
+    },
+    "tools/update-sets/SN-Set-Update-Set__verified.json": {
+      "bytes": 4312,
+      "sha256": "94cdc5a80055b5d1c529634f496349a09ac5941af1aef0293ae5e244d35ec816"
+    },
+    "tools/workflow/SN-Create-Activity__basic.json": {
+      "bytes": 2481,
+      "sha256": "084d62c4a4ae3db86d7d8db6a34ac996d6e5fb70a9cc7f089bbcc02e42cdad1c"
+    },
+    "tools/workflow/SN-Create-Transition__basic.json": {
+      "bytes": 3246,
+      "sha256": "616bf27bc1a24cb3009f3b69537d8577fa9973c14638ce6a25b0ac3e38ec175b"
+    },
+    "tools/workflow/SN-Create-Workflow__two-activities.json": {
+      "bytes": 7491,
+      "sha256": "63244541bdf88821c4067f2f4409d7c2a7d9998a3d99cb841761a0394adaea04"
+    },
+    "tools/workflow/SN-Publish-Workflow__basic.json": {
+      "bytes": 2170,
+      "sha256": "4747a6a358c6139eece688240fce8b0498356286d791a4ed6ef33c0038415c2f"
+    }
+  },
+  "stages": [
+    "surface",
+    "cli",
+    "tools"
+  ],
+  "toolCoverage": {
+    "SN-Add-Change-Comment": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Add-Comment": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Add-Problem-Comment": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Add-Work-Notes": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Approve-Change": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Assign-Change": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Assign-Incident": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Batch-Create": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Batch-Update": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Catalog-Get-Categories": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Catalog-Get-Item": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Catalog-Search-Items": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Catalog-Submit": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Clone-Update-Set": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Close-Incident": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Close-Problem": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Create-Activity": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Create-Fix-Script": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 0
+    },
+    "SN-Create-Incident": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Create-Record": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Create-Transition": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Create-Workflow": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Discover-Table-Schema": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Docs-Families": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Docs-Get": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 0
+    },
+    "SN-Docs-Search": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 0
+    },
+    "SN-Docs-Status": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 0
+    },
+    "SN-Docs-Sync": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 1
+    },
+    "SN-Execute-Background-Script": {
+      "captures": 6,
+      "scenarios": 6,
+      "withOutboundHttp": 4
+    },
+    "SN-Explain-Field": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Get-ATF-Results": {
+      "captures": 3,
+      "scenarios": 3,
+      "withOutboundHttp": 2
+    },
+    "SN-Get-ATF-Test-Logs": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 1
+    },
+    "SN-Get-CICD-Progress": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Get-Current-Instance": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 0
+    },
+    "SN-Get-Current-Update-Set": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Get-Incident": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Get-Record": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Get-Table-Schema": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 0
+    },
+    "SN-Inspect-Update-Set": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-List-Available-Tables": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 0
+    },
+    "SN-List-ChangeRequests": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-List-CmdbCis": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-List-Incidents": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-List-Problems": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-List-SysUserGroups": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-List-SysUsers": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-List-Update-Sets": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Move-Records-To-Update-Set": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Natural-Language-Search": {
+      "captures": 2,
+      "scenarios": 2,
+      "withOutboundHttp": 2
+    },
+    "SN-Publish-Workflow": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Query-Table": {
+      "captures": 6,
+      "scenarios": 6,
+      "withOutboundHttp": 5
+    },
+    "SN-Register-Instance": {
+      "captures": 3,
+      "scenarios": 3,
+      "withOutboundHttp": 0
+    },
+    "SN-Resolve-Incident": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Run-ATF-Suite": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Run-ATF-Test": {
+      "captures": 3,
+      "scenarios": 3,
+      "withOutboundHttp": 2
+    },
+    "SN-Set-Current-Application": {
+      "captures": 3,
+      "scenarios": 3,
+      "withOutboundHttp": 2
+    },
+    "SN-Set-Instance": {
+      "captures": 3,
+      "scenarios": 3,
+      "withOutboundHttp": 0
+    },
+    "SN-Set-Update-Set": {
+      "captures": 3,
+      "scenarios": 3,
+      "withOutboundHttp": 2
+    },
+    "SN-Update-Record": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    },
+    "SN-Validate-Configuration": {
+      "captures": 1,
+      "scenarios": 1,
+      "withOutboundHttp": 1
+    }
+  }
+}

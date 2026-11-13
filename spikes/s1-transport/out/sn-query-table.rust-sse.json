@@ -1,0 +1,8 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Found 1 records in sys_user:\n[\n  {\n    \"sys_id\": \"005d500b536073005e0addeeff7b12f4\",\n    \"user_name\": \"survey.user\"\n  }\n]"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "after": {
+    "keyringAccounts": [
+      "keychain:instance/first/password"
+    ],
+    "keyringValueMatchesFakeSecret": {
+      "keychain:instance/first/password": true
+    },
+    "registryJson": {
+      "instances": [
+        {
+          "authType": "basic",
+          "credentialRef": "keychain:instance/first/password",
+          "default": true,
+          "name": "first",
+          "url": "http://127.0.0.1:1",
+          "username": "golden.user"
+        }
+      ],
+      "version": 1
+    }
+  },
+  "answers": {
+    "authType": "basic",
+    "name": "first",
+    "url": "http://127.0.0.1:1",
+    "username": "golden.user"
+  },
+  "argv": [
+    "instance",
+    "add"
+  ],
+  "exit": {
+    "code": 0
+  },
+  "id": "cli/interactive/add-into-empty-registry-becomes-default",
+  "mode": "in-process dispatch(argv, {prompts injected}); real registry file + real credential store over fake keyring",
+  "outbound": [],
+  "promptCalls": [
+    {
+      "answered": "first",
+      "hasDefault": false,
+      "hasMask": false,
+      "kind": "input",
+      "message": "Instance name:",
+      "name": "name"
+    },
+    {
+      "answered": "http://127.0.0.1:1",
+      "hasDefault": false,
+      "hasMask": false,
+      "kind": "input",
+      "message": "ServiceNow URL:",
+      "name": "url"
+    },
+    {
+      "answered": "basic",
+      "hasDefault": true,
+      "hasMask": false,
+      "kind": "select",
+      "message": "Authentication type:",
+      "name": "authType"
+    },
+    {
+      "answered": "golden.user",
+      "hasDefault": false,
+      "hasMask": false,
+      "kind": "input",
+      "message": "Username:",
+      "name": "username"
+    },
+    {
+      "answered": "",
+      "hasDefault": true,
+      "hasMask": false,
+      "kind": "input",
+      "message": "Description:",
+      "name": "description"
+    },
+    {
+      "answered": "<masked>",
+      "hasDefault": false,
+      "hasMask": true,
+      "kind": "password",
+      "message": "Password:",
+      "name": "password"
+    }
+  ],
+  "runnerError": null,
+  "stderr": "Release notes and security advisories: https://happy-tech.biz/mcp\n",
+  "stdout": "Added instance 'first'.\n{\n  \"authType\": \"basic\",\n  \"credentialRef\": \"keychain:instance/first/password\",\n  \"default\": true,\n  \"name\": \"first\",\n  \"url\": \"http://127.0.0.1:1\",\n  \"username\": \"golden.user\"\n}\n"
+}

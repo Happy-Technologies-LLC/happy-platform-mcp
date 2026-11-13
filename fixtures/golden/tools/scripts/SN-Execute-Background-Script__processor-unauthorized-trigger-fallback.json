@@ -1,0 +1,267 @@
+{
+  "description": "SN-Execute-Background-Script processor-unauthorized-trigger-fallback",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "scripts",
+  "harnessError": null,
+  "id": "SN-Execute-Background-Script/processor-unauthorized-trigger-fallback",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🚀 Executing background script via /sys.scripts.do...",
+    "⚠️  The /sys.scripts.do processor did not run the script: HTTP 403 from /sys.scripts.do (running background scripts requires the admin role); falling back to sys_trigger",
+    "🚀 Executing background script via sys_trigger..."
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/x-www-form-urlencoded",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "POST",
+          "path": "/angular.do",
+          "query": [
+            [
+              "sysparm_type",
+              "get_user"
+            ]
+          ],
+          "rawQuery": "sysparm_type=get_user",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/user/current_user",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_user_session",
+          "query": [
+            [
+              "sysparm_fields",
+              "csrf_token,id"
+            ],
+            [
+              "sysparm_query",
+              "id=GOLDENSESSION"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_fields=csrf_token,id&sysparm_query=id%3DGOLDENSESSION&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "form": [
+            [
+              "script",
+              "gs.print(\"fallback\");"
+            ],
+            [
+              "sysparm_ck",
+              "golden-csrf-token"
+            ],
+            [
+              "runscript",
+              "Run script"
+            ],
+            [
+              "quota_managed_transaction",
+              "on"
+            ],
+            [
+              "record_for_rollback",
+              "on"
+            ]
+          ],
+          "headers": {
+            "accept": "*/*",
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "POST",
+          "path": "/sys.scripts.do",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "description": "MCP Script Execution",
+            "name": "MCP_Script_{{EPOCH_MS}}",
+            "next_action": "{{SN_DATETIME}}",
+            "script": "gs.print(\"fallback\");",
+            "state": "0",
+            "trigger_type": "0"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/sys_trigger",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "script": "\n// Auto-generated MCP script trigger\ngs.info('MCP_{{EPOCH_MS}}_{{MARKER}}:START');\ntry {\n  gs.print(\"fallback\");\n  gs.info('MCP_{{EPOCH_MS}}_{{MARKER}}:END' + JSON.stringify({ ok: true }));\n} catch (e) {\n  gs.info('MCP_{{EPOCH_MS}}_{{MARKER}}:END' + JSON.stringify({ ok: false, error: e.message, stack: e.stack || '' }));\n} finally {\n  var triggerGR = new GlideRecord('sys_trigger');\n  if (triggerGR.get('4bcc4dbfa4e6d5fc0d91600923894586')) {\n    triggerGR.deleteRecord();\n  }\n}"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/sys_trigger/4bcc4dbfa4e6d5fc0d91600923894586",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/syslog",
+          "query": [
+            [
+              "sysparm_query",
+              "messageLIKEMCP_{{EPOCH_MS}}_{{MARKER}}:END^sys_created_on>={{SN_DATETIME}}^ORDERBYDESCsys_created_on"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ],
+            [
+              "sysparm_fields",
+              "message,sys_created_on"
+            ]
+          ],
+          "rawQuery": "sysparm_query=messageLIKEMCP_{{EPOCH_MS}}_{{MARKER}}%3AEND%5Esys_created_on%3E%3D{{SN_DATETIME_ENCODED}}%5EORDERBYDESCsys_created_on&sysparm_limit=1&sysparm_fields=message%2Csys_created_on",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/syslog",
+          "query": [
+            [
+              "sysparm_query",
+              "source=*** Script^sys_created_on>={{SN_DATETIME}}^sys_created_on<={{SN_DATETIME}}^ORDERBYsys_created_on"
+            ],
+            [
+              "sysparm_limit",
+              "110"
+            ],
+            [
+              "sysparm_fields",
+              "message,sys_created_on"
+            ]
+          ],
+          "rawQuery": "sysparm_query=source%3D***+Script%5Esys_created_on%3E%3D{{SN_DATETIME_ENCODED}}%5Esys_created_on%3C%3D{{SN_DATETIME_ENCODED}}%5EORDERBYsys_created_on&sysparm_limit=110&sysparm_fields=message%2Csys_created_on",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "gs.print(\"fallback\");"
+          },
+          "name": "SN-Execute-Background-Script"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "↪️ Method: sys_trigger fallback. The /sys.scripts.do processor did not run the script (HTTP 403 from /sys.scripts.do (running background scripts requires the admin role)), so it was handed to a sys_trigger job instead. That job runs in the scheduler's session, not yours: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), and no rollback context is recorded (record_for_rollback could not be honored).\n\n✅ Script executed successfully!\n\n\n📊 Trigger Details:\n- Trigger sys_id: 4bcc4dbfa4e6d5fc0d91600923894586\n- Trigger name: MCP_Script_{{EPOCH_MS}}\n- Ran at: {{SN_DATETIME}}\n- Auto-delete: Yes\n\n📜 Script logs: (none captured)\n\n📤 Output:\n{}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Execute-Background-Script"
+}

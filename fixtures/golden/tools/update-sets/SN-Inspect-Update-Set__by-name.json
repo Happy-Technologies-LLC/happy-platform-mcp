@@ -1,0 +1,97 @@
+{
+  "description": "SN-Inspect-Update-Set by-name",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Inspect-Update-Set/by-name",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔎 Inspecting update set Golden Update Set 1"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_set/Golden%20Update%20Set%201",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_xml",
+          "query": [
+            [
+              "sysparm_query",
+              "update_set=Golden Update Set 1"
+            ],
+            [
+              "sysparm_limit",
+              "10000"
+            ],
+            [
+              "sysparm_fields",
+              "type,name,target_name"
+            ]
+          ],
+          "rawQuery": "sysparm_query=update_set%3DGolden+Update+Set+1&sysparm_limit=10000&sysparm_fields=type%2Cname%2Ctarget_name",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "update_set": "Golden Update Set 1"
+          },
+          "name": "SN-Inspect-Update-Set"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Update set inspection:\n{\n  \"update_set\": {\n    \"sys_id\": \"Golden%20Update%20Set%201\",\n    \"name\": \"Golden Update Set 1\",\n    \"state\": \"in progress\",\n    \"description\": \"Golden update set\"\n  },\n  \"total_records\": 3,\n  \"components\": [\n    {\n      \"type\": \"unknown\",\n      \"count\": 3,\n      \"items\": [\n        \"golden-sys_update_xml-1\",\n        \"golden-sys_update_xml-2\",\n        \"golden-sys_update_xml-3\"\n      ]\n    }\n  ],\n  \"ready_to_deploy\": false\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Inspect-Update-Set"
+}

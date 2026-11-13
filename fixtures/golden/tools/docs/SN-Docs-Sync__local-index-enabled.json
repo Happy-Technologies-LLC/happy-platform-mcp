@@ -1,0 +1,171 @@
+{
+  "description": "SN-Docs-Sync local-index-enabled",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "docs",
+  "harnessError": null,
+  "id": "SN-Docs-Sync/local-index-enabled",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "none",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/plain",
+            "accept-language": "*",
+            "sec-fetch-mode": "cors",
+            "user-agent": "node"
+          },
+          "method": "GET",
+          "path": "/ServiceNow/ServiceNowDocs/main/llms.txt",
+          "query": [],
+          "rawQuery": "",
+          "target": "github-raw"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "none",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/plain",
+            "accept-language": "*",
+            "sec-fetch-mode": "cors",
+            "user-agent": "node"
+          },
+          "method": "GET",
+          "path": "/ServiceNow/ServiceNowDocs/australia/llms.txt",
+          "query": [],
+          "rawQuery": "",
+          "target": "github-raw"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "none",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/plain",
+            "accept-language": "*",
+            "sec-fetch-mode": "cors",
+            "user-agent": "node"
+          },
+          "method": "GET",
+          "path": "/ServiceNow/ServiceNowDocs/australia/platform/flow.md",
+          "query": [],
+          "rawQuery": "",
+          "target": "github-raw"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "none",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/plain",
+            "accept-language": "*",
+            "sec-fetch-mode": "cors",
+            "user-agent": "node"
+          },
+          "method": "GET",
+          "path": "/ServiceNow/ServiceNowDocs/australia/platform/tables.md",
+          "query": [],
+          "rawQuery": "",
+          "target": "github-raw"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "family": "australia"
+          },
+          "name": "SN-Docs-Sync"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"family\": \"australia\",\n  \"branch\": \"australia\",\n  \"documentsSynced\": 2,\n  \"documentsSkipped\": 0,\n  \"skippedDocuments\": [],\n  \"documentsRemoved\": 0,\n  \"linksRejected\": 0,\n  \"rejectedLinks\": []\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Docs-Status"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"cacheDir\": \"{{TMP}}/SN-Docs-Sync_local-index-enabled/docs-cache\",\n  \"localIndexEnabled\": true,\n  \"sqliteAvailable\": true,\n  \"dbPath\": \"{{TMP}}/SN-Docs-Sync_local-index-enabled/docs-cache/index.sqlite\",\n  \"ftsAvailable\": true,\n  \"vectorAvailable\": false,\n  \"vectorReason\": \"Vector search disabled\",\n  \"families\": [\n    {\n      \"name\": \"australia\",\n      \"branch\": \"australia\",\n      \"syncedAt\": \"{{ISO_TIMESTAMP}}\"\n    }\n  ]\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "family": "australia",
+            "limit": 3,
+            "query": "flow subflows"
+          },
+          "name": "SN-Docs-Search"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"query\": \"flow subflows\",\n  \"family\": \"australia\",\n  \"results\": [\n    {\n      \"id\": 1,\n      \"family\": \"australia\",\n      \"path\": \"platform/flow.md\",\n      \"title\": \"Flow\",\n      \"heading\": \"Flow\",\n      \"startLine\": 1,\n      \"endLine\": 4,\n      \"snippet\": \"# <mark>Flow</mark>\\n\\nCreate <mark>flow</mark> actions and <mark>subflows</mark>.\"\n    }\n  ],\n  \"message\": \"Found locally indexed ServiceNow documentation results.\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Docs-Sync"
+}

@@ -1,0 +1,49 @@
+{
+  "description": "SN-Register-Instance insecure-url-rejected",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "instances",
+  "harnessError": null,
+  "id": "SN-Register-Instance/insecure-url-rejected",
+  "mode": "registry-multi-instance",
+  "stderr": [
+    "🔗 Default ServiceNow instance: dev ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: dev - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "name": "bad",
+            "url": "http://staging.example.invalid",
+            "username": "golden.user"
+          },
+          "name": "SN-Register-Instance"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"success\": false,\n  \"code\": \"INVALID_INSTANCE_CONFIG\",\n  \"message\": \"Instance metadata failed canonical validation\",\n  \"details\": {\n    \"field\": \"url\"\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Register-Instance"
+}

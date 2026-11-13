@@ -1,0 +1,44 @@
+{
+  "description": "SN-Set-Instance list",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "instances",
+  "harnessError": null,
+  "id": "SN-Set-Instance/list",
+  "mode": "registry-multi-instance",
+  "stderr": [
+    "🔗 Default ServiceNow instance: dev ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: dev - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Set-Instance"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"message\": \"Available ServiceNow instances\",\n  \"current_instance\": {\n    \"name\": \"dev\",\n    \"url\": \"{{INSTANCE_URL}}\",\n    \"authType\": \"basic\"\n  },\n  \"instances\": [\n    {\n      \"name\": \"dev\",\n      \"url\": \"{{INSTANCE_URL}}\",\n      \"default\": true,\n      \"description\": \"Golden dev\"\n    },\n    {\n      \"name\": \"prod\",\n      \"url\": \"{{INSTANCE_URL_ALT}}\",\n      \"default\": false,\n      \"description\": \"Golden prod\"\n    }\n  ]\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Set-Instance"
+}

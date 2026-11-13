@@ -1,0 +1,112 @@
+{
+  "description": "SN-Batch-Update stop-on-error",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "batch",
+  "harnessError": null,
+  "id": "SN-Batch-Update/stop-on-error",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📦 Batch updating 3 records (progress: true)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "state": "2"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/incident/8dce91cd01ccb903cce2773e4168a30b",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "state": "3"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/incident/8836c917dac1a73d20df9d0a87da35bb",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "stop_on_error": true,
+            "updates": [
+              {
+                "data": {
+                  "state": "2"
+                },
+                "sys_id": "8dce91cd01ccb903cce2773e4168a30b",
+                "table": "incident"
+              },
+              {
+                "data": {
+                  "state": "3"
+                },
+                "sys_id": "8836c917dac1a73d20df9d0a87da35bb",
+                "table": "incident"
+              },
+              {
+                "data": {
+                  "state": "4"
+                },
+                "sys_id": "40c76942550e4c573f95558fe79f74bf",
+                "table": "incident"
+              }
+            ]
+          },
+          "name": "SN-Batch-Update"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Batch update completed with errors:\n{\n  \"success\": false,\n  \"updated_count\": 1,\n  \"errors\": [\n    {\n      \"update_index\": 1,\n      \"table\": \"incident\",\n      \"sys_id\": \"8836c917dac1a73d20df9d0a87da35bb\",\n      \"error\": \"404 No Record found golden\"\n    }\n  ],\n  \"execution_time_ms\": {{N}}\n}",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Batch-Update"
+}

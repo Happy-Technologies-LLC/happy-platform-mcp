@@ -1,0 +1,95 @@
+{
+  "description": "SN-Add-Comment basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm-ops",
+  "harnessError": null,
+  "id": "SN-Add-Comment/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/incident",
+          "query": [
+            [
+              "sysparm_query",
+              "number=INC0010001"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=number%3DINC0010001&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "comments": "golden customer-visible comment"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/incident/2fc8aa1ec6d67779a3ab923ac2cc7238",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "comment": "golden customer-visible comment",
+            "incident_number": "INC0010001"
+          },
+          "name": "SN-Add-Comment"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Comment added to INC0010001\n\nIncident: INC0010001\nsys_id: 2fc8aa1ec6d67779a3ab923ac2cc7238\nComment: golden customer-visible comment\nUpdated: {{ISO_TIMESTAMP}}\n\nThe comment has been successfully added to the incident.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Add-Comment"
+}

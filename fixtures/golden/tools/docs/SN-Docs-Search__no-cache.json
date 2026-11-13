@@ -1,0 +1,46 @@
+{
+  "description": "SN-Docs-Search no-cache",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "docs",
+  "harnessError": null,
+  "id": "SN-Docs-Search/no-cache",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "query": "flow"
+          },
+          "name": "SN-Docs-Search"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"query\": \"flow\",\n  \"family\": \"australia\",\n  \"results\": [],\n  \"message\": \"Local ServiceNow docs search is disabled. Use SN-Docs-Get for direct GitHub retrieval, or set docs.localIndexEnabled=true / HAPPY_DOCS_ENABLE_LOCAL_INDEX=true and run SN-Docs-Sync.\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Docs-Search"
+}

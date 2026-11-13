@@ -1,0 +1,102 @@
+{
+  "description": "SN-Discover-Table-Schema basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "schema",
+  "harnessError": null,
+  "id": "SN-Discover-Table-Schema/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔍 Discovering enhanced schema for incident"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_db_object",
+          "query": [
+            [
+              "sysparm_query",
+              "name=incident"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3Dincident&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_dictionary",
+          "query": [
+            [
+              "sysparm_query",
+              "name=incident"
+            ],
+            [
+              "sysparm_limit",
+              "1000"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3Dincident&sysparm_limit=1000",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "table_name": "incident"
+          },
+          "name": "SN-Discover-Table-Schema"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Enhanced schema for incident:\n{\n  \"table\": \"incident\",\n  \"label\": \"Incident\",\n  \"fields\": [\n    {\n      \"name\": \"field_1\",\n      \"label\": \"Field 1\",\n      \"internal_type\": \"string\",\n      \"max_length\": \"40\",\n      \"mandatory\": false,\n      \"read_only\": false\n    },\n    {\n      \"name\": \"field_2\",\n      \"label\": \"Field 2\",\n      \"internal_type\": \"string\",\n      \"max_length\": \"40\",\n      \"mandatory\": false,\n      \"read_only\": false\n    },\n    {\n      \"name\": \"field_3\",\n      \"label\": \"Field 3\",\n      \"internal_type\": \"string\",\n      \"max_length\": \"40\",\n      \"mandatory\": false,\n      \"read_only\": false\n    }\n  ]\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Discover-Table-Schema"
+}

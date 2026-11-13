@@ -1,0 +1,77 @@
+{
+  "description": "SN-Explain-Field basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "schema",
+  "harnessError": null,
+  "id": "SN-Explain-Field/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📖 Explaining field incident.state"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_dictionary",
+          "query": [
+            [
+              "sysparm_query",
+              "name=incident^element=state"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3Dincident%5Eelement%3Dstate&sysparm_limit=1",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "field": "state",
+            "include_examples": true,
+            "table": "incident"
+          },
+          "name": "SN-Explain-Field"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Field explanation for incident.state:\n{\n  \"field\": \"state\",\n  \"table\": \"incident\",\n  \"label\": \"Field 1\",\n  \"type\": \"string\",\n  \"max_length\": \"40\",\n  \"mandatory\": false,\n  \"read_only\": false\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Explain-Field"
+}

@@ -1,0 +1,72 @@
+# NOT ENABLED. Lives in spikes/s3-packaging/dist-ci/; copy to .github/workflows/ to activate.
+# Matrix for the S3 spike: golden identity vectors, host dist build + npm shim, and the
+# JS -> Rust OS-keychain vectors on all three credential back ends. Linux/Windows legs have
+# never been executed by the spike author (only macOS arm64 + a Docker Linux run).
+name: s3-packaging
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["spikes/s3-packaging/**", "src/instance-credential-store.js", "src/token-store.js", "src/servicenow-client.js"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: spikes/s3-packaging
+
+jobs:
+  vectors-and-npm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-dist 0.34.0
+        run: cargo install cargo-dist --locked --version 0.34.0
+      - name: Golden identity-v1 vectors (JS tuple serialization == Rust)
+        run: cargo test --test identity_vectors -- --nocapture
+      - name: dist host build + npm pack + shim/npx launch (scripts/verify-local.sh)
+        run: ./scripts/verify-local.sh
+
+  keychain-vectors:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14,         backend: apple-native-keyring-store }
+          - { os: ubuntu-24.04,     backend: dbus-secret-service-keyring-store }
+          - { os: windows-2022,     backend: windows-native-keyring-store }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install repo deps (@napi-rs/keyring native module)
+        working-directory: .
+        run: npm ci --omit=dev --no-audit --no-fund
+      - name: Linux - libdbus + gnome-keyring
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gnome-keyring libdbus-1-dev pkg-config dbus
+      - name: Pre-build vector test binary
+        run: cargo test --test keychain_vectors --no-run
+      - name: macOS / Windows - run vectors (JS writes -> Rust reads -> Rust writes -> JS reads -> cleanup)
+        if: runner.os != 'Linux'
+        run: node scripts/run-keychain-vectors.mjs
+      - name: Linux - run vectors in a private D-Bus session with a freshly created, unlocked login keyring
+        # Verified in Docker: the keyring password must be NON-empty, and the daemon's exported
+        # environment must be eval'd; --daemonize / empty-password variants leave no default collection.
+        if: runner.os == 'Linux'
+        run: |
+          dbus-run-session -- bash -c 'eval $(echo -n ci-test-pw | gnome-keyring-daemon --unlock --components=secrets)
+            node scripts/run-keychain-vectors.mjs'

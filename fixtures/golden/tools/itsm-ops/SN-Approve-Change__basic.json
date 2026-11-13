@@ -1,0 +1,96 @@
+{
+  "description": "SN-Approve-Change basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm-ops",
+  "harnessError": null,
+  "id": "SN-Approve-Change/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/change_request",
+          "query": [
+            [
+              "sysparm_query",
+              "number=CHG0030001"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=number%3DCHG0030001&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "approval": "approved",
+            "comments": "golden approval"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/change_request/e0624e2745e0f5aaaa1fa36d29956fc2",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "approval_comments": "golden approval",
+            "change_number": "CHG0030001"
+          },
+          "name": "SN-Approve-Change"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ CHG0030001 approved successfully\n\nChange Request: CHG0030001\nsys_id: e0624e2745e0f5aaaa1fa36d29956fc2\nApproval: approved\nComments: golden approval\nUpdated: {{ISO_TIMESTAMP}}\n\nThe change request has been approved successfully.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Approve-Change"
+}

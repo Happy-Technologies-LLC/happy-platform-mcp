@@ -1,0 +1,151 @@
+{
+  "description": "SN-Assign-Change basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm-ops",
+  "harnessError": null,
+  "id": "SN-Assign-Change/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/change_request",
+          "query": [
+            [
+              "sysparm_query",
+              "number=CHG0030001"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=number%3DCHG0030001&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_user",
+          "query": [
+            [
+              "sysparm_query",
+              "name=golden.user1^ORuser_name=golden.user1"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3Dgolden.user1%5EORuser_name%3Dgolden.user1&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_user_group",
+          "query": [
+            [
+              "sysparm_query",
+              "name=Golden Group 1"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3DGolden+Group+1&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "assigned_to": "8d1cba9bbb9a19d3a8ab22c62b5c2df1",
+            "assignment_group": "d1f6c3507567a9d433c80f708a13fff8"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/change_request/e0624e2745e0f5aaaa1fa36d29956fc2",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "assigned_to": "golden.user1",
+            "assignment_group": "Golden Group 1",
+            "change_number": "CHG0030001"
+          },
+          "name": "SN-Assign-Change"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ CHG0030001 assigned successfully\n\nChange Request: CHG0030001\nsys_id: e0624e2745e0f5aaaa1fa36d29956fc2\nAssigned To: 8d1cba9bbb9a19d3a8ab22c62b5c2df1\nAssignment Group: d1f6c3507567a9d433c80f708a13fff8\nUpdated: {{ISO_TIMESTAMP}}\n\nThe change request has been assigned successfully.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Assign-Change"
+}

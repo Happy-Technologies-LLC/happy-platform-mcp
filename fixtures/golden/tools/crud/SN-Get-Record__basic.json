@@ -1,0 +1,72 @@
+{
+  "description": "SN-Get-Record basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "crud",
+  "harnessError": null,
+  "id": "SN-Get-Record/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/incident/8dce91cd01ccb903cce2773e4168a30b",
+          "query": [
+            [
+              "sysparm_fields",
+              "number,short_description"
+            ]
+          ],
+          "rawQuery": "sysparm_fields=number%2Cshort_description",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "fields": "number,short_description",
+            "sys_id": "8dce91cd01ccb903cce2773e4168a30b",
+            "table_name": "incident"
+          },
+          "name": "SN-Get-Record"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"sys_id\": \"8dce91cd01ccb903cce2773e4168a30b\",\n  \"sys_created_on\": \"2026-01-15 12:00:00\",\n  \"sys_updated_on\": \"2026-01-15 12:00:00\",\n  \"sys_created_by\": \"golden.user\",\n  \"sys_updated_by\": \"golden.user\",\n  \"sys_class_name\": \"incident\",\n  \"number\": \"INC0000001\",\n  \"short_description\": \"Golden incident 1\",\n  \"state\": \"1\",\n  \"priority\": \"3\",\n  \"urgency\": \"2\",\n  \"impact\": \"2\",\n  \"category\": \"software\",\n  \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n  \"assigned_to\": \"\",\n  \"assignment_group\": \"\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-Record"
+}

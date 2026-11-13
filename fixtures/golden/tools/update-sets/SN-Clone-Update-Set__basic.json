@@ -1,0 +1,180 @@
+{
+  "description": "SN-Clone-Update-Set basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Clone-Update-Set/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔄 Cloning update set ed62390adb712ed83486d9105c442b81 (progress: true)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_set/ed62390adb712ed83486d9105c442b81",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_xml",
+          "query": [
+            [
+              "sysparm_query",
+              "update_set=ed62390adb712ed83486d9105c442b81^ORDERBYsys_id"
+            ],
+            [
+              "sysparm_limit",
+              "1000"
+            ]
+          ],
+          "rawQuery": "sysparm_query=update_set%3Ded62390adb712ed83486d9105c442b81%5EORDERBYsys_id&sysparm_limit=1000",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "application": "09d04d9cdba21c4d3e07fd98f37a1db9",
+            "description": "Clone of: Golden Update Set 1\n\nGolden update set",
+            "name": "Golden Clone",
+            "state": "in progress"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/sys_update_set",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "name": "golden-sys_update_xml-1",
+            "update_set": "38245a4cee198bec04f1374f7785a6c1"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/sys_update_xml",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "name": "golden-sys_update_xml-2",
+            "update_set": "38245a4cee198bec04f1374f7785a6c1"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/sys_update_xml",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "name": "golden-sys_update_xml-3",
+            "update_set": "38245a4cee198bec04f1374f7785a6c1"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/sys_update_xml",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "new_name": "Golden Clone",
+            "source_update_set_id": "ed62390adb712ed83486d9105c442b81"
+          },
+          "name": "SN-Clone-Update-Set"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Update set cloned successfully!\n\nSource Update Set: Golden Update Set 1\nSource sys_id: ed62390adb712ed83486d9105c442b81\n\nNew Update Set: Golden Clone\nNew sys_id: 38245a4cee198bec04f1374f7785a6c1\n\nRecords cloned: 3 / 3\n\nThe cloned update set is now in \"In Progress\" state and ready for use.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Clone-Update-Set"
+}

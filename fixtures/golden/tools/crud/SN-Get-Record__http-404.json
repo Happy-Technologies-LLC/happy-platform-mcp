@@ -1,0 +1,67 @@
+{
+  "description": "SN-Get-Record http-404",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "crud",
+  "harnessError": null,
+  "id": "SN-Get-Record/http-404",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/incident/4a7dbb25c27fc8894b866ae92feef15a",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "sys_id": "4a7dbb25c27fc8894b866ae92feef15a",
+            "table_name": "incident"
+          },
+          "name": "SN-Get-Record"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: 404 No Record found Record doesn't exist or ACL restricts the record retrieval",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-Record"
+}

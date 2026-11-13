@@ -1,0 +1,81 @@
+{
+  "description": "SN-Get-Current-Update-Set basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Get-Current-Update-Set/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/html",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/concoursepicker/updateset",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Get-Current-Update-Set"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Current update set:\n{\n  \"result\": {\n    \"name\": \"Golden current update set\",\n    \"value\": \"6a90a5fe751272b638e1f70a925864ff\",\n    \"sys_id\": \"6a90a5fe751272b638e1f70a925864ff\"\n  }\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-Current-Update-Set"
+}

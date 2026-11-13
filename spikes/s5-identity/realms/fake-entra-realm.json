@@ -1,0 +1,75 @@
+{
+  "realm": "fake-entra",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 3600,
+  "ssoSessionIdleTimeout": 36000,
+  "ssoSessionMaxLifespan": 86400,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      {"name": "hpm.user", "description": "stands in for the Entra app role hpm.user"},
+      {"name": "hpm.developer"},
+      {"name": "hpm.admin"},
+      {"name": "hpm.auditor"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "hpm-keycloak-broker",
+      "name": "Stands in for the Entra app registration hpm-keycloak-broker",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${BROKER_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:8080/realms/hpm/broker/entra/endpoint"],
+      "webOrigins": [],
+      "attributes": {
+        "post.logout.redirect.uris": "+",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "true"
+      },
+      "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"],
+      "protocolMappers": [
+        {
+          "name": "app-roles-as-roles-claim",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "hpm-reconciler",
+      "name": "Stands in for a Graph app registration with User.Read.All (client credentials)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${RECONCILER_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-hpm-reconciler",
+      "enabled": true,
+      "serviceAccountClientId": "hpm-reconciler",
+      "clientRoles": {"realm-management": ["view-users", "query-users", "view-realm"]}
+    }
+  ]
+}

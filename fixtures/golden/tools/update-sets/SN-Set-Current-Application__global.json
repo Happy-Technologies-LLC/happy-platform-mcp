@@ -1,0 +1,141 @@
+{
+  "description": "SN-Set-Current-Application global",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Set-Current-Application/global",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔄 Setting current application to: global"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_scope/global",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/html",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/concoursepicker/application",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "app_id": "global"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/ui/concoursepicker/application",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/concoursepicker/application",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "app_sys_id": "global"
+          },
+          "name": "SN-Set-Current-Application"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Application set to current: Golden App 1\n\n🔧 Method: UI API endpoint (/api/now/ui/concoursepicker/application)\n✅ Verification: passed\n↩️ Previous scope: Global (global)\n\nThe application scope has been set as your current application. Refresh your ServiceNow browser to see the change in the top bar.",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Set-Current-Application"
+}

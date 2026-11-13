@@ -1,0 +1,71 @@
+{
+  "description": "SN-Catalog-Submit http-400",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "catalog",
+  "harnessError": null,
+  "id": "SN-Catalog-Submit/http-400",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📋 Submitting catalog form: f5ef0c68502d26a2608db13130663ab0"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "sysparm_quantity": 1,
+            "variables": {}
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/sn_sc/servicecatalog/items/f5ef0c68502d26a2608db13130663ab0/order_now",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "sys_id": "f5ef0c68502d26a2608db13130663ab0",
+            "variables": {}
+          },
+          "name": "SN-Catalog-Submit"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: 400 Mandatory variables missing golden",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Catalog-Submit"
+}

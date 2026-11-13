@@ -1,0 +1,80 @@
+{
+  "description": "SN-List-Update-Sets basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-List-Update-Sets/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_set",
+          "query": [
+            [
+              "sysparm_query",
+              "state=in progress"
+            ],
+            [
+              "sysparm_limit",
+              "3"
+            ],
+            [
+              "sysparm_fields",
+              "name,state"
+            ]
+          ],
+          "rawQuery": "sysparm_query=state%3Din+progress&sysparm_limit=3&sysparm_fields=name%2Cstate",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "fields": "name,state",
+            "limit": 3,
+            "query": "state=in progress"
+          },
+          "name": "SN-List-Update-Sets"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 Update Set(s):\n[\n  {\n    \"sys_id\": \"e395b5e121883efb62d592b103141178\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_update_set\",\n    \"name\": \"Golden Update Set 1\",\n    \"description\": \"Golden update set\",\n    \"state\": \"in progress\",\n    \"application\": \"09d04d9cdba21c4d3e07fd98f37a1db9\",\n    \"is_default\": \"false\",\n    \"parent\": \"\",\n    \"base_update_set\": \"\"\n  },\n  {\n    \"sys_id\": \"ce5b08dffe78d1ba1186b2b78509e7e6\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_update_set\",\n    \"name\": \"Golden Update Set 2\",\n    \"description\": \"Golden update set\",\n    \"state\": \"in progress\",\n    \"application\": \"09d04d9cdba21c4d3e07fd98f37a1db9\",\n    \"is_default\": \"false\",\n    \"parent\": \"\",\n    \"base_update_set\": \"\"\n  },\n  {\n    \"sys_id\": \"d127a84ad39e5ac4d0c045262bbc6320\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_update_set\",\n    \"name\": \"Golden Update Set 3\",\n    \"description\": \"Golden update set\",\n    \"state\": \"in progress\",\n    \"application\": \"09d04d9cdba21c4d3e07fd98f37a1db9\",\n    \"is_default\": \"false\",\n    \"parent\": \"\",\n    \"base_update_set\": \"\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-List-Update-Sets"
+}

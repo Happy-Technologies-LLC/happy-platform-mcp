@@ -1,0 +1,42 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": {
+      "instances": [
+        {
+          "default": true,
+          "description": "Golden dev",
+          "name": "dev",
+          "password": "{{FAKE_PASSWORD}}",
+          "url": "{{INSTANCE_URL}}",
+          "username": "golden.user"
+        },
+        {
+          "authType": "oauth",
+          "clientId": "golden-client",
+          "clientSecret": "golden-fake-client-secret",
+          "description": "Golden oauth",
+          "grantType": "client_credentials",
+          "name": "oauth1",
+          "url": "{{INSTANCE_URL}}"
+        }
+      ],
+      "version": 1
+    }
+  },
+  "argv": [
+    "instance",
+    "migrate"
+  ],
+  "bin": "happy-platform-mcp",
+  "exit": {
+    "code": 2,
+    "signal": null
+  },
+  "id": "cli/migrate-non-tty",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "MIGRATION_SOURCE_EQUALS_TARGET (readPath={{TMP}}/cli-migrate-non-tty-happy-platform-mcp/cfg/instances.json, writePath={{TMP}}/cli-migrate-non-tty-happy-platform-mcp/cfg/instances.json): Migration refused: the plaintext source and registry target resolve to the same file. Choose a distinct HAPPY_CONFIG_PATH target, or unset HAPPY_CONFIG_PATH to use automatic package-legacy -> user-registry migration. The source bytes and OS keychain were left unchanged.\n",
+  "stdout": ""
+}

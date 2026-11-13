@@ -1,0 +1,230 @@
+{
+  "description": "SN-Catalog-Get-Item basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "catalog",
+  "harnessError": null,
+  "id": "SN-Catalog-Get-Item/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🗂️  Fetching catalog item detail for: f5ef0c68502d26a2608db13130663ab0"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sc_cat_item/f5ef0c68502d26a2608db13130663ab0",
+          "query": [
+            [
+              "sysparm_fields",
+              "sys_id,name,short_description,description,category,sc_catalogs,active,order,price,recurring_price,delivery_time,sys_class_name"
+            ],
+            [
+              "sysparm_display_value",
+              "false"
+            ]
+          ],
+          "rawQuery": "sysparm_fields=sys_id%2Cname%2Cshort_description%2Cdescription%2Ccategory%2Csc_catalogs%2Cactive%2Corder%2Cprice%2Crecurring_price%2Cdelivery_time%2Csys_class_name&sysparm_display_value=false",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/item_option_new",
+          "query": [
+            [
+              "sysparm_query",
+              "cat_item=f5ef0c68502d26a2608db13130663ab0^active=true^ORDERBYorder"
+            ],
+            [
+              "sysparm_limit",
+              "500"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,name,question_text,type,mandatory,order,default_value,help_text,reference,reference_qual,cat_item,variable_set"
+            ]
+          ],
+          "rawQuery": "sysparm_query=cat_item%3Df5ef0c68502d26a2608db13130663ab0%5Eactive%3Dtrue%5EORDERBYorder&sysparm_limit=500&sysparm_fields=sys_id%2Cname%2Cquestion_text%2Ctype%2Cmandatory%2Corder%2Cdefault_value%2Chelp_text%2Creference%2Creference_qual%2Ccat_item%2Cvariable_set",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/io_set_item",
+          "query": [
+            [
+              "sysparm_query",
+              "sc_cat_item=f5ef0c68502d26a2608db13130663ab0"
+            ],
+            [
+              "sysparm_limit",
+              "50"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,variable_set"
+            ]
+          ],
+          "rawQuery": "sysparm_query=sc_cat_item%3Df5ef0c68502d26a2608db13130663ab0&sysparm_limit=50&sysparm_fields=sys_id%2Cvariable_set",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/catalog_ui_policy",
+          "query": [
+            [
+              "sysparm_query",
+              "catalog_item=f5ef0c68502d26a2608db13130663ab0^active=true"
+            ],
+            [
+              "sysparm_limit",
+              "100"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,short_description,conditions,run_scripts,reverse_if_false"
+            ]
+          ],
+          "rawQuery": "sysparm_query=catalog_item%3Df5ef0c68502d26a2608db13130663ab0%5Eactive%3Dtrue&sysparm_limit=100&sysparm_fields=sys_id%2Cshort_description%2Cconditions%2Crun_scripts%2Creverse_if_false",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/catalog_script_client",
+          "query": [
+            [
+              "sysparm_query",
+              "cat_item=f5ef0c68502d26a2608db13130663ab0^active=true"
+            ],
+            [
+              "sysparm_limit",
+              "100"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,name,script_name,type,applies_to"
+            ]
+          ],
+          "rawQuery": "sysparm_query=cat_item%3Df5ef0c68502d26a2608db13130663ab0%5Eactive%3Dtrue&sysparm_limit=100&sysparm_fields=sys_id%2Cname%2Cscript_name%2Ctype%2Capplies_to",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/catalog_ui_policy_action",
+          "query": [
+            [
+              "sysparm_query",
+              "ui_policy=IN7a4fcd461ebbc6c1a43da2f07a7be405,a5b382622769883b3d6117227d0e9238,63327a014d5637fd3ec6d864fc9d5ed0"
+            ],
+            [
+              "sysparm_limit",
+              "500"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,ui_policy,catalog_variable,mandatory,visible,read_only"
+            ]
+          ],
+          "rawQuery": "sysparm_query=ui_policy%3DIN7a4fcd461ebbc6c1a43da2f07a7be405%2Ca5b382622769883b3d6117227d0e9238%2C63327a014d5637fd3ec6d864fc9d5ed0&sysparm_limit=500&sysparm_fields=sys_id%2Cui_policy%2Ccatalog_variable%2Cmandatory%2Cvisible%2Cread_only",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "sys_id": "f5ef0c68502d26a2608db13130663ab0"
+          },
+          "name": "SN-Catalog-Get-Item"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Catalog item details for Golden Item 1:\n{\n  \"sys_id\": \"f5ef0c68502d26a2608db13130663ab0\",\n  \"name\": \"Golden Item 1\",\n  \"short_description\": \"Golden catalog item\",\n  \"category\": \"7ed8297b22a41eb0b254414a1219b323\",\n  \"active\": \"true\",\n  \"item_type\": \"catalog_item\",\n  \"variables\": [\n    {\n      \"sys_id\": \"fc0f5a9ec5df8ac498921373b5b4db61\",\n      \"name\": \"golden-item_option_new-1\",\n      \"type\": \"unknown_undefined\",\n      \"type_code\": \"undefined\",\n      \"mandatory\": false,\n      \"order\": 0,\n      \"default_value\": null,\n      \"help_text\": null,\n      \"reference_table\": null\n    },\n    {\n      \"sys_id\": \"ff59b31d5cd9c7a499c6103c67ac58b4\",\n      \"name\": \"golden-item_option_new-2\",\n      \"type\": \"unknown_undefined\",\n      \"type_code\": \"undefined\",\n      \"mandatory\": false,\n      \"order\": 0,\n      \"default_value\": null,\n      \"help_text\": null,\n      \"reference_table\": null\n    },\n    {\n      \"sys_id\": \"4bc13556dd18a1d0a8abd2fd5f0734a6\",\n      \"name\": \"golden-item_option_new-3\",\n      \"type\": \"unknown_undefined\",\n      \"type_code\": \"undefined\",\n      \"mandatory\": false,\n      \"order\": 0,\n      \"default_value\": null,\n      \"help_text\": null,\n      \"reference_table\": null\n    }\n  ],\n  \"variable_sets\": [\n    {},\n    {},\n    {}\n  ],\n  \"ui_policies\": [\n    {\n      \"sys_id\": \"7a4fcd461ebbc6c1a43da2f07a7be405\",\n      \"actions\": []\n    },\n    {\n      \"sys_id\": \"a5b382622769883b3d6117227d0e9238\",\n      \"actions\": []\n    },\n    {\n      \"sys_id\": \"63327a014d5637fd3ec6d864fc9d5ed0\",\n      \"actions\": []\n    }\n  ],\n  \"client_scripts\": [\n    {\n      \"name\": \"golden-catalog_script_client-1\"\n    },\n    {\n      \"name\": \"golden-catalog_script_client-2\"\n    },\n    {\n      \"name\": \"golden-catalog_script_client-3\"\n    }\n  ]\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Catalog-Get-Item"
+}

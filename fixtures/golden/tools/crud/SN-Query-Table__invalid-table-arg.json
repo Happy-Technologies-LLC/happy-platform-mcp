@@ -1,0 +1,70 @@
+{
+  "description": "SN-Query-Table invalid-table-arg",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "crud",
+  "harnessError": null,
+  "id": "SN-Query-Table/invalid-table-arg",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/bad%20table!",
+          "query": [
+            [
+              "sysparm_limit",
+              "25"
+            ]
+          ],
+          "rawQuery": "sysparm_limit=25",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "table_name": "bad table!"
+          },
+          "name": "SN-Query-Table"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 records in bad table!:\n[\n  {\n    \"sys_id\": \"cb11a290f8476899636b786d189fc9b2\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"bad%20table!\",\n    \"name\": \"golden-bad%20table!-1\"\n  },\n  {\n    \"sys_id\": \"5f45a59521a169d3bb1babfe1cf1e625\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"bad%20table!\",\n    \"name\": \"golden-bad%20table!-2\"\n  },\n  {\n    \"sys_id\": \"813235431e3f7357b581567d2fd720a8\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"bad%20table!\",\n    \"name\": \"golden-bad%20table!-3\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Query-Table"
+}

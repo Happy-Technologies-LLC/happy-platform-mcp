@@ -1,0 +1,44 @@
+{
+  "description": "SN-Get-Current-Instance registry-default",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "instances",
+  "harnessError": null,
+  "id": "SN-Get-Current-Instance/registry-default",
+  "mode": "registry-multi-instance",
+  "stderr": [
+    "🔗 Default ServiceNow instance: dev ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: dev - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Get-Current-Instance"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"current_instance\": {\n    \"name\": \"dev\",\n    \"url\": \"{{INSTANCE_URL}}\",\n    \"authType\": \"basic\"\n  },\n  \"message\": \"Currently connected to: dev ({{INSTANCE_URL}})\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-Current-Instance"
+}

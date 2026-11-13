@@ -1,0 +1,92 @@
+{
+  "description": "SN-List-Incidents filters",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm",
+  "harnessError": null,
+  "id": "SN-List-Incidents/filters",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/incident",
+          "query": [
+            [
+              "sysparm_query",
+              "category=software^state=1^priority=2"
+            ],
+            [
+              "sysparm_limit",
+              "5"
+            ],
+            [
+              "sysparm_fields",
+              "number,short_description"
+            ],
+            [
+              "sysparm_offset",
+              "10"
+            ],
+            [
+              "sysparm_order_by",
+              "-sys_updated_on"
+            ]
+          ],
+          "rawQuery": "sysparm_query=category%3Dsoftware%5Estate%3D1%5Epriority%3D2&sysparm_limit=5&sysparm_fields=number%2Cshort_description&sysparm_offset=10&sysparm_order_by=-sys_updated_on",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "fields": "number,short_description",
+            "limit": 5,
+            "offset": 10,
+            "order_by": "-sys_updated_on",
+            "priority": "2",
+            "query": "category=software",
+            "state": "1"
+          },
+          "name": "SN-List-Incidents"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 Incident(s):\n[\n  {\n    \"sys_id\": \"2fc8aa1ec6d67779a3ab923ac2cc7238\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"incident\",\n    \"number\": \"INC0000001\",\n    \"short_description\": \"Golden incident 1\",\n    \"state\": \"1\",\n    \"priority\": \"3\",\n    \"urgency\": \"2\",\n    \"impact\": \"2\",\n    \"category\": \"software\",\n    \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"assigned_to\": \"\",\n    \"assignment_group\": \"\"\n  },\n  {\n    \"sys_id\": \"f2bd9ee077a023364ec9be5301e9482c\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"incident\",\n    \"number\": \"INC0000002\",\n    \"short_description\": \"Golden incident 2\",\n    \"state\": \"1\",\n    \"priority\": \"3\",\n    \"urgency\": \"2\",\n    \"impact\": \"2\",\n    \"category\": \"software\",\n    \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"assigned_to\": \"\",\n    \"assignment_group\": \"\"\n  },\n  {\n    \"sys_id\": \"b136d7883af6d5a2bcfda82f7993007e\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"incident\",\n    \"number\": \"INC0000003\",\n    \"short_description\": \"Golden incident 3\",\n    \"state\": \"1\",\n    \"priority\": \"3\",\n    \"urgency\": \"2\",\n    \"impact\": \"2\",\n    \"category\": \"software\",\n    \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"assigned_to\": \"\",\n    \"assignment_group\": \"\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-List-Incidents"
+}

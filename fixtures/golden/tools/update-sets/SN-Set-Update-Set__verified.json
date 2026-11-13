@@ -1,0 +1,141 @@
+{
+  "description": "SN-Set-Update-Set verified",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Set-Update-Set/verified",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔄 Setting current update set to: ed62390adb712ed83486d9105c442b81"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_set/ed62390adb712ed83486d9105c442b81",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/html",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/concoursepicker/updateset",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "name": "Golden Update Set 1",
+            "sysId": "ed62390adb712ed83486d9105c442b81"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/ui/concoursepicker/updateset",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/concoursepicker/updateset",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "update_set_sys_id": "ed62390adb712ed83486d9105c442b81"
+          },
+          "name": "SN-Set-Update-Set"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Update set set to current: Golden Update Set 1\n\n🔧 Method: UI API endpoint (/api/now/ui/concoursepicker/updateset)\n✅ Verification: passed\n↩️ Previous update set: Golden current update set (6a90a5fe751272b638e1f70a925864ff)\n\nThe update set has been set as your current update set. Refresh your ServiceNow browser to see the change in the top bar.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Set-Update-Set"
+}

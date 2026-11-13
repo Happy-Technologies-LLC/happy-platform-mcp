@@ -1,0 +1,66 @@
+{
+  "description": "SN-Get-CICD-Progress single-read",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "atf",
+  "harnessError": null,
+  "id": "SN-Get-CICD-Progress/single-read",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/sn_cicd/progress/cd366dd5d573c905e2b6a47e88a70208",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "progress_id": "cd366dd5d573c905e2b6a47e88a70208"
+          },
+          "name": "SN-Get-CICD-Progress"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"progress_id\": \"cd366dd5d573c905e2b6a47e88a70208\",\n  \"state\": \"successful\",\n  \"status\": \"2\",\n  \"status_label\": \"Successful\",\n  \"status_message\": \"Done\",\n  \"percent_complete\": 100,\n  \"finished\": true,\n  \"results\": {\n    \"id\": \"a29c8bbbadb15a6986e6054dd968c4f1\"\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-CICD-Progress"
+}

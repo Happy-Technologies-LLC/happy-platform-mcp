@@ -1,0 +1,49 @@
+{
+  "description": "SN-Query-Table unknown-instance-override",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "instances",
+  "harnessError": null,
+  "id": "SN-Query-Table/unknown-instance-override",
+  "mode": "registry-multi-instance",
+  "stderr": [
+    "🔗 Default ServiceNow instance: dev ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: dev - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "instance": "nope",
+            "limit": 1,
+            "table_name": "incident"
+          },
+          "name": "SN-Query-Table"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: Instance 'nope' not found",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Query-Table"
+}

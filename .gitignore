@@ -18,11 +18,16 @@ scripts/*
 !scripts/secret-scan.sh
 !scripts/oauth-signin-smoke.mjs
 !scripts/extract-table-metadata.js
+!scripts/compat/
+!scripts/golden/
 
 # Logs
 logs/
 *.log
 npm-debug.log*
+
+# Rust build output
+target/
 
 # IDE
 .vscode/

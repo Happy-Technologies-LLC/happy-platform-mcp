@@ -1,0 +1,45 @@
+{
+  "description": "SN-Run-ATF-Test no-selector",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "atf",
+  "harnessError": null,
+  "id": "SN-Run-ATF-Test/no-selector",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Run-ATF-Test"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: Provide either test_sys_id or test_name",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Run-ATF-Test"
+}

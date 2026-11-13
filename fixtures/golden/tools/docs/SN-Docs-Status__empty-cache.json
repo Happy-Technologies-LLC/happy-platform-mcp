@@ -1,0 +1,44 @@
+{
+  "description": "SN-Docs-Status empty-cache",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "docs",
+  "harnessError": null,
+  "id": "SN-Docs-Status/empty-cache",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Docs-Status"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"cacheDir\": \"{{TMP}}/SN-Docs-Status_empty-cache/docs-cache\",\n  \"localIndexEnabled\": false,\n  \"ftsAvailable\": false,\n  \"sqliteAvailable\": true,\n  \"sqliteReason\": \"Local docs index disabled\",\n  \"vectorAvailable\": false,\n  \"vectorReason\": \"Vector search disabled\",\n  \"families\": []\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Docs-Status"
+}

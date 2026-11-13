@@ -1,0 +1,191 @@
+# NOT ENABLED. Lives in spikes/s3-packaging/dist-ci/; copy to .github/workflows/ to activate.
+#
+# Called by dist's generated release.yml via `post-announce-jobs = ["./package-npm"]`, i.e. after
+# the GitHub Release exists with dist's (unsigned-on-macOS) archives. Responsibilities:
+#   1. macOS: Developer ID sign + hardened runtime + notarize each macOS binary, replace the
+#      release archives (cargo-dist 0.34 has no macOS signing hook; its installer.sh does not
+#      verify archive checksums [verified: no checksum value is ever set], so replacing assets
+#      does not break it).
+#   2. Windows: already Authenticode-signed inside release.yml by dist (azure-windows-sign).
+#   3. Assemble the npm wrapper + 7 per-platform packages from the final archives, smoke-test
+#      on native runners, and (only when repository variable HPM_NPM_PUBLISH == 'true') publish
+#      with provenance.
+name: package-npm
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan JSON (announcement_tag, ...)
+        required: true
+        type: string
+
+permissions:
+  contents: write   # replace release assets
+  id-token: write   # npm provenance (OIDC)
+
+env:
+  TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  sign-macos:
+    runs-on: macos-14
+    environment: release          # protect the signing secrets behind an approval rule
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+
+      - name: Download unsigned archive
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "happy-platform-mcp-${{ matrix.target }}.tar.xz" --dir in
+
+      - name: Extract binary
+        run: |
+          mkdir -p work && tar -xJf "in/happy-platform-mcp-${{ matrix.target }}.tar.xz" -C work
+          ls -l "work/happy-platform-mcp-${{ matrix.target }}/"
+
+      - name: Import Developer ID certificate into a temporary keychain
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/hpm-sign.keychain-db"; KCPW="$(uuidgen)"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC"
+          security list-keychains -d user -s "$KC" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "KC=$KC" >> "$GITHUB_ENV"
+
+      - name: Sign (Developer ID Application, hardened runtime, secure timestamp)
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}   # "Developer ID Application: Name (TEAMID)"
+        run: |
+          set -euo pipefail
+          BIN="work/happy-platform-mcp-${{ matrix.target }}/happy-platform-mcp"
+          codesign --force --options runtime --timestamp --keychain "$KC" \
+            --identifier "io.github.nickzitzer.happy-platform-mcp" --sign "$MACOS_SIGN_IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          codesign -dvv "$BIN" 2>&1 | grep -E "Authority|TeamIdentifier|flags=|Timestamp"
+
+      - name: Notarize (App Store Connect API key) - bare Mach-O is submitted inside a zip; it cannot be stapled
+        env:
+          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          echo "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent "work/happy-platform-mcp-${{ matrix.target }}/happy-platform-mcp" notarize.zip
+          xcrun notarytool submit notarize.zip --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" --wait --output-format json | tee notary.json
+          test "$(jq -r .status notary.json)" = "Accepted"
+          xcrun notarytool log "$(jq -r .id notary.json)" --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" > notary-log.json
+          rm -f "$RUNNER_TEMP/notary.p8"
+          # `spctl -a -t exec` on a bare CLI binary reports "rejected / no usable signature" even when
+          # notarized; the authoritative checks are notarytool status above and `codesign --verify`.
+
+      - name: Repack + replace release assets
+        run: |
+          set -euo pipefail
+          T=${{ matrix.target }}
+          tar -cJf "happy-platform-mcp-$T.tar.xz" -C work "happy-platform-mcp-$T"
+          shasum -a 256 "happy-platform-mcp-$T.tar.xz" | sed "s|  | *|" > "happy-platform-mcp-$T.tar.xz.sha256"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "happy-platform-mcp-$T.tar.xz" "happy-platform-mcp-$T.tar.xz.sha256"
+
+      - name: Remove temporary keychain
+        if: always()
+        run: security delete-keychain "$KC" || true
+
+  package:
+    needs: sign-macos
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, registry-url: "https://registry.npmjs.org" }
+      - name: Download final release archives (macOS = signed+notarized, Windows = Authenticode-signed by dist)
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir archives \
+            --pattern 'happy-platform-mcp-*.tar.xz' --pattern 'happy-platform-mcp-*.zip'
+          cd archives && for f in *.tar.xz; do tar -xJf "$f"; done; for f in *.zip; do unzip -q -o "$f"; done; ls
+      - name: Assemble npm packages
+        run: |
+          V="${TAG#v}"
+          args=()
+          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+                   x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            args+=(--bin "$t=archives/happy-platform-mcp-$t/happy-platform-mcp")
+          done
+          args+=(--bin "x86_64-pc-windows-msvc=archives/happy-platform-mcp-x86_64-pc-windows-msvc/happy-platform-mcp.exe")
+          node scripts/assemble-npm.mjs --version "$V" --out npm-out "${args[@]}"
+          mkdir packs && for d in npm-out/*/; do (cd "$d" && npm pack --pack-destination ../../packs); done
+      - uses: actions/upload-artifact@v4
+        with: { name: npm-packs, path: packs/*.tgz }
+
+  smoke:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14,        id: darwin-arm64 }
+          - { os: macos-13,        id: darwin-x64 }
+          - { os: ubuntu-24.04,    id: linux-x64-gnu }
+          - { os: ubuntu-24.04-arm, id: linux-arm64-gnu }
+          - { os: windows-2022,    id: win32-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/download-artifact@v4
+        with: { name: npm-packs, path: packs }
+      - name: Install host packages from tarballs and launch via both bin names
+        shell: bash
+        run: |
+          mkdir prefix && cd prefix && npm init -y >/dev/null
+          npm install --no-audit --no-fund --registry http://127.0.0.1:9/ --fetch-retries=0 \
+            ../packs/happy-platform-mcp-[0-9]*.tgz ../packs/happy-platform-mcp-${{ matrix.id }}-[0-9]*.tgz
+          npx --no-install happy-platform-mcp --version
+          npx --no-install servicenow-mcp-server --version
+      - name: macOS - Gatekeeper-relevant verification of the shipped binary
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          B=prefix/node_modules/@happy-platform-mcp/${{ matrix.id }}/bin/happy-platform-mcp
+          codesign --verify --strict --verbose=2 "$B"
+          codesign -dvv "$B" 2>&1 | grep -E "Authority=Developer ID|flags=.*runtime"
+      - name: Windows - verify Authenticode signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature prefix\node_modules\@happy-platform-mcp\win32-x64\bin\happy-platform-mcp.exe
+          $sig | Format-List Status, StatusMessage, SignerCertificate
+          if ($sig.Status -ne 'Valid') { throw "Authenticode status: $($sig.Status)" }
+
+  publish:
+    needs: smoke
+    # Stays inert until the owner sets repository variable HPM_NPM_PUBLISH=true AND provides NPM_TOKEN.
+    if: ${{ vars.HPM_NPM_PUBLISH == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: npm-release
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, registry-url: "https://registry.npmjs.org" }
+      - uses: actions/download-artifact@v4
+        with: { name: npm-packs, path: packs }
+      - name: Publish platform packages first, wrapper last (wrapper pins them exactly)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for f in packs/happy-platform-mcp-*-[0-9]*.tgz; do npm publish "$f" --provenance --access public; done
+          npm publish packs/happy-platform-mcp-[0-9]*.tgz --provenance --access public

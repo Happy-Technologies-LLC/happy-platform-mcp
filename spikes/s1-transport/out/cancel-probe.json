@@ -1,0 +1,18 @@
+{
+  "modern-stateless POST aborted": [
+    "call start id=Number(1) tool=SN-Query-Table",
+    "call cancelled id=Number(1) (RequestContext.ct fired)"
+  ],
+  "legacy-session POST aborted (session kept)": [
+    "call start id=Number(2) tool=SN-Query-Table",
+    "call done id=Number(2) cancelled_token=false"
+  ],
+  "legacy HTTP+SSE stream closed": [
+    "call start id=Number(3) tool=SN-Query-Table",
+    "call done id=Number(3) cancelled_token=false"
+  ],
+  "stdio stdin EOF": [
+    "call start id=Number(4) tool=SN-Query-Table",
+    "call done id=Number(4) cancelled_token=false"
+  ]
+}

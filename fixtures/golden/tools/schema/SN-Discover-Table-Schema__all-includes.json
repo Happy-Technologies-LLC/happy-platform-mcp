@@ -1,0 +1,170 @@
+{
+  "description": "SN-Discover-Table-Schema all-includes",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "schema",
+  "harnessError": null,
+  "id": "SN-Discover-Table-Schema/all-includes",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔍 Discovering enhanced schema for incident"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_db_object",
+          "query": [
+            [
+              "sysparm_query",
+              "name=incident"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3Dincident&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_dictionary",
+          "query": [
+            [
+              "sysparm_query",
+              "name=incident"
+            ],
+            [
+              "sysparm_limit",
+              "1000"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3Dincident&sysparm_limit=1000",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_ui_policy",
+          "query": [
+            [
+              "sysparm_query",
+              "table=incident^active=true"
+            ],
+            [
+              "sysparm_limit",
+              "100"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,short_description"
+            ]
+          ],
+          "rawQuery": "sysparm_query=table%3Dincident%5Eactive%3Dtrue&sysparm_limit=100&sysparm_fields=sys_id%2Cshort_description",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_script",
+          "query": [
+            [
+              "sysparm_query",
+              "collection=incident^active=true"
+            ],
+            [
+              "sysparm_limit",
+              "100"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,name,when"
+            ]
+          ],
+          "rawQuery": "sysparm_query=collection%3Dincident%5Eactive%3Dtrue&sysparm_limit=100&sysparm_fields=sys_id%2Cname%2Cwhen",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "include_business_rules": true,
+            "include_choice_tables": true,
+            "include_field_constraints": true,
+            "include_relationships": true,
+            "include_type_codes": true,
+            "include_ui_policies": true,
+            "table_name": "incident"
+          },
+          "name": "SN-Discover-Table-Schema"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Enhanced schema for incident:\n{\n  \"table\": \"incident\",\n  \"label\": \"Incident\",\n  \"fields\": [\n    {\n      \"name\": \"field_1\",\n      \"label\": \"Field 1\",\n      \"internal_type\": \"string\",\n      \"max_length\": \"40\",\n      \"mandatory\": false,\n      \"read_only\": false\n    },\n    {\n      \"name\": \"field_2\",\n      \"label\": \"Field 2\",\n      \"internal_type\": \"string\",\n      \"max_length\": \"40\",\n      \"mandatory\": false,\n      \"read_only\": false\n    },\n    {\n      \"name\": \"field_3\",\n      \"label\": \"Field 3\",\n      \"internal_type\": \"string\",\n      \"max_length\": \"40\",\n      \"mandatory\": false,\n      \"read_only\": false\n    }\n  ],\n  \"choice_tables\": {\n    \"sys_choice\": \"For table field choices\",\n    \"question_choice\": \"For catalog variable choices\"\n  },\n  \"relationships\": {},\n  \"ui_policies\": [\n    {\n      \"sys_id\": \"9c87790cd92636a3ebd0d827c06de9db\"\n    },\n    {\n      \"sys_id\": \"79215cf7b4cc1daf7ca9cfebe73abc8d\"\n    },\n    {\n      \"sys_id\": \"dc9afba5027e0c1494620787b6ffe595\"\n    }\n  ],\n  \"business_rules\": [\n    {\n      \"sys_id\": \"e8d75c432f57bb5c0f1e3270dcb6885b\",\n      \"name\": \"golden-sys_script-1\"\n    },\n    {\n      \"sys_id\": \"c024d0cc637afa41128a69821f794a8d\",\n      \"name\": \"golden-sys_script-2\"\n    },\n    {\n      \"sys_id\": \"3364716c2d96be92b4e37c9c48494240\",\n      \"name\": \"golden-sys_script-3\"\n    }\n  ]\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Discover-Table-Schema"
+}
