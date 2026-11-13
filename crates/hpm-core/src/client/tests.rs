@@ -486,6 +486,35 @@ async fn oauth_password_grant_needs_object_reference() {
 }
 
 #[tokio::test]
+async fn instance_switch_while_in_flight_is_stale_after_send() {
+    let slot: Arc<std::sync::OnceLock<ServiceNowClient>> = Arc::default();
+    let in_handler = slot.clone();
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(move |_| {
+            // The request has left; the operator switches instance meanwhile.
+            if let Some(c) = in_handler.get() {
+                c.set_instance(basic(Some("other")))
+                    .unwrap_or_else(|e| panic!("{e}"));
+            }
+            Ok(HttpResponse::json(200, &json!({"result": {}})))
+        }),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let _ = slot.set(h.client.clone());
+    let e = h
+        .client
+        .create_record("incident", &json!({}))
+        .await
+        .expect_err("stale");
+    assert!(e.is_stale_after_send());
+    assert_eq!(e.code(), Some(error::STALE_AFTER_SEND_CODE));
+    assert_eq!(e.message, "Instance changed during credential resolution");
+    assert_eq!(h.transport.requests().len(), 1);
+}
+
+#[tokio::test]
 async fn set_instance_during_resolution_is_stale() {
     let h = harness(
         ref_config(AuthType::Basic, json!("keychain:instance/dev/password")),
@@ -502,7 +531,8 @@ async fn set_instance_during_resolution_is_stale() {
         .unwrap_or_else(|e| panic!("{e}"));
     let result = call.await.unwrap_or_else(|e| panic!("{e}"));
     if let Err(e) = result {
-        assert_eq!(e.code(), Some(error::STALE_INSTANCE_CODE));
+        // Before or after the send, depending on scheduling.
+        assert!(e.is_stale(), "{e:?}");
         assert_eq!(e.message, "Instance changed during credential resolution");
     }
     assert!(h.transport.requests().iter().all(|r| auth_of(r)
@@ -1106,6 +1136,38 @@ async fn processor_posts_once_with_session_and_parses() {
         p.body_text(),
         "script=gs.print%28%27hi%27%29%0A%2F%2F+happy-platform-mcp%3A+why+not&sysparm_ck=ck-token&runscript=Run+script&quota_managed_transaction=on&record_for_rollback=on"
     );
+}
+
+#[tokio::test]
+async fn processor_not_run_fallback_runs_before_the_single_logout() {
+    let h = harness(
+        basic(Some("pw")),
+        processor_fake("not authorized"),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let transport = h.transport.clone();
+    let run = h
+        .client
+        .execute_script_via_processor_or("x", &ProcessorOptions::default(), |e| async move {
+            // Stands in for the sys_trigger fallback: no logout has been sent yet.
+            let logouts = transport
+                .requests()
+                .iter()
+                .filter(|r| r.url.ends_with("/logout.do"))
+                .count();
+            (e.code, logouts)
+        })
+        .await
+        .expect("not-run is not an error here");
+    let ProcessorRun::NotRun((code, logouts_during)) = run else {
+        panic!("expected NotRun");
+    };
+    assert_eq!(code, Some(script_processor::NOT_RUN.into()));
+    assert_eq!(logouts_during, 0);
+    let urls: Vec<_> = h.transport.requests().into_iter().map(|r| r.url).collect();
+    assert_eq!(urls.iter().filter(|u| u.ends_with("/logout.do")).count(), 1);
+    assert!(urls.last().is_some_and(|u| u.ends_with("/logout.do")));
 }
 
 #[tokio::test]
