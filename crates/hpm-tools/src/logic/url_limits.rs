@@ -31,8 +31,14 @@ mod tests {
 
     #[test]
     fn trims_slashes_linearly() {
-        assert_eq!(trim_trailing_slashes("https://example.com//"), "https://example.com");
-        assert_eq!(trim_trailing_slashes("https://example.com"), "https://example.com");
+        assert_eq!(
+            trim_trailing_slashes("https://example.com//"),
+            "https://example.com"
+        );
+        assert_eq!(
+            trim_trailing_slashes("https://example.com"),
+            "https://example.com"
+        );
         assert_eq!(trim_trailing_slashes("///"), "");
         assert_eq!(trim_trailing_slashes(""), "");
         assert_eq!(trim_leading_slashes("///path/to/"), "path/to/");
@@ -51,6 +57,8 @@ mod tests {
         // 4096 two-byte characters are 4096 code units, not 8192.
         assert!(!exceeds_url_length(&"é".repeat(MAX_URL_LENGTH)));
         // An astral character counts as two code units.
-        assert!(exceeds_url_length(&"\u{1F600}".repeat(MAX_URL_LENGTH / 2 + 1)));
+        assert!(exceeds_url_length(
+            &"\u{1F600}".repeat(MAX_URL_LENGTH / 2 + 1)
+        ));
     }
 }

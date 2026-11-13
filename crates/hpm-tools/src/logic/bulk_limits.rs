@@ -61,7 +61,10 @@ fn is_word_byte(byte: u8) -> bool {
 
 /// `SYS_ID_PATTERN` test.
 fn matches_sys_id(value: &str) -> bool {
-    value.len() == 32 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// `TABLE_NAME_PATTERN` test.
@@ -145,8 +148,7 @@ pub fn assert_name(value: Option<&Value>, field: &str, required: bool) -> Result
     }
     match value {
         Some(Value::String(text))
-            if !(required && text.is_empty())
-                && !js::utf16_len_exceeds(text, MAX_NAME_LENGTH) =>
+            if !(required && text.is_empty()) && !js::utf16_len_exceeds(text, MAX_NAME_LENGTH) =>
         {
             Ok(())
         }
@@ -214,9 +216,7 @@ pub fn validate_batch_create_operations(operations: Option<&Value>) -> Result<Ve
                 return fail(format!("{field} '{save_as}' is reserved"));
             }
             if !save_as_names.insert(save_as) {
-                return fail(format!(
-                    "{field} '{save_as}' duplicates an earlier save_as"
-                ));
+                return fail(format!("{field} '{save_as}' duplicates an earlier save_as"));
             }
         }
         serialized.push(assert_record_data(
@@ -252,7 +252,10 @@ fn assert_activity_reference(
 ) -> Result<()> {
     if let Some(Value::Number(number)) = value {
         let index = number.as_f64().unwrap_or(f64::NAN);
-        if !index.is_finite() || index.fract() != 0.0 || index < 0.0 || index >= activity_count as f64
+        if !index.is_finite()
+            || index.fract() != 0.0
+            || index < 0.0
+            || index >= activity_count as f64
         {
             return fail(format!(
                 "{field} must be an activity index from 0 to {}",
@@ -338,7 +341,12 @@ pub fn validate_workflow_spec(spec: Option<&Value>) -> Result<HashMap<String, us
         for key in ["script", "input", "vars"] {
             assert_script(activity.get(key), &format!("{field}.{key}"))?;
         }
-        for key in ["activity_definition_sys_id", "activity_type", "stage", "parent"] {
+        for key in [
+            "activity_definition_sys_id",
+            "activity_type",
+            "stage",
+            "parent",
+        ] {
             assert_optional_sys_id(activity.get(key), &format!("{field}.{key}"))?;
         }
     }
@@ -394,9 +402,13 @@ pub fn validate_workflow_spec(spec: Option<&Value>) -> Result<HashMap<String, us
 fn assert_query_value(value: Option<&Value>, field: &str) -> Result<()> {
     assert_name(value, field, true)?;
     if let Some(Value::String(text)) = value
-        && text.chars().any(|c| c == '^' || c < '\u{20}' || c == '\u{7f}')
+        && text
+            .chars()
+            .any(|c| c == '^' || c < '\u{20}' || c == '\u{7f}')
     {
-        return fail(format!("{field} must not contain '^' or control characters"));
+        return fail(format!(
+            "{field} must not contain '^' or control characters"
+        ));
     }
     Ok(())
 }

@@ -20,20 +20,14 @@ pub fn utf16_len_exceeds(value: &str, max: usize) -> bool {
 pub fn is_js_whitespace(c: char) -> bool {
     matches!(
         c,
-        '\t' | '\n'
-            | '\u{000B}'
-            | '\u{000C}'
-            | '\r'
-            | ' '
-            | '\u{00A0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200A}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}'
-            | '\u{FEFF}'
+        '\t' | '\n' | '\u{000B}' | '\u{000C}' | '\r' | ' ' | '\u{00A0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
     )
 }
 
@@ -210,12 +204,7 @@ pub fn to_iso_string(millis: i64) -> Result<String, InvalidTimeValue> {
     if (0..=9999).contains(&year) {
         let _ = write!(out, "{year:04}");
     } else {
-        let _ = write!(
-            out,
-            "{}{:06}",
-            if year < 0 { '-' } else { '+' },
-            year.abs()
-        );
+        let _ = write!(out, "{}{:06}", if year < 0 { '-' } else { '+' }, year.abs());
     }
     let _ = write!(
         out,
@@ -278,7 +267,10 @@ mod tests {
     #[test]
     fn string_coercion_matches_javascript() {
         assert_eq!(to_js_string(&json!(null)), "null");
-        assert_eq!(to_js_string(&json!([1, null, [2, "a"], {}])), "1,,2,a,[object Object]");
+        assert_eq!(
+            to_js_string(&json!([1, null, [2, "a"], {}])),
+            "1,,2,a,[object Object]"
+        );
         assert_eq!(to_js_string(&json!(1.0)), "1");
     }
 

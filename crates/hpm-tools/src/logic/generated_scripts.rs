@@ -226,9 +226,7 @@ pub fn write_fix_script_file(
     content: &str,
 ) -> Result<PathBuf, FixScriptError> {
     let name = file_name.as_bytes();
-    if name.len() < 4
-        || !name.ends_with(b".js")
-        || !matches_safe_name(&name[..name.len() - 3], 199)
+    if name.len() < 4 || !name.ends_with(b".js") || !matches_safe_name(&name[..name.len() - 3], 199)
     {
         return Err(FixScriptError::UnsafeFileName);
     }

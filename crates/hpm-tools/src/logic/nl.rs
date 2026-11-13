@@ -186,7 +186,9 @@ fn is_word(token: Option<&Token<'_>>, word: &str) -> bool {
 }
 
 fn is_word_in(token: Option<&Token<'_>>, words: &[&str]) -> bool {
-    token.is_some_and(|t| t.kind == Kind::Word && words.iter().any(|w| t.text.eq_ignore_ascii_case(w)))
+    token.is_some_and(|t| {
+        t.kind == Kind::Word && words.iter().any(|w| t.text.eq_ignore_ascii_case(w))
+    })
 }
 
 fn is_word_like(token: Option<&Token<'_>>, pattern: fn(&str) -> bool) -> bool {
@@ -428,7 +430,8 @@ fn explicit_date_pattern(tokens: &Tokens<'_>, keyword: &str, operator: &str) -> 
         if is_symbol(at(tokens, year_start), ",") {
             year_start += 1;
         }
-        if is_value_space(at(tokens, year_start)) && is_word_like(at(tokens, year_start + 1), year) {
+        if is_value_space(at(tokens, year_start)) && is_word_like(at(tokens, year_start + 1), year)
+        {
             end = year_start + 2;
         }
 
@@ -558,10 +561,7 @@ fn find_pattern(id: &str, tokens: &Tokens<'_>, table: &str) -> Option<Match> {
             Some(Match {
                 start: index,
                 end: index + 3,
-                condition: format!(
-                    "{}>javascript:gs.daysAgoStart({days})",
-                    date_field(field)
-                ),
+                condition: format!("{}>javascript:gs.daysAgoStart({days})", date_field(field)),
             })
         }),
         "relative-range" => find_first(tokens, |index| {
@@ -993,7 +993,10 @@ pub const TEST_QUERIES: &[&str] = &[
 /// Test the parser with the example queries.
 pub fn test_parser(
     table: &str,
-) -> Vec<(&'static str, Result<NaturalLanguageResult, NaturalLanguageError>)> {
+) -> Vec<(
+    &'static str,
+    Result<NaturalLanguageResult, NaturalLanguageError>,
+)> {
     TEST_QUERIES
         .iter()
         .map(|query| (*query, parse_natural_language(query, table)))
@@ -1017,7 +1020,12 @@ pub const SUPPORTED_PATTERNS: &[SupportedPattern] = &[
     },
     SupportedPattern {
         key: "assignment",
-        examples: &["assigned to me", "unassigned", "assigned to John Smith", "my incidents"],
+        examples: &[
+            "assigned to me",
+            "unassigned",
+            "assigned to John Smith",
+            "my incidents",
+        ],
         encoded_query: "assigned_to=javascript:gs.getUserID() or assigned_toISEMPTY",
     },
     SupportedPattern {
@@ -1027,12 +1035,22 @@ pub const SUPPORTED_PATTERNS: &[SupportedPattern] = &[
     },
     SupportedPattern {
         key: "dates",
-        examples: &["created today", "last 7 days", "recent", "opened yesterday", "updated last week"],
+        examples: &[
+            "created today",
+            "last 7 days",
+            "recent",
+            "opened yesterday",
+            "updated last week",
+        ],
         encoded_query: "sys_created_on>javascript:gs.daysAgo(7)",
     },
     SupportedPattern {
         key: "content",
-        examples: &["about SAP", "containing error", "description contains authentication"],
+        examples: &[
+            "about SAP",
+            "containing error",
+            "description contains authentication",
+        ],
         encoded_query: "short_descriptionLIKESAP",
     },
     SupportedPattern {
@@ -1067,7 +1085,11 @@ pub const SUPPORTED_PATTERNS: &[SupportedPattern] = &[
     },
     SupportedPattern {
         key: "combining",
-        examples: &["high priority and assigned to me", "P1 or P2 incidents", "recent and unassigned"],
+        examples: &[
+            "high priority and assigned to me",
+            "P1 or P2 incidents",
+            "recent and unassigned",
+        ],
         encoded_query: "Use \"and\" for ^ operator, \"or\" for ^OR operator",
     },
 ];
