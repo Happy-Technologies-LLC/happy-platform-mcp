@@ -1,8 +1,8 @@
 //! SN-Execute-Background-Script and SN-Create-Fix-Script
 //! (6.2.0 `mcp-server-consolidated.js` 2207-2511).
 
-use hpm_core::client::script_processor::{NOT_RUN, UNKNOWN_OUTCOME};
-use hpm_core::client::{PinnedClient, ProcessorOptions, TriggerOptions};
+use hpm_core::client::script_processor::UNKNOWN_OUTCOME;
+use hpm_core::client::{ClientError, PinnedClient, ProcessorOptions, ProcessorRun, TriggerOptions};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
 use hpm_types::tool::{MutationOutcome, ToolError};
@@ -348,12 +348,32 @@ pub(super) fn execute_background_script<'a>(
                 .map(js::to_js_string),
             ..ProcessorOptions::default()
         };
+        // The NOT_RUN fallback runs inside the processor's UI session, whose
+        // single logout follows it (core `execute_script_via_processor_or`).
+        let fallback = |error: ClientError| {
+            let input = &input;
+            let client = &client;
+            async move {
+                let reason = error.reason.as_deref().unwrap_or("undefined");
+                match not_run_route(input, reason) {
+                    NotRunRoute::Refuse(message) => {
+                        done(MutationOutcome::Failed, Err(ToolError::Text(message)))
+                    }
+                    NotRunRoute::Fallback(notice) => {
+                        if !ctx.is_live() {
+                            return done(MutationOutcome::NotSent, Err(ToolError::Cancelled));
+                        }
+                        run_via_trigger(deps, client, input, &notice).await
+                    }
+                }
+            }
+        };
         let error = match client
             .client()
-            .execute_script_via_processor(input.script, &options)
+            .execute_script_via_processor_or(input.script, &options, fallback)
             .await
         {
-            Ok(result) => {
+            Ok(ProcessorRun::Ran(result)) => {
                 let (ok, message) = render_processor(&input, &result);
                 let body = if ok {
                     ok_text_explicit(message)
@@ -362,21 +382,11 @@ pub(super) fn execute_background_script<'a>(
                 };
                 return done(MutationOutcome::Committed, body);
             }
+            Ok(ProcessorRun::NotRun(completion)) => return completion,
             Err(e) => e,
         };
         let reason = error.reason.as_deref().unwrap_or("undefined");
         match error.code.as_deref() {
-            Some(NOT_RUN) => match not_run_route(&input, reason) {
-                NotRunRoute::Refuse(message) => {
-                    done(MutationOutcome::Failed, Err(ToolError::Text(message)))
-                }
-                NotRunRoute::Fallback(notice) => {
-                    if !ctx.is_live() {
-                        return done(MutationOutcome::NotSent, Err(ToolError::Cancelled));
-                    }
-                    run_via_trigger(deps, &client, &input, &notice).await
-                }
-            },
             Some(UNKNOWN_OUTCOME) => {
                 let hint = input.description_text().map_or_else(String::new, |d| {
                     format!(
@@ -468,6 +478,17 @@ pub(super) fn create_fix_script<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_failure_after_insert_is_unknown_not_failed() {
+        // run_via_trigger maps trigger errors through failed_outcome: a 403 on
+        // the wrapper PUT / syslog poll after the insert must not claim Failed.
+        let mut e = ClientError::plain("ACL").with_status(Some(403));
+        e.code = Some(hpm_core::client::error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
+        assert_eq!(failed_outcome(&e), MutationOutcome::Unknown);
+        let before = ClientError::plain("ACL").with_status(Some(403));
+        assert_eq!(failed_outcome(&before), MutationOutcome::Failed);
+    }
 
     #[test]
     fn scoped_not_run_refuses_instead_of_trigger_fallback() {

@@ -402,10 +402,10 @@ pub fn validate_workflow_spec(spec: Option<&Value>) -> Result<HashMap<String, us
 fn assert_query_value(value: Option<&Value>, field: &str) -> Result<()> {
     assert_name(value, field, true)?;
     if let Some(Value::String(text)) = value
-        && text.chars().any(|c| {
-            // C0, DEL and C1 controls, plus the JS line terminators U+2028/U+2029.
-            c == '^' || c.is_control() || c == '\u{2028}' || c == '\u{2029}'
-        })
+        && (crate::logic::encoded_query::query_value(field, text).is_err()
+            // The shared guard covers `^` and C0/DEL/C1; also refuse the JS
+            // line terminators U+2028/U+2029.
+            || text.contains(['\u{2028}', '\u{2029}']))
     {
         return fail(format!(
             "{field} must not contain '^' or control characters"

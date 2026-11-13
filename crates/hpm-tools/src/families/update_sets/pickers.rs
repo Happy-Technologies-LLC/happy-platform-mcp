@@ -259,12 +259,11 @@ pub(super) fn inspect_update_set<'a>(
 ) -> BoxFut<'a, Done> {
     Box::pin(async move {
         let update_set_id = text(args.get("update_set"));
-        // Interpolated into an encoded query below: refuse anything but a sys_id
-        // before any request (7.0 deviation; 6.2.0 sent it unchecked).
-        if let Err(e) =
-            crate::logic::bulk_limits::assert_sys_id(args.get("update_set"), "update_set")
-        {
-            return done(MutationOutcome::NotSent, Err(ToolError::Message(e.message)));
+        // Interpolated into an encoded query below: one operand only, checked
+        // before any request (7.0 deviation; 6.2.0 sent it unchecked). Names
+        // stay allowed (6.2.0 golden `by-name`).
+        if let Err(e) = crate::logic::encoded_query::query_value("update_set", &update_set_id) {
+            return done(MutationOutcome::NotSent, Err(e));
         }
         let show_components = args.get("show_components").is_none_or(truthy);
         let client = match pinned(deps, ctx, MutationOutcome::NotAMutation).await {

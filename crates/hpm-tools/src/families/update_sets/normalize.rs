@@ -8,6 +8,7 @@ use hpm_types::tool::{NormalizeInput, ToolError};
 use serde_json::Value;
 
 use super::js_text::truthy_opt;
+use crate::logic::encoded_query::analyze_query;
 
 fn op(tool: &'static str, action: Action, input: &NormalizeInput<'_>) -> Operation {
     Operation::new(Subject::Tool(tool), action)
@@ -58,10 +59,28 @@ pub(super) fn list_update_sets(
         .filter(|f| !f.is_empty())
         .map(|f| f.split(',').map(|s| s.trim().to_owned()).collect())
         .unwrap_or_default();
+    let info = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(analyze_query)
+        .unwrap_or_default();
+    let mut ordering = info.ordering_fields;
+    // `order_by` is a field name, `-` prefixed for descending.
+    if let Some(order) = args
+        .get("order_by")
+        .and_then(Value::as_str)
+        .map(|o| o.trim_start_matches('-'))
+        .filter(|o| !o.is_empty() && !ordering.iter().any(|f| f == o))
+    {
+        ordering.push(order.to_owned());
+    }
     set(vec![
         on("SN-List-Update-Sets", Action::Read, "sys_update_set", i)
             .at("query")
-            .returned_fields(returned),
+            .returned_fields(returned)
+            .predicate_fields(info.predicate_fields)
+            .ordering_fields(ordering)
+            .query_script_operands(info.script_operands),
     ])
 }
 
@@ -265,4 +284,27 @@ pub(super) fn clone_update_set(
             "category",
         ])),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use hpm_types::operation::ClassificationSnapshot;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn list_update_sets_reports_query_fields_and_script_operands() {
+        let snapshot = ClassificationSnapshot::default();
+        let input = NormalizeInput::new(None, &snapshot);
+        let ops = list_update_sets(
+            &json!({"query": "state=complete^sys_id=javascript:gs.getUserID()", "order_by": "-sys_created_on"}),
+            &input,
+        )
+        .expect("ops");
+        let op = &ops.0[0];
+        assert!(op.predicate_fields.iter().any(|f| f == "state"));
+        assert_eq!(op.ordering_fields, vec!["sys_created_on".to_owned()]);
+        assert_eq!(op.query_script_operands.len(), 1);
+    }
 }
