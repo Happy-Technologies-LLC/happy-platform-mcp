@@ -903,11 +903,17 @@ dependencies = [
 name = "hpm-tools"
 version = "7.0.0-alpha.0"
 dependencies = [
+ "base64 0.22.1",
+ "hpm-cli",
+ "hpm-protocol",
  "hpm-types",
  "jsonschema",
+ "regex",
+ "reqwest",
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
