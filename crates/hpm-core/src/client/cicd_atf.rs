@@ -6,6 +6,9 @@
 //! ported from @servicenow/sdk-api 4.14.0, MIT.
 
 use std::sync::LazyLock;
+use std::time::Duration;
+
+use super::pickers::is_sys_id;
 
 use regex::{Regex, RegexBuilder};
 use serde_json::{Map, Value, json};
@@ -907,9 +910,26 @@ async fn poll_progress(
     #[allow(clippy::cast_precision_loss)]
     let now = || client.now_ms() as f64;
     let deadline = now() + options.timeout_ms;
+    // Every poll targets the instance the run was started on: a
+    // `set_instance` mid-wait fails the call instead of retargeting it.
+    let generation = client.generation();
     let mut attempt: u64 = 0;
+    let mut last = snapshot_of(progress_id, &json!({}));
     loop {
-        let snapshot = fetch_progress(client, progress_id).await?;
+        if client.generation() != generation {
+            return Err(ClientError::stale());
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let budget = Duration::from_millis((deadline - now()).max(0.0).round() as u64);
+        let Ok(fetched) = tokio::time::timeout(budget, fetch_progress(client, progress_id)).await
+        else {
+            return Ok((last, true));
+        };
+        let snapshot = fetched?;
+        if client.generation() != generation {
+            return Err(ClientError::stale());
+        }
+        last = snapshot.clone();
         attempt += 1;
         let percent = snapshot
             .get("percent_complete")
@@ -1001,6 +1021,9 @@ async fn get_suite_test_rows(
     client: &ServiceNowClient,
     suite_result_id: &str,
 ) -> Vec<(&'static str, Value)> {
+    if !is_sys_id(suite_result_id) {
+        return Vec::new();
+    }
     let path = "/api/now/table/sys_atf_test_result";
     let url = with_query(
         path,
@@ -1179,7 +1202,9 @@ async fn dispatch_and_maybe_wait(
 ) -> Result<Value, ClientError> {
     let dispatch_result = cicd_request(client, Method::Post, d.path, &d.query).await?;
     let progress_id = link_of(dispatch_result.get("links"), "progress")
-        .and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_owned));
+        .and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_owned))
+        // Server-returned ids go into URL paths: only well-formed sys_ids.
+        .filter(|id| is_sys_id(id));
     let result_type = d.result_type;
     let label = d.label;
 
@@ -1249,7 +1274,7 @@ async fn dispatch_and_maybe_wait(
         .get("results")
         .and_then(|r| r.get("id"))
         .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
+        .filter(|id| is_sys_id(id))
         .map(str::to_owned);
     let mut payload = Obj::default()
         .set("status", state)

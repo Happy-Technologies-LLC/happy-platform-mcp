@@ -20,6 +20,8 @@ type Handler = dyn Fn(&HttpRequest) -> Result<HttpResponse, TransportError> + Se
 struct FakeTransport {
     handler: Box<Handler>,
     requests: Mutex<Vec<HttpRequest>>,
+    /// Requests whose URL contains this never complete (stalled server).
+    stall: Mutex<Option<&'static str>>,
 }
 
 impl FakeTransport {
@@ -29,6 +31,7 @@ impl FakeTransport {
         Arc::new(Self {
             handler: Box::new(handler),
             requests: Mutex::new(Vec::new()),
+            stall: Mutex::new(None),
         })
     }
     fn requests(&self) -> Vec<HttpRequest> {
@@ -47,6 +50,10 @@ impl HttpTransport for FakeTransport {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(request.clone());
             tokio::task::yield_now().await;
+            let stall = *self.stall.lock().unwrap_or_else(|e| e.into_inner());
+            if stall.is_some_and(|s| request.url.contains(s)) {
+                std::future::pending::<()>().await;
+            }
             (self.handler)(&request)
         })
     }

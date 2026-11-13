@@ -171,17 +171,45 @@ pub struct ReqwestTransport {
     follow: reqwest::Client,
 }
 
+/// TCP/TLS connect bound for every request.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Whole-request bound when the caller sets none (axios had none; deviation).
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// Largest response body read into memory.
+pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Followed redirects (max 5) must keep scheme, host and port: credentials
+/// set by hand (Authorization, Cookie) never leave the origin or downgrade
+/// https→http.
+fn same_origin_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let Some(first) = attempt.previous().first() else {
+            return attempt.stop();
+        };
+        if attempt.previous().len() > 5 {
+            return attempt.error("too many redirects");
+        }
+        if attempt.url().origin() == first.origin() {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 impl ReqwestTransport {
     pub fn new() -> Result<Self, TransportError> {
         let build = |policy| {
             reqwest::Client::builder()
                 .redirect(policy)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(DEFAULT_REQUEST_TIMEOUT)
                 .build()
                 .map_err(|e| TransportError::new("ERR_TRANSPORT_INIT", e.to_string()))
         };
         Ok(Self {
             no_redirect: build(reqwest::redirect::Policy::none())?,
-            follow: build(reqwest::redirect::Policy::limited(5))?,
+            follow: build(same_origin_policy())?,
         })
     }
 }
@@ -231,11 +259,17 @@ impl HttpTransport for ReqwestTransport {
                     )
                 })
                 .collect();
-            let body = response
-                .bytes()
-                .await
-                .map_err(|e| map_reqwest_error(&e))?
-                .to_vec();
+            let mut response = response;
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|e| map_reqwest_error(&e))? {
+                if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                    return Err(TransportError::new(
+                        "ERR_RESPONSE_TOO_LARGE",
+                        format!("Response body exceeds {MAX_RESPONSE_BYTES} bytes"),
+                    ));
+                }
+                body.extend_from_slice(&chunk);
+            }
             Ok(HttpResponse {
                 status,
                 headers,

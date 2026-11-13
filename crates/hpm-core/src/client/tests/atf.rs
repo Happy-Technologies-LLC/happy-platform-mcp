@@ -686,3 +686,23 @@ fn log_pattern_rejects_unbounded_constructs_promptly() {
         );
     }
 }
+
+#[tokio::test]
+async fn stalled_progress_request_times_out_at_the_deadline() {
+    let h = fake(|r| (r.method == Method::Post).then(started).flatten());
+    *h.transport.stall.lock().unwrap_or_else(|e| e.into_inner()) = Some("/api/sn_cicd/progress/");
+    let start = std::time::Instant::now();
+    let result = handle_atf_tool(
+        "SN-Run-ATF-Test",
+        &json!({"test_sys_id": TEST_ID, "timeout_seconds": 1}),
+        &h.client,
+    )
+    .await
+    .unwrap_or_default();
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    let body = payload(&result);
+    assert_subset(
+        &body,
+        &json!({"status": "timeout", "progress_id": PROGRESS_ID}),
+    );
+}
