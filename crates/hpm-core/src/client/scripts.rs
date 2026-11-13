@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::error::ClientError;
+use super::error::{ClientError, RawError};
 use super::http::{
     HttpRequest, HttpResponse, Method, axios_query, form_encode, format_utc_datetime,
 };
@@ -705,17 +705,32 @@ impl ServiceNowClient {
         Ok((cookie, token, state.generation))
     }
 
-    /// `GET /logout.do` in the session's jar.
+    /// `GET /logout.do` in the session's jar, on this client's (pinned) instance.
+    /// When that generation has moved, the session is still ended on its own
+    /// host, with its cookie only: no credential of any generation is attached.
     pub async fn logout_ui_session(&self, cookie: &str) -> Result<(), ClientError> {
         let state = self.state();
-        let header = self.auth_header_for(&state).await?;
         let mut req = HttpRequest::new(Method::Get, format!("{}/logout.do", state.url));
-        req.set_header("Authorization", header);
         req.set_header("User-Agent", UI_USER_AGENT);
         if !cookie.is_empty() {
             req.set_header("Cookie", cookie);
         }
         req.timeout = Some(UI_TIMEOUT);
+        if self.assert_current(&state).is_err() {
+            return match self.deps().transport.send(req).await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(self.sanitize(
+                    &state,
+                    RawError {
+                        message: e.message,
+                        code: e.code,
+                        ..RawError::default()
+                    },
+                )),
+            };
+        }
+        let header = self.auth_header_for(&state).await?;
+        req.set_header("Authorization", header);
         self.send(&state, req).await.map(|_| ())
     }
 

@@ -122,6 +122,7 @@ pub struct RequestContext {
     client_capabilities: serde_json::Value,
     mode: DeploymentMode,
     instance: Option<ResolvedInstance>,
+    instance_miss: Option<String>,
     cancel: CancellationToken,
     deadline: Instant,
     progress: Arc<dyn ProgressSink>,
@@ -162,6 +163,11 @@ impl RequestContext {
     }
     pub fn instance(&self) -> Option<&ResolvedInstance> {
         self.instance.as_ref()
+    }
+    /// Set when the call named an instance the registry view does not know: the
+    /// 6.2.0 `getInstance` error text. Such a call never falls back to the default.
+    pub fn instance_miss(&self) -> Option<&str> {
+        self.instance_miss.as_deref()
     }
     pub fn cancel(&self) -> &CancellationToken {
         &self.cancel
@@ -230,6 +236,9 @@ pub struct AdmissionInput {
     /// Unverified `clientInfo.name` (stdio audit label only).
     pub client_name: String,
     pub instance: Option<ResolvedInstance>,
+    /// 6.2.0 not-found text for a requested instance that did not resolve
+    /// ([`crate::registry::RegistryView::resolve_requested`]).
+    pub instance_miss: Option<String>,
     /// Child of the transport's request cancellation token.
     pub cancel: CancellationToken,
     pub deadline: Instant,
@@ -363,6 +372,7 @@ impl TrustedRoot {
             client_capabilities: input.client_capabilities,
             mode: self.mode,
             instance: input.instance,
+            instance_miss: input.instance_miss,
             cancel: input.cancel,
             deadline: input.deadline,
             progress: input.progress,
@@ -390,6 +400,7 @@ mod tests {
             client_capabilities: serde_json::Value::Null,
             client_name: "t".into(),
             instance: None,
+            instance_miss: None,
             cancel: CancellationToken::new(),
             deadline: Instant::now(),
             progress: Arc::new(NoProgress),

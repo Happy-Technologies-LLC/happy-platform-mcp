@@ -391,7 +391,7 @@ pub fn resolve_instance_request(instance_url: &str, request: &str) -> Option<Str
 /// One Table API path segment: `table` / `sys_id` values are percent-encoded
 /// (everything but `A-Za-z0-9_-`), and dot segments are rejected, so they
 /// cannot add query parameters, a fragment, an authority or `..` traversal.
-fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
+pub fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
     if value.is_empty() || value == "." || value == ".." {
         return Err(ClientError::plain(format!(
             "{field} is not a valid path segment"
@@ -409,7 +409,7 @@ fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
 }
 
 /// `/api/now/table/{table}[/{sys_id}]` with both segments encoded.
-fn table_path(table: &str, sys_id: Option<&str>) -> Result<String, ClientError> {
+pub fn table_path(table: &str, sys_id: Option<&str>) -> Result<String, ClientError> {
     let mut path = format!("/api/now/table/{}", path_segment(table, "table")?);
     if let Some(id) = sys_id {
         path.push('/');
@@ -674,10 +674,13 @@ pub(crate) struct Inner {
     progress: Mutex<Option<ProgressCallback>>,
 }
 
-/// Cheap to clone; clones share one instance state.
+/// Cheap to clone; clones share one instance state. A pinned clone
+/// ([`PinnedClient::client`]) reads only its pinned generation: every method
+/// runs on that instance and fails closed (stale) once the live generation moved.
 #[derive(Clone)]
 pub struct ServiceNowClient {
     inner: Arc<Inner>,
+    pin: Option<Arc<State>>,
 }
 
 impl ServiceNowClient {
@@ -689,6 +692,7 @@ impl ServiceNowClient {
                 current: RwLock::new(Arc::new(state)),
                 progress: Mutex::new(None),
             }),
+            pin: None,
         })
     }
 
@@ -726,8 +730,14 @@ impl ServiceNowClient {
         })
     }
 
-    /// `setInstance`: a new generation with fresh caches.
+    /// `setInstance`: a new generation with fresh caches. Refused on a pinned
+    /// clone: a pinned handle never re-points its instance.
     pub fn set_instance(&self, config: InstanceConfig) -> Result<(), ClientError> {
+        if self.pin.is_some() {
+            return Err(ClientError::plain(
+                "Cannot change the instance of a pinned client",
+            ));
+        }
         let mut current = self
             .inner
             .current
@@ -738,7 +748,8 @@ impl ServiceNowClient {
         Ok(())
     }
 
-    pub(crate) fn state(&self) -> Arc<State> {
+    /// The live (current) generation's state, ignoring any pin.
+    fn live(&self) -> Arc<State> {
         self.inner
             .current
             .read()
@@ -746,24 +757,41 @@ impl ServiceNowClient {
             .clone()
     }
 
+    /// The state every request uses: the pin, else the live state.
+    pub(crate) fn state(&self) -> Arc<State> {
+        match &self.pin {
+            Some(st) => st.clone(),
+            None => self.live(),
+        }
+    }
+
+    /// The live generation (also on a pinned clone).
     pub fn generation(&self) -> u64 {
-        self.state().generation
+        self.live().generation
+    }
+
+    /// A clone that runs every method on `st` only.
+    pub(crate) fn pinned_to(&self, st: Arc<State>) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pin: Some(st),
+        }
     }
 
     /// A handle pinned to `generation` (`client.pinned(generation)`, W2-B L-C).
     /// Stale when `generation` is not the current one.
     pub fn pinned(&self, generation: u64) -> Result<PinnedClient, ClientError> {
-        let st = self.state();
+        let st = self.live();
         if st.generation != generation {
             return Err(ClientError::stale());
         }
-        Ok(PinnedClient::new(self.clone(), st))
+        Ok(PinnedClient::new(self, st))
     }
 
     /// Drops the cached access token of `generation` (after a 401). Returns
     /// false when the generation has moved.
     pub fn invalidate_access_token(&self, generation: u64) -> bool {
-        let st = self.state();
+        let st = self.live();
         if st.generation != generation {
             return false;
         }

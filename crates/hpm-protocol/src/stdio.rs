@@ -1,10 +1,6 @@
 //! Single-user stdio transport. The root must be `TrustedRoot::single_user_stdio()`.
 //! C10: stdout carries only JSON-RPC; the service ends cleanly on stdin EOF.
 
-use std::sync::Arc;
-
-use hpm_tools::dispatcher::Dispatcher;
-use hpm_types::context::TrustedRoot;
 use rmcp::ServiceExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -18,17 +14,14 @@ pub enum StdioError {
     Service(String),
 }
 
-/// Serves MCP over stdin/stdout until the client disconnects.
-pub async fn serve(root: TrustedRoot, dispatcher: Arc<Dispatcher>) -> Result<(), StdioError> {
-    serve_handler(McpHandler::new(root, dispatcher)).await
-}
-
-/// [`serve`] with a pre-configured handler (registry, continuation store).
+/// Serves MCP over stdin/stdout until the client disconnects. Build the handler
+/// with its registry (`McpHandler::builder(..).registry(..)`), or every
+/// instance-bound tool fails with no instance.
 pub async fn serve_handler(handler: McpHandler) -> Result<(), StdioError> {
     serve_io(handler, tokio::io::stdin(), tokio::io::stdout()).await
 }
 
-/// Same as [`serve`] over any byte stream pair (tests, embedding).
+/// Same as [`serve_handler`] over any byte stream pair (tests, embedding).
 pub async fn serve_io<R, W>(handler: McpHandler, read: R, write: W) -> Result<(), StdioError>
 where
     R: AsyncRead + Send + Unpin + 'static,

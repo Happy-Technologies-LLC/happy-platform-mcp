@@ -906,6 +906,7 @@ dependencies = [
  "base64 0.22.1",
  "hpm-cli",
  "hpm-core",
+ "hpm-docs",
  "hpm-protocol",
  "hpm-types",
  "jsonschema",

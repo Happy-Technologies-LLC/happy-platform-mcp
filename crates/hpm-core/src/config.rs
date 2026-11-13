@@ -666,6 +666,7 @@ impl ConfigManager {
             instances: entries,
             selected_default,
             default_source,
+            env_fallback: self.using_env_fallback(),
         }
     }
 

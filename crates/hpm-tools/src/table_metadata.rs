@@ -49,7 +49,7 @@ mod tests {
             serde_json::from_str(TABLE_DEFINITIONS_JSON).expect("bundled JSON parses");
         assert!(full.contains_key("_metadata"));
         assert!(!tables().contains_key("_metadata"));
-        assert!(!tables().is_empty());
+        assert_eq!(tables().len(), 94);
         assert!(table("incident").is_some());
         assert!(tables().keys().all(|k| !k.starts_with('_')));
     }

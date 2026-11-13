@@ -18,7 +18,7 @@ use hpm_core::keychain::LazySecretStore;
 use hpm_protocol::McpHandler;
 use hpm_tools::dispatcher::{Dispatcher, Services};
 use hpm_tools::families::{self, FamilyDeps};
-use hpm_tools::registration::ToolRegistry;
+use hpm_tools::registration::{RegistrationError, ToolRegistry};
 use hpm_tools::schema::{CompiledSchemaValidator, SchemaCompileError};
 use hpm_tools::single_user::{AllowAll, PassThrough, StderrAudit, UnloadedClassification};
 use hpm_types::context::{AdmissionKey, TrustedRoot};
@@ -59,6 +59,9 @@ fn single_user_services(
     })
 }
 
+/// An extra registration hook for [`SingleUser::extra_tools`].
+pub type ExtraTools = fn(&mut ToolRegistry, &FamilyDeps) -> Result<(), RegistrationError>;
+
 /// Explicit settings for the single-user composition, so tests and embedders can
 /// point it at loopback stubs. [`SingleUser::from_process`] is what the binaries use.
 pub struct SingleUser {
@@ -66,6 +69,9 @@ pub struct SingleUser {
     client_deps: ClientDeps,
     docs_base_url: Option<String>,
     working_dir: Option<PathBuf>,
+    docs_cache_dir: Option<PathBuf>,
+    docs_only: bool,
+    extra: Vec<ExtraTools>,
 }
 
 impl SingleUser {
@@ -87,6 +93,9 @@ impl SingleUser {
             client_deps,
             docs_base_url: None,
             working_dir: None,
+            docs_cache_dir: None,
+            docs_only: false,
+            extra: Vec::new(),
         }
     }
 
@@ -102,6 +111,25 @@ impl SingleUser {
         self
     }
 
+    /// Docs cache directory (lane E). Default: the 6.2.0 location.
+    pub fn docs_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.docs_cache_dir = Some(dir.into());
+        self
+    }
+
+    /// `--docs-only`: list and serve only the 6.2.0 `docsOnlyList` tools.
+    pub fn docs_only(mut self, on: bool) -> Self {
+        self.docs_only = on;
+        self
+    }
+
+    /// Test-only extra registrations, run after every family (e.g. the golden
+    /// harness's stub tools), so harnesses reuse these exact `Services`.
+    pub fn extra_tools(mut self, register: ExtraTools) -> Self {
+        self.extra.push(register);
+        self
+    }
+
     pub fn config(&self) -> &Arc<ConfigManager> {
         &self.config
     }
@@ -109,16 +137,27 @@ impl SingleUser {
     /// Registers every family and builds the dispatcher with `key` (the process
     /// mints exactly one).
     pub fn dispatcher(self, key: AdmissionKey) -> Result<Arc<Dispatcher>, String> {
+        let credential_store = self.client_deps.credential_store.clone();
         let clients = Arc::new(InstanceClients::from_config(
             self.config.clone(),
             self.client_deps,
         ));
-        let mut family_deps = FamilyDeps::new(clients.clone(), self.config);
+        let mut family_deps = FamilyDeps::new(clients.clone(), self.config, credential_store);
         family_deps.docs_base_url = self.docs_base_url;
         family_deps.working_dir = self.working_dir;
-        let registry = ToolRegistry::new()
+        family_deps.docs_cache_dir = self.docs_cache_dir;
+        let mut registry = ToolRegistry::new()
             .and_then(|mut r| families::register_all(&mut r, &family_deps).map(|()| r))
+            .and_then(|mut r| {
+                for register in &self.extra {
+                    register(&mut r, &family_deps)?;
+                }
+                Ok(r)
+            })
             .map_err(|e| format!("tool registration failed: {e}"))?;
+        if self.docs_only {
+            registry.retain_docs_only();
+        }
         let credentials = Arc::new(SingleUserCredentialProvider::new(clients));
         let services = single_user_services(&registry, credentials).map_err(|e| e.to_string())?;
         Ok(Arc::new(Dispatcher::new(registry, services, key)))

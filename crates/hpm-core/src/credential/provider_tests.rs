@@ -12,9 +12,14 @@ use crate::client::oauth_code::{AuthCodeFlow, AuthCodeFlowConfig, TokenPoster};
 use crate::credential::InstanceCredentialStore;
 use crate::credential::testing::MemStore;
 
-/// Records request URLs; answers every request with an empty result.
+/// Records request URLs (`.0`) and each request's (url, Cookie, Authorization)
+/// (`.1`); answers every request with an empty result.
 #[derive(Default)]
-struct Recorder(Mutex<Vec<String>>);
+#[allow(clippy::type_complexity)]
+struct Recorder(
+    Mutex<Vec<String>>,
+    Mutex<Vec<(String, Option<String>, Option<String>)>>,
+);
 
 impl HttpTransport for Recorder {
     fn send(&self, request: HttpRequest) -> BoxFut<'_, Result<HttpResponse, TransportError>> {
@@ -23,6 +28,11 @@ impl HttpTransport for Recorder {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(request.url.clone());
+            self.1.lock().unwrap_or_else(PoisonError::into_inner).push((
+                request.url.clone(),
+                request.header("Cookie").map(str::to_owned),
+                request.header("Authorization").map(str::to_owned),
+            ));
             Ok(HttpResponse::json(200, &json!({"result": []})))
         })
     }
@@ -237,4 +247,142 @@ fn instance_urls_compare_canonically() {
     ] {
         assert!(!same_instance_url(a, b), "{a} vs {b}");
     }
+}
+
+/// Re-points instance "a" to another host (registry edit, new config_version).
+fn repoint_a(clients: &InstanceClients, registry: &Registry) {
+    registry
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert("a".into(), entry("a", "https://evil.service-now.com"));
+    clients
+        .client_for(&resolved("a", 2))
+        .unwrap_or_else(|e| panic!("{e}"));
+}
+
+fn hosts(recorder: &Recorder) -> Vec<String> {
+    recorder
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+#[tokio::test]
+async fn repointed_instance_mid_flow_rejects_every_later_step() {
+    let (clients, recorder, registry) = setup();
+    let a = clients
+        .client_for(&resolved("a", 1))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let pinned = clients
+        .pinned(&binding("a", 1, a.generation()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let flow = pinned.client().clone();
+    // Step 1 runs on "a".
+    assert!(
+        flow.rest(Method::Get, "/api/now/table/x", None)
+            .await
+            .is_ok()
+    );
+    repoint_a(&clients, &registry);
+    // Later steps of the same flow (raw-client methods) fail stale.
+    let step = flow.rest(Method::Get, "/api/now/table/x", None).await;
+    assert!(step.err().is_some_and(|e| e.is_stale()));
+    let ui = flow.open_ui_session().await;
+    assert!(ui.err().is_some_and(|e| e.is_stale()));
+    let rec = flow
+        .get_records("incident", &crate::client::RecordQuery::default())
+        .await;
+    assert!(rec.err().is_some_and(|e| e.is_stale()));
+    // A pinned handle can never re-point itself.
+    assert!(
+        flow.set_instance(instance_config_from_registry(&entry(
+            "a",
+            "https://other.service-now.com"
+        )))
+        .is_err()
+    );
+    let urls = hosts(&recorder);
+    assert!(
+        urls.iter().all(|u| !u.starts_with("https://evil.")),
+        "{urls:?}"
+    );
+}
+
+#[tokio::test]
+async fn old_cookie_is_logged_out_on_its_own_host_never_the_new_one() {
+    let (clients, recorder, registry) = setup();
+    let a = clients
+        .client_for(&resolved("a", 1))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let old = binding("a", 1, a.generation());
+    let pinned = clients.pinned(&old).unwrap_or_else(|e| panic!("{e}"));
+    let provider = SingleUserCredentialProvider::new(clients.clone());
+    provider.sessions().insert(7, pinned.client().clone());
+    repoint_a(&clients, &registry);
+    let session = UiSession {
+        cookie_header: Secret::new("JSESSIONID=old".to_owned()),
+        csrf_token: Secret::new(String::new()),
+        instance_id: "a".into(),
+        generation: old.generation(),
+        scope: UiSessionScope::PerOperation,
+        session_id: 7,
+    };
+    provider
+        .end_ui_session(session)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let sent = recorder
+        .1
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let (url, cookie, auth) = &sent[0];
+    assert_eq!(url, "https://a.service-now.com/logout.do");
+    assert_eq!(cookie.as_deref(), Some("JSESSIONID=old"));
+    // The moved generation's credentials are never attached.
+    assert_eq!(auth, &None);
+    assert!(provider.sessions().is_empty());
+}
+
+#[test]
+fn credential_failures_keep_the_6_2_0_text() {
+    let not_found = backend(ClientError::credential("CREDENTIAL_NOT_FOUND"));
+    assert_eq!(not_found.to_string(), "Credential not found");
+    let oauth = backend(ClientError::new(
+        "AuthenticationError",
+        "OAuth token request failed",
+        None,
+    ));
+    assert_eq!(oauth.to_string(), "OAuth token request failed");
+    let stale = backend(ClientError::stale());
+    assert!(matches!(stale, CredentialError::GenerationMoved));
+    assert_eq!(
+        stale.to_string(),
+        "Instance changed during credential resolution"
+    );
+}
+
+#[tokio::test]
+async fn basic_without_password_or_ref_is_credential_not_found() {
+    let (clients, _, registry) = setup();
+    registry
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            "c".into(),
+            json!({"name": "c", "url": "https://c.service-now.com", "username": "u"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        );
+    let c = clients
+        .client_for(&resolved("c", 1))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let err = c.auth_header().await.err().map(backend);
+    assert_eq!(
+        err.map(|e| e.to_string()).as_deref(),
+        Some("Credential not found")
+    );
 }

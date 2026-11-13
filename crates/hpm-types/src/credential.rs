@@ -126,10 +126,13 @@ pub struct UiSession {
     pub cookie_header: Secret,
     pub csrf_token: Secret,
     /// Instance and generation of the binding the session was opened for;
-    /// `end_ui_session` logs out on exactly that instance.
+    /// `end_ui_session` logs out on exactly that instance, even after the
+    /// generation moved.
     pub instance_id: String,
     pub generation: u64,
     pub scope: UiSessionScope,
+    /// Provider-assigned opaque handle of this session.
+    pub session_id: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -143,13 +146,16 @@ pub enum CredentialError {
     Revoked,
     /// Store moved past the bound generation (refresh/revoke elsewhere). The
     /// admitted call fails; it never silently switches to the new generation.
-    #[error("credential generation changed")]
+    /// Text: 6.2.0 `StaleInstanceError`.
+    #[error("Instance changed during credential resolution")]
     GenerationMoved,
     #[error("no instance bound to this call")]
     NoInstance,
     #[error("ui session unsupported for this auth mode")]
     UiSessionUnsupported,
-    #[error("credential backend unavailable")]
+    /// The source must already be sanitized: its text is the 6.2.0 tool
+    /// error message (`Credential not found`, OAuth errors, ...).
+    #[error("{0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 

@@ -122,12 +122,13 @@ impl McpHandler {
         }
     }
 
-    /// Step 0: trusted admission of one request. `instance` is the per-call
-    /// `instance` argument (tools) or `None` (the selected default).
+    /// Step 0: trusted admission of one request. `instance` is the raw per-call
+    /// `instance` argument (tools) or `None` (the selected default); it is
+    /// interpreted once here, with 6.2.0 `resolveClient` semantics.
     fn admit(
         &self,
         context: &RequestContext<RoleServer>,
-        instance: Option<&str>,
+        instance: Option<&Value>,
     ) -> Result<hpm_types::context::RequestContext, ErrorData> {
         let inner = &self.inner;
         // Modern requests carry version and capabilities per request (`_meta`);
@@ -162,6 +163,7 @@ impl McpHandler {
             client_capabilities,
             client_name,
             instance: None,
+            instance_miss: None,
             cancel: context.ct.child_token(),
             deadline: Instant::now() + CALL_DEADLINE,
             progress: Arc::new(PeerProgress {
@@ -178,7 +180,13 @@ impl McpHandler {
             (None, _) => None,
         };
         if let (Some(registry), Some(principal)) = (&inner.registry, principal) {
-            input.instance = registry.snapshot_for(&principal).resolve(instance);
+            match registry
+                .snapshot_for(&principal)
+                .resolve_requested(instance)
+            {
+                Ok(resolved) => input.instance = resolved,
+                Err(miss) => input.instance_miss = Some(miss),
+            }
         }
         inner
             .root
@@ -228,10 +236,14 @@ fn to_rmcp_tool(d: &ToolDescriptor) -> Tool {
     tool
 }
 
-/// 6.2.0 tool-call text for a failure: `Error: ${message}` for handler messages.
-fn error_text(e: &ToolError) -> String {
+/// 6.2.0 tool-call text for a failure: `Error: ${message}` for handler messages
+/// and for credential preparation failures (`Credential not found`, OAuth
+/// errors, `Instance changed during credential resolution`), which 6.2.0 throws
+/// inside the request and renders through the same catch block.
+pub(crate) fn error_text(e: &ToolError) -> String {
     match e {
         ToolError::Message(m) | ToolError::Upstream { message: m, .. } => format!("Error: {m}"),
+        ToolError::Credential(c) => format!("Error: {c}"),
         other => other.to_string(),
     }
 }
@@ -364,7 +376,7 @@ impl ServerHandler for McpHandler {
     ) -> Result<CallToolResponse, ErrorData> {
         let inner = &self.inner;
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let ctx = self.admit(&context, args.get("instance").and_then(Value::as_str))?;
+        let ctx = self.admit(&context, args.get("instance"))?;
 
         let subject_name = inner.dispatcher.get_tool(&request.name).map(|d| d.name);
         let binding = |expires_at: SystemTime| {
@@ -444,5 +456,31 @@ impl ServerHandler for McpHandler {
             // Every other failure is a tool result with isError (6.2.0 parity).
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(error_text(&e))]).into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod error_text_tests {
+    use hpm_types::credential::CredentialError;
+    use hpm_types::tool::ToolError;
+
+    use super::error_text;
+
+    #[test]
+    fn credential_errors_render_like_the_6_2_0_catch_block() {
+        assert_eq!(
+            error_text(&ToolError::Credential(CredentialError::GenerationMoved)),
+            "Error: Instance changed during credential resolution"
+        );
+        assert_eq!(
+            error_text(&ToolError::Credential(CredentialError::Backend(
+                "Credential not found".into()
+            ))),
+            "Error: Credential not found"
+        );
+        assert_eq!(
+            error_text(&ToolError::Message("boom".into())),
+            "Error: boom"
+        );
     }
 }

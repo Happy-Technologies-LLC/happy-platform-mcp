@@ -5,8 +5,10 @@
 //! [`crate::dispatcher::Dispatcher::new`].
 //!
 //! Listing order (C5): 6.2.0 interleaves families in `tools/list`, so the registry
-//! keeps tools in D-05 row order, which is the 6.2.0 `tools/list` order, whatever
-//! order families register in. Resources list in registration order.
+//! keeps tools in 6.2.0 source order ([`crate::tool_order::TOOLS_LIST_ORDER`],
+//! compat-manifest `tools.items`) whatever order families register in.
+//! [`ToolRegistry::retain_docs_only`] narrows it to the `--docs-only` list.
+//! Resources list in registration order.
 //!
 //! Every tool must match its row in the bundled D-05 classification
 //! ([`ToolClassificationSet::bundled`]): declared access floor, output class, retry
@@ -105,7 +107,7 @@ impl ToolRegistry {
             });
         }
         tool.annotations = row.annotation_hints;
-        let rank = |name: &str| self.classification.iter().position(|r| r.name == name);
+        let rank = crate::tool_order::rank;
         let own = rank(tool.name);
         let at = self
             .tools
@@ -127,9 +129,16 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Registered tools in D-05 (6.2.0 `tools/list`) order; used to compile input schemas.
+    /// Registered tools in 6.2.0 `tools/list` (source) order; used to compile input schemas.
     pub fn tools(&self) -> &[ToolDescriptor] {
         &self.tools
+    }
+
+    /// `--docs-only` (`docsOnlyList`): drops every tool not on that list. Order is
+    /// unchanged, because the docs-only list keeps the full list's relative order.
+    pub fn retain_docs_only(&mut self) {
+        self.tools
+            .retain(|t| crate::tool_order::DOCS_ONLY_ORDER.contains(&t.name));
     }
 
     pub(crate) fn into_parts(self) -> (Vec<ToolDescriptor>, Vec<ResourceDescriptor>) {
@@ -194,21 +203,28 @@ mod tests {
     }
 
     #[test]
-    fn listing_follows_d05_order_and_carries_its_hints() {
+    fn listing_follows_6_2_0_source_order_and_carries_d05_hints() {
         let mut registry = ToolRegistry::new().expect("registry");
         let rows: Vec<_> = SET.iter().collect();
-        for row in rows.iter().rev() {
+        for row in &rows {
             let mut tool = from_row(row);
             tool.annotations = None;
             registry.register_tool(tool).expect(&row.name);
         }
         let listed: Vec<_> = registry.tools().iter().map(|t| t.name).collect();
-        let expected: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(listed, expected);
-        for (tool, row) in registry.tools().iter().zip(rows) {
-            assert_eq!(tool.annotations, row.annotation_hints, "{}", row.name);
+        assert_eq!(listed, crate::tool_order::TOOLS_LIST_ORDER);
+        for tool in registry.tools() {
+            assert_eq!(
+                tool.annotations,
+                row(tool.name).annotation_hints,
+                "{}",
+                tool.name
+            );
         }
         assert!(registry.tools().iter().any(|t| t.annotations.is_some()));
+        registry.retain_docs_only();
+        let docs: Vec<_> = registry.tools().iter().map(|t| t.name).collect();
+        assert_eq!(docs, crate::tool_order::DOCS_ONLY_ORDER);
     }
 
     #[test]
