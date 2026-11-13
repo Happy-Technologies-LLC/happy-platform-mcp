@@ -376,8 +376,48 @@ async fn batch_create_transaction_stops_without_rollback_and_is_partial() {
     );
     assert_eq!(
         err_text(&done),
-        "Error: Batch create failed at operation 1: 403 Insert Operation Failed: ACL"
+        format!(
+            "Error: Batch create failed at operation 1: 403 Insert Operation Failed: ACL\nAlready created and not rolled back: {{\"operation_0\":\"{ID1}\"}}. Do not re-run the whole batch."
+        )
     );
+}
+
+#[tokio::test]
+async fn batch_create_refuses_a_ref_to_a_failed_operation() {
+    let fake = Fake::new(vec![Err(http(400, "400 nope")), Ok(json!({"sys_id": ID1}))]);
+    let args = json!({"operations": [
+        {"table": "incident", "data": {}, "save_as": "p"},
+        {"table": "incident", "data": {"parent": "${p}"}}
+    ], "transaction": false, "progress": false});
+    let (done, _) = batch(true, &fake, &args, false).await;
+    assert_eq!(fake.calls().len(), 1, "the unresolved ref is never sent");
+    let outcomes: Vec<_> = done.ops.iter().map(|o| o.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [MutationOutcome::Failed, MutationOutcome::NotSent]
+    );
+    assert!(err_text(&done).contains("Reference ${p} did not resolve to a sys_id"));
+}
+
+#[tokio::test]
+async fn metadata_tools_refuse_non_identifier_names() {
+    for (f, args) in [
+        (
+            0,
+            json!({"table": "incident", "field": "x^ORelement=javascript:gs.log(1)"}),
+        ),
+        (1, json!({"table_name": "incident^NQname=javascript:x"})),
+        (2, json!({"table_name": "incident^ORname=sys_user"})),
+    ] {
+        let fake = Fake::new(vec![]);
+        let done = match f {
+            0 => handlers::explain_field(&fake, &args).await,
+            1 => handlers::discover_table_schema(&fake, &args).await,
+            _ => handlers::get_table_schema(&fake, &args).await,
+        };
+        assert!(fake.calls().is_empty());
+        assert!(err_text(&done).contains("must contain only letters, digits"));
+    }
 }
 
 #[tokio::test]

@@ -72,7 +72,7 @@ impl Handler {
         let emit = |progress: f64, total: Option<f64>, message: String| -> BoxFut<'_, ()> {
             ctx.progress().emit(progress, total, Some(message))
         };
-        let cancelled = || ctx.cancel().is_cancelled();
+        let cancelled = || !ctx.is_live();
         match self.tool {
             Tool::QueryTable => handlers::query_table(api, &args).await,
             Tool::CreateRecord => handlers::create_record(api, &args).await,

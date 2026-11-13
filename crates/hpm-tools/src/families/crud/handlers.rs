@@ -13,6 +13,7 @@ use hpm_types::tool::{MutationOutcome, OpCompletion, ToolError};
 use serde_json::{Map, Value, json};
 
 use super::json::{arg_or, length_text, or, pretty, prop, set, text, truthy};
+use super::normalize::{batch_ref_name, identifier_error};
 use crate::logic::bulk_limits::{
     resolve_batch_placeholders, validate_batch_create_operations, validate_batch_updates,
 };
@@ -290,6 +291,9 @@ pub fn list_available_tables(args: &Value) -> Done {
 }
 
 pub async fn get_table_schema(api: &dyn Api, args: &Value) -> Done {
+    if let Some(e) = identifier_error(args, "table_name") {
+        return Done::read(Err(ToolError::Message(e)));
+    }
     let table_name = str_arg(args, "table_name");
     let name_text = text(args.get("table_name"));
     let Some(schema) = table_metadata::table(table_name) else {
@@ -542,6 +546,9 @@ fn choice_tables() -> Value {
 }
 
 pub async fn discover_table_schema(api: &dyn Api, args: &Value) -> Done {
+    if let Some(e) = identifier_error(args, "table_name") {
+        return Done::read(Err(ToolError::Message(e)));
+    }
     let flag = |k: &str| truthy(args.get(k));
     let o = DiscoverOptions {
         type_codes: flag("include_type_codes"),
@@ -656,6 +663,12 @@ async fn explain_inner(
 }
 
 pub async fn explain_field(api: &dyn Api, args: &Value) -> Done {
+    if let Some(e) = ["table", "field"]
+        .iter()
+        .find_map(|k| identifier_error(args, k))
+    {
+        return Done::read(Err(ToolError::Message(e)));
+    }
     let include_examples = truthy(Some(&arg_or(args, "include_examples", json!(true))));
     let result = explain(
         api,
@@ -887,7 +900,7 @@ pub async fn batch_create(
     let operations = args.get("operations");
     let serialized = match validate_batch_create_operations(operations) {
         Ok(s) => s,
-        Err(e) => return batch_done(&[], 0, Err(ToolError::Message(e.message))),
+        Err(e) => return batch_done(&[], 1, Err(ToolError::Message(e.message))),
     };
     let ops = operations
         .and_then(Value::as_array)
@@ -901,6 +914,8 @@ pub async fn batch_create(
     let mut errors: Vec<Value> = Vec::new();
     let mut created = 0u64;
     let mut done: Vec<MutationOutcome> = Vec::with_capacity(total);
+    // Names of earlier operations a `${name}` ref may point at.
+    let mut earlier: Vec<String> = Vec::with_capacity(total);
 
     for (i, op) in ops.iter().enumerate() {
         if cancelled() {
@@ -908,19 +923,31 @@ pub async fn batch_create(
         }
         let table = op.get("table").and_then(Value::as_str).unwrap_or_default();
         let resolved = resolve_batch_placeholders(&serialized[i], &saved);
-        let attempt = match serde_json::from_str::<Value>(&resolved) {
-            Ok(data) => api.create_record(table, &data).await,
-            Err(e) => Err(ClientError::plain(e.to_string())),
+        let unresolved = earlier
+            .iter()
+            .find(|name| resolved.contains(&format!("${{{name}}}")));
+        let attempt = if let Some(name) = unresolved {
+            Err((
+                MutationOutcome::NotSent,
+                format!("Reference ${{{name}}} did not resolve to a sys_id; operation not sent"),
+            ))
+        } else {
+            match serde_json::from_str::<Value>(&resolved) {
+                Ok(data) => api
+                    .create_record(table, &data)
+                    .await
+                    .map_err(|e| (failed_outcome(&e), message(&e))),
+                Err(e) => Err((MutationOutcome::NotSent, e.to_string())),
+            }
         };
+        let key = batch_ref_name(op, i);
         match attempt {
             Ok(result) => {
                 done.push(MutationOutcome::Committed);
-                let key = or(op.get("save_as"), None)
-                    .map_or_else(|| format!("operation_{i}"), js::to_js_string);
                 let sys_id = prop(Some(&result), "sys_id");
                 set(&mut sys_ids, &key, sys_id);
                 if let Some(Value::String(id)) = sys_id {
-                    saved.insert(key, id.clone());
+                    saved.insert(key.clone(), id.clone());
                 }
                 created += 1;
                 if should_report(report, i, total) {
@@ -937,9 +964,8 @@ pub async fn batch_create(
                         .await;
                 }
             }
-            Err(e) => {
-                done.push(failed_outcome(&e));
-                let msg = message(&e);
+            Err((outcome, msg)) => {
+                done.push(outcome);
                 errors.push(json!({"operation_index": i, "table": table, "error": msg}));
                 if report {
                     progress
@@ -951,18 +977,21 @@ pub async fn batch_create(
                         .await;
                 }
                 if transaction {
-                    return batch_done(
-                        &done,
-                        total,
-                        // Verbatim text: 6.2.0 shows this error even after a
-                        // partial commit, so it must win over the generic text.
-                        Err(ToolError::Text(format!(
-                            "Error: Batch create failed at operation {i}: {msg}"
-                        ))),
-                    );
+                    // 6.2.0 sentence, plus (owner decision M3) the records that
+                    // stay created: 6.2.0 never rolls back. Verbatim Text so it
+                    // wins over the generic partial-commit text.
+                    let mut text = format!("Error: Batch create failed at operation {i}: {msg}");
+                    if created > 0 {
+                        text.push_str(&format!(
+                            "\nAlready created and not rolled back: {}. Do not re-run the whole batch.",
+                            Value::Object(sys_ids)
+                        ));
+                    }
+                    return batch_done(&done, total, Err(ToolError::Text(text)));
                 }
             }
         }
+        earlier.push(key);
     }
     if report {
         let summary = if errors.is_empty() {
@@ -1008,7 +1037,7 @@ pub async fn batch_update(
 ) -> Done {
     let updates = args.get("updates");
     if let Err(e) = validate_batch_updates(updates) {
-        return batch_done(&[], 0, Err(ToolError::Message(e.message)));
+        return batch_done(&[], 1, Err(ToolError::Message(e.message)));
     }
     let updates = updates
         .and_then(Value::as_array)
@@ -1020,7 +1049,6 @@ pub async fn batch_update(
     let mut errors: Vec<Value> = Vec::new();
     let mut updated = 0u64;
     let mut done: Vec<MutationOutcome> = Vec::with_capacity(total);
-    let mut stopped = false;
 
     for (i, update) in updates.iter().enumerate() {
         if cancelled() {
@@ -1072,13 +1100,11 @@ pub async fn batch_update(
                         .await;
                 }
                 if stop_on_error {
-                    stopped = true;
                     break;
                 }
             }
         }
     }
-    let _ = stopped;
     if report {
         let summary = if errors.is_empty() {
             format!("Complete: All {total} records updated successfully")

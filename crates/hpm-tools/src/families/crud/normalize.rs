@@ -10,7 +10,9 @@ use hpm_types::operation::{Action, Operation, OperationSet, Subject, is_script_v
 use hpm_types::tool::{NormalizeInput, ToolError};
 use serde_json::Value;
 
-use crate::logic::bulk_limits::{validate_batch_create_operations, validate_batch_updates};
+use crate::logic::bulk_limits::{
+    resolve_batch_placeholders, validate_batch_create_operations, validate_batch_updates,
+};
 use crate::logic::nl::parse_natural_language_value;
 
 /// Fields, ordering and script operands found in a ServiceNow encoded query.
@@ -23,6 +25,10 @@ pub struct QueryInfo {
 }
 
 const SCRIPT_PREFIX: &str = "javascript:";
+
+/// Predicate field reported for whole-record search and cross-table operators
+/// (`123TEXTQUERY321`, `IR_*`, `JOIN`, `RLQUERY`, `SUBQUERY`): all fields.
+pub const OPAQUE_FIELD: &str = "*";
 
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -74,6 +80,28 @@ fn analyze_into(query: &str, info: &mut QueryInfo) {
                 .collect::<Vec<_>>()
                 .join(" ");
             info.script_operands.push(operand);
+        }
+        // Whole-record search and cross-table operators read fields no
+        // predicate names: report them as the all-fields wildcard.
+        let opaque = [
+            "123TEXTQUERY321",
+            "IR_",
+            "JOIN",
+            "RLQUERY",
+            "ENDRLQUERY",
+            "SUBQUERY",
+        ]
+        .iter()
+        .any(|p| {
+            cond.strip_prefix("NQ")
+                .or_else(|| cond.strip_prefix("OR"))
+                .unwrap_or(cond)
+                .get(..p.len())
+                .is_some_and(|h| h.eq_ignore_ascii_case(p))
+        });
+        if opaque {
+            push_unique(&mut info.predicate_fields, OPAQUE_FIELD);
+            continue;
         }
         let ordering = ["ORDERBYDESC", "ORDERBY", "GROUPBY"]
             .iter()
@@ -152,6 +180,24 @@ fn table_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::InvalidParams(format!("{key} must be a string")))
+}
+
+/// Table and field names the metadata tools interpolate into encoded queries:
+/// anything else could add `^OR`/`^NQ` predicates or a `javascript:` operand.
+fn is_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'$'))
+}
+
+/// The 7.0 error for a metadata identifier argument that is not a plain name
+/// (checked by the normalizer and again by the handler).
+pub fn identifier_error(args: &Value, key: &str) -> Option<String> {
+    let ok = args
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(is_identifier);
+    (!ok).then(|| format!("{key} must contain only letters, digits, '_', '.' or '$'"))
 }
 
 fn base(tool: &'static str, action: Action, input: &NormalizeInput<'_>) -> Operation {
@@ -252,10 +298,16 @@ pub fn update_record(args: &Value, input: &NormalizeInput<'_>) -> Result<Operati
 fn metadata(
     tool: &'static str,
     key: &str,
+    keys: &[&str],
     args: &Value,
     input: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
     let table = table_arg(args, key)?;
+    for k in keys {
+        if let Some(e) = identifier_error(args, k) {
+            return Err(ToolError::InvalidParams(e));
+        }
+    }
     one(base(tool, Action::Metadata, input).on_table(table, input.classification))
 }
 
@@ -263,18 +315,36 @@ pub fn get_table_schema(
     args: &Value,
     input: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
-    metadata("SN-Get-Table-Schema", "table_name", args, input)
+    metadata(
+        "SN-Get-Table-Schema",
+        "table_name",
+        &["table_name"],
+        args,
+        input,
+    )
 }
 
 pub fn discover_table_schema(
     args: &Value,
     input: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
-    metadata("SN-Discover-Table-Schema", "table_name", args, input)
+    metadata(
+        "SN-Discover-Table-Schema",
+        "table_name",
+        &["table_name"],
+        args,
+        input,
+    )
 }
 
 pub fn explain_field(args: &Value, input: &NormalizeInput<'_>) -> Result<OperationSet, ToolError> {
-    metadata("SN-Explain-Field", "table", args, input)
+    metadata(
+        "SN-Explain-Field",
+        "table",
+        &["table", "field"],
+        args,
+        input,
+    )
 }
 
 pub fn list_available_tables(
@@ -291,21 +361,21 @@ fn batch(
     tool: &'static str,
     key: &str,
     action: Action,
-    valid: bool,
+    data: Option<Vec<Value>>,
     args: &Value,
     input: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
     let items = args.get(key).and_then(Value::as_array);
-    let Some(items) = items.filter(|_| valid) else {
+    let (Some(items), Some(data)) = (items, data) else {
         return one(base(tool, action, input));
     };
     let mut ops = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
+    for (i, (item, data)) in items.iter().zip(&data).enumerate() {
         let table = item
             .get("table")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let (fields, scripts) = written(item.get("data"));
+        let (fields, scripts) = written(Some(data));
         ops.push(
             base(tool, action, input)
                 .on_table(table, input.classification)
@@ -317,25 +387,62 @@ fn batch(
     Ok(OperationSet(ops))
 }
 
+/// A stand-in sys_id for a placeholder ref: what the wire carries instead.
+const REF_STAND_IN: &str = "00000000000000000000000000000000";
+
+/// Data of each operation with every well-formed `${name}` ref to an earlier
+/// operation replaced as the handler would, so refs are not script values.
+fn batch_create_data(args: &Value) -> Option<Vec<Value>> {
+    let serialized = validate_batch_create_operations(args.get("operations")).ok()?;
+    let ops = args.get("operations")?.as_array()?;
+    let mut earlier = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(ops.len());
+    for (i, (op, s)) in ops.iter().zip(&serialized).enumerate() {
+        out.push(serde_json::from_str(&resolve_batch_placeholders(s, &earlier)).ok()?);
+        earlier.insert(batch_ref_name(op, i), REF_STAND_IN.to_owned());
+    }
+    Some(out)
+}
+
+/// The name an operation's sys_id is saved under (`save_as` or `operation_<i>`).
+pub fn batch_ref_name(op: &Value, i: usize) -> String {
+    match op.get("save_as") {
+        Some(v) if crate::families::crud::json::truthy(Some(v)) => {
+            crate::logic::js::to_js_string(v)
+        }
+        _ => format!("operation_{i}"),
+    }
+}
+
 pub fn batch_create(args: &Value, input: &NormalizeInput<'_>) -> Result<OperationSet, ToolError> {
-    let valid = validate_batch_create_operations(args.get("operations")).is_ok();
+    let data = batch_create_data(args);
     batch(
         "SN-Batch-Create",
         "operations",
         Action::Create,
-        valid,
+        data,
         args,
         input,
     )
 }
 
 pub fn batch_update(args: &Value, input: &NormalizeInput<'_>) -> Result<OperationSet, ToolError> {
-    let valid = validate_batch_updates(args.get("updates")).is_ok();
+    let data = validate_batch_updates(args.get("updates"))
+        .ok()
+        .and_then(|()| {
+            let items = args.get("updates")?.as_array()?;
+            Some(
+                items
+                    .iter()
+                    .map(|u| u.get("data").cloned().unwrap_or(Value::Null))
+                    .collect(),
+            )
+        });
     batch(
         "SN-Batch-Update",
         "updates",
         Action::Update,
-        valid,
+        data,
         args,
         input,
     )
@@ -479,5 +586,70 @@ mod tests {
         assert_eq!(set.0.len(), 1);
         assert!(set.0[0].action.is_mutation());
         assert!(set.0[0].table.is_none());
+    }
+
+    #[test]
+    fn metadata_names_must_be_identifiers() {
+        let snap = snapshot();
+        let input = NormalizeInput::new(None, &snap);
+        type Norm = fn(&Value, &NormalizeInput<'_>) -> Result<OperationSet, ToolError>;
+        let cases: [(Norm, Value); 4] = [
+            (
+                explain_field,
+                json!({"table": "incident", "field": "x^ORelement=javascript:gs.log(1)"}),
+            ),
+            (
+                explain_field,
+                json!({"table": "incident^NQname=sys_user", "field": "state"}),
+            ),
+            (
+                discover_table_schema,
+                json!({"table_name": "incident^NQname=javascript:x"}),
+            ),
+            (get_table_schema, json!({"table_name": "incident^ORname=x"})),
+        ];
+        for (f, args) in cases {
+            assert!(matches!(f(&args, &input), Err(ToolError::InvalidParams(_))));
+        }
+        let ok = run(
+            explain_field,
+            json!({"table": "u_x$1", "field": "caller_id.name"}),
+        );
+        assert_eq!(ok.0.len(), 1);
+    }
+
+    #[test]
+    fn whole_record_and_join_operators_are_opaque_predicates() {
+        for q in [
+            "123TEXTQUERY321=secret",
+            "active=true^IR_AND_OR_QUERY=x",
+            "JOINincident.caller_id=sys_user.sys_id!name=x",
+            "RLQUERYsys_user.manager,>=1^ENDRLQUERY",
+            "active=true^ORSUBQUERYsys_id,caller_id,incident",
+        ] {
+            assert!(
+                analyze_query(q)
+                    .predicate_fields
+                    .iter()
+                    .any(|f| f == OPAQUE_FIELD),
+                "{q}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_refs_to_earlier_operations_are_not_script_values() {
+        let set = run(
+            batch_create,
+            json!({"operations": [
+                {"table": "incident", "data": {}, "save_as": "p"},
+                {"table": "incident", "data": {"parent": "${p}"}},
+                {"table": "incident", "data": {"x": "${operation_1}"}},
+                {"table": "incident", "data": {"y": "${later}"}}
+            ]}),
+        );
+        assert!(set.0[1].written_script_fields.is_empty());
+        assert!(set.0[2].written_script_fields.is_empty());
+        assert_eq!(set.0[3].written_script_fields, ["y"]);
     }
 }
