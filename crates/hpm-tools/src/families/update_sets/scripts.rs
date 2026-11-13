@@ -454,6 +454,7 @@ pub(super) fn execute_background_script<'a>(
                     ))),
                 )
             }
+            _ if error.is_cancelled() => done(MutationOutcome::NotSent, Err(ToolError::Cancelled)),
             _ => {
                 let outcome = match failed_outcome(&error) {
                     MutationOutcome::NotSent => MutationOutcome::NotSent,

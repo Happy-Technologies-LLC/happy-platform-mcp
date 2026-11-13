@@ -19,7 +19,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use hpm_protocol::McpHandler;
-use hpm_protocol::transport::limits::HttpSecurity;
+use hpm_protocol::transport::limits::{HttpLimits, HttpSecurity};
 use hpm_protocol::transport::{HttpApp, HttpConfig};
 use hpm_tools::dispatcher::{Dispatcher, RequiredPropertiesValidator, Services};
 use hpm_tools::registration::ToolRegistry;
@@ -342,12 +342,17 @@ async fn world() -> World {
 // ---------------------------------------------------------------- HTTP helpers
 
 async fn http(w: &World) -> SocketAddr {
+    http_with(w, HttpLimits::default()).await
+}
+
+async fn http_with(w: &World, limits: HttpLimits) -> SocketAddr {
     let security = HttpSecurity::new(TOKEN, &[], &[]).expect("security");
-    let config = HttpConfig::new(
+    let mut config = HttpConfig::new(
         security,
         Arc::new(|| json!({"status": "healthy"})),
         Arc::new(|| Box::pin(async { Ok(json!([])) })),
     );
+    config.limits = limits;
     let app = HttpApp::new(
         McpHandler::new(
             TrustedRoot::streamable_http(DeploymentMode::SingleUser),
@@ -631,6 +636,36 @@ async fn legacy_sse_disconnect_does_not_cancel() {
         w.stub.closed.load(Ordering::SeqCst),
         0,
         "disconnect cancelled the call"
+    );
+    w.stub.release.notify_one();
+    w.audit.completed_with(MutationOutcome::Committed).await;
+    assert_eq!(w.stub.sent.load(Ordering::SeqCst), 1);
+}
+
+// Review L4/N4: a `2024-11-05` session torn down for idleness (no traffic
+// while a call stalls) is not a cancel: `sse.rs` closes the session before
+// rmcp cancels its request tokens.
+#[tokio::test]
+async fn legacy_sse_idle_teardown_does_not_cancel() {
+    let w = world().await;
+    let limits = HttpLimits {
+        session_idle_timeout: Duration::from_millis(200),
+        ..HttpLimits::default()
+    };
+    let addr = http_with(&w, limits).await;
+    let (_sse, path) = sse_session(addr).await;
+    assert!(
+        sse_post(addr, &path, call(7))
+            .await
+            .starts_with("HTTP/1.1 202")
+    );
+    w.stub.sent_once().await;
+    // Idle teardown fires while the stream stays open.
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(
+        w.stub.closed.load(Ordering::SeqCst),
+        0,
+        "idle teardown cancelled the call"
     );
     w.stub.release.notify_one();
     w.audit.completed_with(MutationOutcome::Committed).await;

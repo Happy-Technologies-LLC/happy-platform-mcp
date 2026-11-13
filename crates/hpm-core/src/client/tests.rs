@@ -2234,3 +2234,73 @@ async fn processor_scope_mismatch_fails_and_names_both_scopes() {
         json!({"requested": "global", "ran": "x_other"})
     );
 }
+
+/// Review N1: a cancel that lands after the picker `PUT` went out (here: its
+/// answer arrives as the cancel fires, then the wait and the verification read
+/// are cut short) leaves the change unknown, never "not sent". N2: the UI
+/// session's `/logout.do` is still sent, as the last request.
+#[tokio::test]
+async fn cancel_after_picker_put_is_unknown_and_still_logs_out() {
+    let token = tokio_util::sync::CancellationToken::new();
+    let inner = picker_phase_fake(|_, _, _| None);
+    let fire = token.clone();
+    let h = harness(
+        basic(Some("inert")),
+        FakeTransport::new(move |r| {
+            if r.method == Method::Put {
+                fire.cancel();
+            }
+            (inner.handler)(r)
+        }),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let change = h
+        .client
+        .with_cancel(token)
+        .set_current_update_set_or(SET_A, |_, change| async move { change })
+        .await
+        .err();
+    assert_eq!(change, Some(PickerChange::Unknown));
+    let urls: Vec<_> = h.transport.requests().into_iter().map(|r| r.url).collect();
+    assert_eq!(
+        urls.iter().filter(|u| u.ends_with("/logout.do")).count(),
+        1,
+        "{urls:?}"
+    );
+    assert!(
+        urls.last().is_some_and(|u| u.ends_with("/logout.do")),
+        "{urls:?}"
+    );
+}
+
+/// Review N3: a cancel that lands while the first request is answered 401
+/// stops the OAuth retry before it is sent: one request, "not sent" code.
+#[tokio::test]
+async fn cancel_at_401_does_not_retry() {
+    let token = tokio_util::sync::CancellationToken::new();
+    let fire = token.clone();
+    let h = harness(
+        oauth(None),
+        FakeTransport::new(move |_| {
+            fire.cancel();
+            Ok(HttpResponse::json(
+                401,
+                &json!({"error": {"message": "expired"}}),
+            ))
+        }),
+        FakePoster::new(vec![
+            Ok(json!({"access_token": "at1", "expires_in": 1800})),
+            Ok(json!({"access_token": "at2", "expires_in": 1800})),
+        ]),
+        Value::Null,
+    );
+    let err = h
+        .client
+        .with_cancel(token)
+        .update_record("incident", "abc", &json!({"state": "2"}))
+        .await
+        .expect_err("cancelled");
+    assert_eq!(err.code.as_deref(), Some(error::CANCELLED_BEFORE_SEND_CODE));
+    assert_eq!(h.transport.requests().len(), 1, "retry sent after cancel");
+}

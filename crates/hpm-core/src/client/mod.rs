@@ -1083,10 +1083,35 @@ impl ServiceNowClient {
         if let Some(t) = self.cached_token(st) {
             return Ok(t);
         }
-        let token = st
-            .flights
-            .run("oauth-token", || self.request_oauth_token(st))
-            .await?;
+        // The shared flight (token POST, refresh, or browser sign-in) runs on
+        // a cancel-free client in its own task, so a cancelled call stops
+        // waiting at once without failing the other callers sharing it; the
+        // token it fetches still lands in the cache. Nothing of the call's
+        // own request has left yet, so a cancel here is "not sent".
+        let flight = {
+            let client = Self {
+                cancel: None,
+                ..self.clone()
+            };
+            let st = Arc::clone(st);
+            async move {
+                st.flights
+                    .run("oauth-token", || client.request_oauth_token(&st))
+                    .await
+            }
+        };
+        let token = match &self.cancel {
+            None => flight.await?,
+            Some(cancel) => {
+                let task = tokio::spawn(flight);
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err(ClientError::cancelled()),
+                    joined = task => joined
+                        .map_err(|_| ClientError::plain("Request was cancelled"))??,
+                }
+            }
+        };
         self.assert_current(st)?;
         Ok(token)
     }

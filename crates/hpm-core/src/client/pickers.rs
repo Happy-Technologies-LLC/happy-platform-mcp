@@ -35,7 +35,9 @@ pub enum PickerChange {
 }
 
 fn put_failure(e: &ClientError) -> PickerChange {
-    if e.is_stale() && !e.is_stale_after_send() {
+    if (e.is_stale() && !e.is_stale_after_send())
+        || e.code.as_deref() == Some(super::error::CANCELLED_BEFORE_SEND_CODE)
+    {
         return PickerChange::NotSent;
     }
     match e.status {
@@ -80,11 +82,11 @@ impl PickerSession {
         req
     }
 
-    /// Ends the UI session (`GET /logout.do`); failures are ignored. Marked
-    /// ended only once the send finished: a cancelled send still leaves the
-    /// `Drop` logout as a fallback.
+    /// Ends the UI session (`GET /logout.do`); failures are ignored. Sent on
+    /// the raw transport, like the `Drop` fallback, so a cancelled call still
+    /// logs out (RFC §4); marked ended only once the send was made.
     pub async fn end(mut self) {
-        let _ = self.client.send(&self.state, self.logout()).await;
+        let _ = self.client.deps().transport.send(self.logout()).await;
         self.ended = true;
     }
 

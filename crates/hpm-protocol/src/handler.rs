@@ -414,13 +414,12 @@ impl ServerHandler for McpHandler {
     ) -> Result<ReadResourceResponse, ErrorData> {
         let cancel = CancellationToken::new();
         let ctx = self.admit(&context, None, cancel.clone())?;
-        let Some(mime_type) = self
+        let Some(res) = self
             .inner
             .dispatcher
             .resources()
             .iter()
             .find(|r| r.uri == request.uri)
-            .map(|r| r.mime_type.to_owned())
         else {
             // Owner decision (SEP-2164), every era: unknown URI is -32602 + data.uri.
             return Err(ErrorData::invalid_params(
@@ -428,12 +427,13 @@ impl ServerHandler for McpHandler {
                 Some(json!({ "uri": request.uri })),
             ));
         };
+        let mime_type = res.mime_type.to_owned();
         // 6.2.0: every other failure is a JSON-RPC internal error with the message.
         let body = until_cancelled(
             self.session_closed.as_ref(),
             &context,
             &cancel,
-            self.inner.dispatcher.read_resource(&ctx, &request.uri),
+            self.inner.dispatcher.read_resource(&ctx, res),
         )
         .await
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;

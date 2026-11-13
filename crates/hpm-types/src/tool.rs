@@ -180,8 +180,9 @@ pub enum ToolError {
     #[error("{message}")]
     Upstream { status: u16, message: String },
     /// 6.2.0 `error.message`, shown verbatim: tools render `Error: {message}` with
-    /// `isError`, resources answer JSON-RPC -32603 with `{message}`. May echo data,
-    /// so it goes through `protect_error` like `Upstream`.
+    /// `isError`, and a known resource whose read fails answers JSON-RPC -32603
+    /// with `{message}` (an unknown resource URI is -32602, SEP-2164). May echo
+    /// data, so it goes through `protect_error` like `Upstream`.
     #[error("{0}")]
     Message(String),
     /// 6.2.0 `isError` text rendered verbatim with no `Error: ` prefix (e.g. `❌ …`,
