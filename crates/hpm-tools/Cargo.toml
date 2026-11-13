@@ -14,6 +14,9 @@ authors.workspace = true
 hpm-types.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Schema validation (C6). No default features: they pull reqwest + aws-lc for remote
+# `$ref` resolution, which tool schemas never need and a validator must not do.
+jsonschema = { version = "=0.61.2", default-features = false }
 
 [dev-dependencies]
 hpm-types = { workspace = true, features = ["trusted-root"] }

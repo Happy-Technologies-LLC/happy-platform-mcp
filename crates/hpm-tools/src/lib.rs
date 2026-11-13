@@ -10,4 +10,5 @@
 pub mod dispatcher;
 pub mod logic;
 pub mod registration;
+pub mod schema;
 pub mod single_user;
