@@ -17,6 +17,7 @@ use base64::engine::general_purpose::STANDARD;
 use hpm_types::BoxFut;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use zeroize::Zeroize;
 
@@ -692,6 +693,8 @@ pub struct ServiceNowClient {
     pin: Option<Arc<State>>,
     /// Set only on a per-call clone ([`ServiceNowClient::with_progress`]).
     progress: Option<Arc<CallProgress>>,
+    /// Set only on a per-call clone ([`ServiceNowClient::with_cancel`]).
+    cancel: Option<CancellationToken>,
 }
 
 impl ServiceNowClient {
@@ -705,6 +708,7 @@ impl ServiceNowClient {
             }),
             pin: None,
             progress: None,
+            cancel: None,
         })
     }
 
@@ -788,6 +792,7 @@ impl ServiceNowClient {
             inner: self.inner.clone(),
             pin: Some(st),
             progress: self.progress.clone(),
+            cancel: self.cancel.clone(),
         }
     }
 
@@ -825,6 +830,23 @@ impl ServiceNowClient {
             progress: Some(route),
             ..self.clone()
         }
+    }
+
+    /// A clone bound to one call's cancellation token: once it fires, a
+    /// request not yet sent is refused ([`ClientError::cancelled`], nothing
+    /// leaves), one in flight is abandoned ([`ClientError::cancelled_after_send`],
+    /// outcome unknown, never retried), and poll sleeps end at once.
+    pub fn with_cancel(&self, token: CancellationToken) -> Self {
+        Self {
+            cancel: Some(token),
+            ..self.clone()
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
     }
 
     /// A handle pinned to `generation` (`client.pinned(generation)`, W2-B L-C).
@@ -1446,7 +1468,19 @@ impl ServiceNowClient {
         st: &State,
         request: HttpRequest,
     ) -> Result<HttpResponse, ClientError> {
-        let result = self.inner.deps.transport.send(request).await;
+        if self.is_cancelled() {
+            return Err(ClientError::cancelled());
+        }
+        let sending = self.inner.deps.transport.send(request);
+        let result = match &self.cancel {
+            Some(token) => tokio::select! {
+                biased;
+                // The request may already have left: outcome unknown, no retry.
+                () = token.cancelled() => return Err(ClientError::cancelled_after_send()),
+                r = sending => r,
+            },
+            None => sending.await,
+        };
         // The request already left: a moved generation now means "outcome
         // unknown", not "never sent".
         if self.assert_current(st).is_err() {
@@ -1510,8 +1544,19 @@ impl ServiceNowClient {
         Ok(serde_json::json!({"success": true}))
     }
 
+    /// Poll back-off; ends early when the call is cancelled, so the next
+    /// request is refused at once.
     pub(crate) async fn sleep_ms(&self, ms: u64) {
-        self.inner.deps.clock.sleep(ms).await;
+        let sleep = self.inner.deps.clock.sleep(ms);
+        match &self.cancel {
+            Some(token) => {
+                tokio::select! {
+                    () = token.cancelled() => {}
+                    () = sleep => {}
+                }
+            }
+            None => sleep.await,
+        }
     }
 
     pub(crate) fn now_ms(&self) -> i64 {

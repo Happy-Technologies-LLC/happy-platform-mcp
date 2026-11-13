@@ -148,10 +148,30 @@ jobs:
             sleep 1
           done
           curl -fsS "http://127.0.0.1:$PROXY_PORT/health"
-          # Baseline: scenarios that need the suite's reference fixtures (test_* tools,
-          # resources/read, prompts/get, logging/setLevel). A new failure or a now-passing
-          # baseline entry fails the job, so remove entries as the tool lanes land.
-          env -u HAPPY_MCP_API_TOKEN npm_config_ignore_scripts=true \
-            npx -y @modelcontextprotocol/conformance@0.1.16 server \
-            --url "http://127.0.0.1:$PROXY_PORT/mcp" \
-            --expected-failures .github/conformance/server-baseline.yml
+          # One run per protocol version, each with its own baseline of scenarios that
+          # need the suite's reference fixtures (test_* tools, resources/read, prompts,
+          # logging/setLevel, tasks/MRTR extensions). A new failure or a now-passing
+          # baseline entry fails the job, so remove entries as they pass. 0.1.16 (the
+          # latest stable) predates 2026-07-28, so the suite is pinned to the alpha that
+          # covers both. The suite is HTTP only; stdio is covered by cargo tests.
+          suite=@modelcontextprotocol/conformance@0.2.0-alpha.12
+          for run in "--spec-version 2025-11-25" "--requirements 2026-07-28"; do
+            version="${run##* }"
+            out="$RUNNER_TEMP/conformance-$version"
+            # shellcheck disable=SC2086 # $run is two words on purpose.
+            env -u HAPPY_MCP_API_TOKEN npm_config_ignore_scripts=true \
+              npx -y "$suite" server $run \
+              --url "http://127.0.0.1:$PROXY_PORT/mcp" \
+              --expected-failures ".github/conformance/server-baseline-$version.yml" \
+              -o "$out"
+            # The baseline is per scenario: checks that pass inside a baselined
+            # scenario are pinned one by one (review L6).
+            pinned=".github/conformance/server-pinned-$version.txt"
+            [ -f "$pinned" ] || continue
+            grep -v '^#' "$pinned" | while read -r scenario check; do
+              [ -n "$scenario" ] || continue
+              jq -e --arg c "$check" 'any(.[]; .id == $c and .status == "SUCCESS")' \
+                "$out"/server-"$scenario"-20*/checks.json >/dev/null \
+                || { echo "pinned check regressed: $scenario $check"; exit 1; }
+            done
+          done

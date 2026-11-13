@@ -20,6 +20,8 @@ keyring-core.workspace = true
 reqwest.workspace = true
 # Blocking pool for keychain / token-file I/O; timers, sockets and sync for the client.
 tokio = { workspace = true, features = ["time", "net", "sync", "io-util", "rt"] }
+# Per-call cancellation token (`ServiceNowClient::with_cancel`).
+tokio-util.workspace = true
 zeroize.workspace = true
 url.workspace = true
 base64.workspace = true

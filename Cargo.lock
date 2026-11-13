@@ -858,6 +858,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "url",
  "uuid",
  "windows-native-keyring-store",

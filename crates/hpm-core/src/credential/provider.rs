@@ -172,7 +172,10 @@ impl ServiceNowAccess for InstanceClients {
     ) -> BoxFut<'a, Result<PinnedClient, ToolError>> {
         Box::pin(async move {
             let binding = ctx.credential().ok_or(CredentialError::NoInstance)?;
-            Ok(self.pinned(binding)?.with_progress(ctx.progress().clone()))
+            Ok(self
+                .pinned(binding)?
+                .with_progress(ctx.progress().clone())
+                .with_cancel(ctx.cancel().clone()))
         })
     }
 }

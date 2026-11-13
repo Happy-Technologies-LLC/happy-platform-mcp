@@ -37,8 +37,15 @@ pub struct HttpLimits {
     /// Node `server.requestTimeout` default: the whole request body must arrive
     /// within this.
     pub request_timeout: Duration,
-    /// Open TCP connections; further accepts are closed at once.
+    /// Open TCP connections. At the cap, the oldest connection that has not yet
+    /// authenticated is evicted for the new one; otherwise the new one is closed.
     pub max_connections: usize,
+    /// Not-yet-authenticated connections per remote IP; the oldest is evicted
+    /// for a new one (review F1). Authenticated connections (e.g. a reverse
+    /// proxy's keep-alive pool) count only against `max_connections`.
+    pub max_unauthenticated_per_peer: usize,
+    /// A connection with no authenticated request within this is closed (F1).
+    pub preauth_timeout: Duration,
 }
 
 impl Default for HttpLimits {
@@ -60,6 +67,8 @@ impl Default for HttpLimits {
             headers_timeout: Duration::from_millis(60_000),
             request_timeout: Duration::from_millis(300_000),
             max_connections: 128,
+            max_unauthenticated_per_peer: 16,
+            preauth_timeout: Duration::from_millis(10_000),
         }
     }
 }
@@ -87,6 +96,8 @@ impl HttpLimits {
                 "headersTimeoutMs",
                 "requestTimeoutMs",
                 "maxConnections",
+                "maxUnauthenticatedConnectionsPerPeer",
+                "preAuthTimeoutMs",
             ];
             if !known.contains(&key.as_str()) {
                 return Err(ConfigError(format!("Unknown HTTP limit \"{key}\"")));
@@ -117,6 +128,8 @@ impl HttpLimits {
                 "maxTrackedAuthPeers" => l.max_tracked_auth_peers = count,
                 "headersTimeoutMs" => l.headers_timeout = ms,
                 "requestTimeoutMs" => l.request_timeout = ms,
+                "maxUnauthenticatedConnectionsPerPeer" => l.max_unauthenticated_per_peer = count,
+                "preAuthTimeoutMs" => l.preauth_timeout = ms,
                 _ => l.max_connections = count,
             }
         }

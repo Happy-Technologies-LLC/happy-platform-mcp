@@ -239,7 +239,7 @@ pub struct AdmissionInput {
     /// 6.2.0 not-found text for a requested instance that did not resolve
     /// ([`crate::registry::RegistryView::resolve_requested`]).
     pub instance_miss: Option<String>,
-    /// Child of the transport's request cancellation token.
+    /// The call's own token, cancelled on client cancel (not on legacy SSE teardown).
     pub cancel: CancellationToken,
     pub deadline: Instant,
     pub progress: Arc<dyn ProgressSink>,

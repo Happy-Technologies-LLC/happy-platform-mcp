@@ -23,6 +23,10 @@ pub const CREDENTIAL_ORIGIN_UNBOUND_CODE: &str = "CREDENTIAL_ORIGIN_UNBOUND";
 /// The `sys_trigger` fallback failed after its trigger row was inserted (wrap,
 /// poll or log read): the script may run or have run, so the result is unknown.
 pub const TRIGGER_INSERTED_RESULT_UNKNOWN_CODE: &str = "TRIGGER_INSERTED_RESULT_UNKNOWN";
+/// The call was cancelled before the request left: nothing was sent.
+pub const CANCELLED_BEFORE_SEND_CODE: &str = "REQUEST_CANCELLED";
+/// The call was cancelled while the request was in flight: outcome unknown.
+pub const CANCELLED_AFTER_SEND_CODE: &str = "REQUEST_CANCELLED_AFTER_SEND";
 
 const CREDENTIAL_ERROR_CODES: [&str; 4] = [
     "CREDENTIAL_NOT_FOUND",
@@ -37,6 +41,9 @@ const CREDENTIAL_ERROR_CODES: [&str; 4] = [
 /// `StaleInstanceError` text (sent or not; see [`ClientError::is_stale_after_send`]).
 impl From<ClientError> for hpm_types::tool::ToolError {
     fn from(e: ClientError) -> Self {
+        if e.is_cancelled() {
+            return Self::Cancelled;
+        }
         match e.status.filter(|s| *s != 0) {
             Some(status) if !e.is_stale() => Self::Upstream {
                 status,
@@ -115,6 +122,33 @@ impl ClientError {
     /// Stale and raised after the request was sent.
     pub fn is_stale_after_send(&self) -> bool {
         self.code.as_deref() == Some(STALE_AFTER_SEND_CODE)
+    }
+
+    /// The call was cancelled before the request left: nothing was sent.
+    pub fn cancelled() -> Self {
+        Self::new(
+            "CancelledError",
+            "Request cancelled",
+            Some(CANCELLED_BEFORE_SEND_CODE),
+        )
+    }
+
+    /// The call was cancelled while the request was in flight: the server may
+    /// have acted on it.
+    pub fn cancelled_after_send() -> Self {
+        Self::new(
+            "CancelledError",
+            "Request cancelled",
+            Some(CANCELLED_AFTER_SEND_CODE),
+        )
+    }
+
+    /// Either cancelled variant.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self.code.as_deref(),
+            Some(CANCELLED_BEFORE_SEND_CODE | CANCELLED_AFTER_SEND_CODE)
+        )
     }
 
     /// A table / sys_id rejected by [`super::path_segment`]; never sent.

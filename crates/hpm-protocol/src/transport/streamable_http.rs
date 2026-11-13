@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -35,7 +35,7 @@ use rmcp::transport::streamable_http_server::session::local::{LocalSessionManage
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
@@ -228,7 +228,8 @@ impl HttpApp {
     /// `shutdown_grace` for connections before dropping them.
     ///
     /// Each connection gets a header read deadline (`headers_timeout`) before any
-    /// authentication runs, and open connections are capped (`max_connections`).
+    /// authentication runs and a pre-auth deadline (`preauth_timeout`); open
+    /// connections are capped globally and per peer IP ([`ConnTable`]).
     pub async fn serve(
         self,
         listener: TcpListener,
@@ -236,7 +237,7 @@ impl HttpApp {
     ) -> std::io::Result<()> {
         let router = self.router();
         let limits = &self.state.limits;
-        let slots = Arc::new(Semaphore::new(limits.max_connections));
+        let conns = Arc::new(ConnTable::new(limits));
         let graceful = GracefulShutdown::new();
         let mut builder = http1::Builder::new();
         builder
@@ -254,31 +255,147 @@ impl HttpApp {
                 () = &mut shutdown => break,
             };
             while tasks.try_join_next().is_some() {}
-            let Ok(permit) = slots.clone().try_acquire_owned() else {
+            let ip = peer_key(remote.ip());
+            let Some(conn) = conns.admit(ip.clone()) else {
                 drop(stream);
                 continue;
             };
             let Ok(local) = stream.local_addr() else {
+                conns.release(conn.id);
                 continue;
             };
             let addrs = PeerAddrs { local, remote };
             let router = router.clone();
+            let auth = conn.state.clone();
             let service = service_fn(move |mut req: hyper::Request<Incoming>| {
                 req.extensions_mut().insert(ConnectInfo(addrs));
+                req.extensions_mut().insert(ConnAuth(auth.clone()));
                 let mut router = router.clone();
                 async move { router.call(req).await }
             });
-            let conn = graceful.watch(builder.serve_connection(TokioIo::new(stream), service));
+            let serving = graceful.watch(builder.serve_connection(TokioIo::new(stream), service));
+            let conns = conns.clone();
+            let preauth = limits.preauth_timeout;
             tasks.spawn(async move {
-                // Connection errors (timeouts, resets) end only that connection.
-                let _ = conn.await;
-                drop(permit);
+                let deadline = async {
+                    tokio::time::sleep(preauth).await;
+                    if conn.state.load(Ordering::Acquire) != AUTHED {
+                        return;
+                    }
+                    std::future::pending::<()>().await;
+                };
+                // Connection errors (timeouts, resets) end only that connection;
+                // eviction and the pre-auth deadline drop it (review F1).
+                tokio::select! {
+                    _ = serving => {}
+                    () = conn.evict.cancelled() => {}
+                    () = deadline => {}
+                }
+                conns.release(conn.id);
             });
         }
         self.close_all_sessions();
         let _ = tokio::time::timeout(self.state.shutdown_grace, graceful.shutdown()).await;
         tasks.abort_all();
         Ok(())
+    }
+}
+
+/// Connection auth state shared by the table and the guard (reviews F1, L2).
+const UNAUTH: u8 = 0;
+const AUTHED: u8 = 1;
+const EVICTED: u8 = 2;
+
+#[derive(Clone)]
+struct ConnAuth(Arc<AtomicU8>);
+
+struct ConnEntry {
+    id: u64,
+    ip: String,
+    state: Arc<AtomicU8>,
+    evict: CancellationToken,
+}
+
+/// Open connections (review F1). Unauthenticated ones are capped per peer IP and,
+/// at either cap, the oldest unauthenticated connection in scope is evicted for
+/// the new one, so silent sockets cannot lock out an authenticated client. When
+/// every open connection has authenticated, a new one over the global cap is
+/// refused.
+struct ConnTable {
+    max: usize,
+    unauth_per_peer: usize,
+    state: Mutex<(u64, Vec<ConnEntry>)>,
+}
+
+struct Admitted {
+    id: u64,
+    state: Arc<AtomicU8>,
+    evict: CancellationToken,
+}
+
+fn unauthenticated(c: &ConnEntry) -> bool {
+    c.state.load(Ordering::Acquire) == UNAUTH
+}
+
+impl ConnTable {
+    fn new(limits: &HttpLimits) -> Self {
+        Self {
+            max: limits.max_connections,
+            unauth_per_peer: limits.max_unauthenticated_per_peer,
+            state: Mutex::new((0, Vec::new())),
+        }
+    }
+
+    fn admit(&self, ip: String) -> Option<Admitted> {
+        let mut guard = self.state.lock().ok()?;
+        let (next, open) = &mut *guard;
+        if open
+            .iter()
+            .filter(|c| c.ip == ip && unauthenticated(c))
+            .count()
+            >= self.unauth_per_peer
+        {
+            Self::evict_oldest(open, Some(&ip));
+        }
+        if open.len() >= self.max && !Self::evict_oldest(open, None) {
+            return None;
+        }
+        *next += 1;
+        let entry = ConnEntry {
+            id: *next,
+            ip,
+            state: Arc::new(AtomicU8::new(UNAUTH)),
+            evict: CancellationToken::new(),
+        };
+        let admitted = Admitted {
+            id: entry.id,
+            state: entry.state.clone(),
+            evict: entry.evict.clone(),
+        };
+        open.push(entry);
+        Some(admitted)
+    }
+
+    /// Evicts the oldest unauthenticated connection (from `ip` if given).
+    fn evict_oldest(open: &mut Vec<ConnEntry>, ip: Option<&str>) -> bool {
+        // Review L2: claim the connection atomically; one that authenticated
+        // concurrently fails the swap and is skipped.
+        let Some(pos) = open.iter().position(|c| {
+            ip.is_none_or(|ip| c.ip == ip)
+                && c.state
+                    .compare_exchange(UNAUTH, EVICTED, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+        }) else {
+            return false;
+        };
+        open.remove(pos).evict.cancel();
+        true
+    }
+
+    fn release(&self, id: u64) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.1.retain(|c| c.id != id);
+        }
     }
 }
 
@@ -301,11 +418,23 @@ fn too_many_failures(retry_after: u64) -> Response {
     r
 }
 
+/// Rate-limit and connection-cap key: the socket peer address only. Forwarding
+/// headers (`X-Forwarded-For`, `Forwarded`) are never read, so they cannot be
+/// spoofed; behind a reverse proxy every client shares the proxy's key. IPv6
+/// is keyed by its /64, since one host routinely holds a whole /64 (review L3);
+/// loopback and v4-mapped addresses keep the exact address.
 fn peer_key(ip: std::net::IpAddr) -> String {
     match ip {
-        std::net::IpAddr::V6(v6) => v6
-            .to_ipv4_mapped()
-            .map_or_else(|| v6.to_string(), |v4| v4.to_string()),
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                v4.to_string()
+            } else if v6.is_loopback() {
+                v6.to_string()
+            } else {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        }
         v4 => v4.to_string(),
     }
 }
@@ -337,6 +466,16 @@ async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) ->
             .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
         return r;
     }
+    // Review L2: the flag moves Unauth → Authed only if eviction has not won.
+    if let Some(ConnAuth(state)) = req.extensions().get::<ConnAuth>()
+        && let Err(EVICTED) =
+            state.compare_exchange(UNAUTH, AUTHED, Ordering::AcqRel, Ordering::Acquire)
+    {
+        let mut r = json_error(StatusCode::SERVICE_UNAVAILABLE, "Connection evicted");
+        r.headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+        return r;
+    }
     req.extensions_mut()
         .insert(operator_identity(&st.security.token));
     next.run(req).await
@@ -364,12 +503,14 @@ fn accepts_sse(headers: &HeaderMap) -> bool {
         })
 }
 
+/// A `_meta` protocol version we know and that is at least 2026-07-28; unknown
+/// strings that merely sort later do not select stateless routing (review F2).
 fn has_modern_meta(body: &Value) -> bool {
     body.get("params")
         .and_then(|p| p.get("_meta"))
         .and_then(|m| m.get(META_VERSION_KEY))
         .and_then(Value::as_str)
-        .is_some_and(|v| v >= MODERN)
+        .is_some_and(|v| v >= MODERN && is_supported_version(v))
 }
 
 fn is_supported_version(v: &str) -> bool {
@@ -452,11 +593,12 @@ fn session_header(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Rule 5: a session bound to another principal is indistinguishable from an
-/// unknown one. Ids we never bound are left to rmcp, which refuses them.
+/// unknown one. Every session rmcp creates is bound in `post`, so an id we never
+/// bound is refused here rather than handed to rmcp (review F2).
 fn bound_elsewhere(st: &AppState, sid: &str, principal: &Principal) -> bool {
     st.bindings
         .lock()
-        .map_or(true, |b| b.get(sid).is_some_and(|p| p != principal))
+        .map_or(true, |b| b.get(sid).is_none_or(|p| p != principal))
 }
 
 fn live_sessions(st: &AppState) -> usize {
@@ -540,10 +682,26 @@ async fn post(
     if let Some(v) = parts.headers.get(VERSION_HEADER)
         && !v.to_str().is_ok_and(is_supported_version)
     {
-        return jsonrpc_error(id, -32022, "Unsupported protocol version");
+        // UnsupportedProtocolVersionError: `data` echoes the request and lists ours.
+        let data = json!({
+            "requested": String::from_utf8_lossy(v.as_bytes()),
+            "supported": ProtocolVersion::KNOWN_VERSIONS,
+        });
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "jsonrpc": "2.0", "id": id, "error": {
+                "code": -32022, "message": "Unsupported protocol version", "data": data,
+            } })),
+        )
+            .into_response();
     }
     if st.stopping.is_cancelled() {
         return json_error(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down");
+    }
+    // C11: batches exist only in `2025-03-26` and rmcp cannot decode them; they
+    // are rejected as one JSON-RPC Invalid Request rather than a bare 415.
+    if value.is_array() {
+        return jsonrpc_error(Value::Null, -32600, "Batch requests are not supported");
     }
     // Rule 3: modern `_meta` → stateless; a stale session id never downgrades.
     let mut parts = parts;
@@ -557,9 +715,10 @@ async fn post(
     {
         return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED);
     }
-    let creates_session = sid.is_none()
-        && !modern
-        && value.get("method").and_then(Value::as_str) == Some("initialize");
+    // Review F2: rmcp opens a session for every initialize, `_meta` or not, so
+    // each one is admitted against the cap and bound.
+    let creates_session =
+        sid.is_none() && value.get("method").and_then(Value::as_str) == Some("initialize");
     // Serialized so concurrent initializes cannot overshoot the shared cap.
     let _admit = if creates_session {
         let lock = st.admit_lock.lock().await;
@@ -686,6 +845,9 @@ mod tests {
             &json!({"params":{"_meta":{META_VERSION_KEY: "2025-11-25"}}})
         ));
         assert!(!has_modern_meta(&json!({"params":{}})));
+        assert!(!has_modern_meta(
+            &json!({"params":{"_meta":{META_VERSION_KEY: "9999-01-01"}}})
+        ));
         assert!(is_supported_version("2025-06-18"));
         assert!(!is_supported_version("1999-01-01"));
         let mut h = HeaderMap::new();
@@ -696,5 +858,13 @@ mod tests {
         assert!(accepts_sse(&h));
         assert_eq!(peer_key("::ffff:10.0.0.1".parse().expect("ip")), "10.0.0.1");
         assert_eq!(peer_key("::1".parse().expect("ip")), "::1");
+        // Review L3: one /64 is one key.
+        let a = peer_key("2001:db8:1:2::1".parse().expect("ip"));
+        assert_eq!(a, "2001:db8:1:2::/64");
+        assert_eq!(
+            a,
+            peer_key("2001:db8:1:2:ffff:ffff:ffff:ffff".parse().expect("ip"))
+        );
+        assert_ne!(a, peer_key("2001:db8:1:3::1".parse().expect("ip")));
     }
 }

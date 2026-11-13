@@ -1,0 +1,50 @@
+# Expected failures for @modelcontextprotocol/conformance@0.2.0-alpha.12 `server --requirements 2026-07-28`
+# against happy-platform-mcp-http. Fixture-only: the suite's test_* tools, resources, prompts (not declared,
+# so prompts/list answers -32601 per SEP-2575), MRTR/input-required and tasks extension scenarios, and
+# pending scenarios needing fixture tools (evidence: p4/conformance.md). Generated 2026-11-13; remove
+# entries as they pass.
+server:
+  - server-stateless
+  - tools-call-simple-text
+  - tools-call-image
+  - tools-call-audio
+  - tools-call-embedded-resource
+  - tools-call-mixed-content
+  - tools-call-error
+  - tools-call-with-progress
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  - prompts-list
+  - prompts-get-simple
+  - prompts-get-with-args
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
+  - caching
+  - input-required-result-basic-elicitation
+  - input-required-result-basic-sampling
+  - input-required-result-basic-list-roots
+  - input-required-result-request-state
+  - input-required-result-multiple-input-requests
+  - input-required-result-multi-round
+  - input-required-result-non-tool-request
+  - input-required-result-result-type
+  - input-required-result-tampered-state
+  - input-required-result-capability-check
+  - tasks-lifecycle
+  - tasks-capability-negotiation
+  - tasks-wire-fields
+  - tasks-request-state-removal
+  - tasks-mrtr-input
+  - tasks-request-headers
+  - tasks-dispatch-and-envelope
+  - tasks-required-task-error
+  - tasks-mrtr-composition
+  - json-schema-2020-12
+  - http-custom-header-server-validation
+  # WARNING-only (the baseline counts warnings as failures): fixture tools absent, so
+  # the SHOULD re-request / ignore-extra-params paths cannot be exercised.
+  - input-required-result-missing-input-response
+  - input-required-result-ignore-extra-params
+  # Passing checks inside the whole-scenario entries above are pinned in
+  # server-pinned-2026-07-28.txt (review L6).

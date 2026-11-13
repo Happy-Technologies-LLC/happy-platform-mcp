@@ -61,6 +61,16 @@ impl PinnedClient {
         }
     }
 
+    /// This handle bound to one call's cancellation token
+    /// ([`ServiceNowClient::with_cancel`]). The provider attaches `ctx.cancel()`
+    /// in `client(ctx)`.
+    pub fn with_cancel(self, token: tokio_util::sync::CancellationToken) -> Self {
+        Self {
+            client: self.client.with_cancel(token),
+            state: self.state,
+        }
+    }
+
     /// The [`ServiceNowClient`] pinned to this generation, for multi-step flows
     /// (`execute_script_via_processor`/`_via_trigger`, pickers, ATF): every
     /// method runs on the pinned instance only and fails stale once it moved.

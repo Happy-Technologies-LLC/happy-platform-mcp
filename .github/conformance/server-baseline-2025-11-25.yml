@@ -1,6 +1,7 @@
-# Expected failures for @modelcontextprotocol/conformance@0.1.16 `server` against happy-platform-mcp-http.
-# Each needs the suite's reference fixtures (test_* tools, resources/read, prompts/get, logging/setLevel),
-# which 6.2.0 does not expose. Generated 2026-11-13 from a local loopback run; remove entries as they pass.
+# Expected failures for @modelcontextprotocol/conformance@0.2.0-alpha.12 `server --spec-version 2025-11-25`
+# against happy-platform-mcp-http. Each needs the suite's reference fixtures (test_* tools, resources/read,
+# prompts/get, logging/setLevel, elicitation), which the ServiceNow server does not expose (evidence:
+# p4/conformance.md). Generated 2026-11-13 from a local loopback run; remove entries as they pass.
 server:
   - logging-set-level
   - tools-call-simple-text
