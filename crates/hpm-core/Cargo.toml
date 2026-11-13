@@ -16,14 +16,18 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 keyring-core.workspace = true
-# Blocking pool for keychain / token-file I/O (review L4); zeroized tokens (L3).
-tokio.workspace = true
+reqwest.workspace = true
+# Blocking pool for keychain / token-file I/O; timers, sockets and sync for the client.
+tokio = { workspace = true, features = ["time", "net", "sync", "io-util", "rt"] }
 zeroize.workspace = true
-# Lane A additions (exact versions; lead hoists at merge).
-url = "=2.5.8"
+url.workspace = true
+# Lane B additions (lead hoists into [workspace.dependencies] at merge).
+base64 = "=0.22.1"
+getrandom = "=0.4.3"
+regex = "=1.13.1"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "=0.31.3", default-features = false, features = ["user", "fs"] }
+nix = { workspace = true, features = ["user", "fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store.workspace = true
