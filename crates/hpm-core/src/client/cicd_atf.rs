@@ -710,7 +710,9 @@ pub fn cicd_detail(error: &ClientError) -> Option<&str> {
 
 /// `toCicdError`.
 fn to_cicd_error(error: ClientError, path: &str) -> ClientError {
-    if error.name == "CicdApiError" {
+    // Stale errors keep their code: callers tell "never sent" from "sent,
+    // outcome unknown" by it.
+    if error.name == "CicdApiError" || error.is_stale() {
         return error;
     }
     let status = error.status;
@@ -1225,7 +1227,22 @@ async fn dispatch_and_maybe_wait(
     d: Dispatch,
     options: WaitOptions,
 ) -> Result<Value, ClientError> {
-    let dispatch_result = cicd_request(client, Method::Post, d.path, &d.query).await?;
+    let dispatch_result = match cicd_request(client, Method::Post, d.path, &d.query).await {
+        Ok(result) => result,
+        // The POST left before the instance moved: the run may have started.
+        Err(e) if e.is_stale_after_send() => {
+            return Ok(json_response(
+                &json!({
+                    "status": "unknown",
+                    "target": d.target,
+                    "message": format!("The {} request was sent but the instance changed before its response was read: {}", d.label, e.message),
+                    "next_step": format!("Check the {} on the original instance before re-running it.", d.label)
+                }),
+                true,
+            ));
+        }
+        Err(e) => return Err(e),
+    };
     let raw_progress_id = link_of(dispatch_result.get("links"), "progress")
         .and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_owned));
     // Server-returned ids go into URL paths: only well-formed sys_ids.

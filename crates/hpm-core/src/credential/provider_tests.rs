@@ -70,13 +70,18 @@ type Registry = Arc<Mutex<HashMap<String, Object>>>;
 
 fn setup() -> (Arc<InstanceClients>, Arc<Recorder>, Registry) {
     let recorder = Arc::new(Recorder::default());
+    let (clients, registry) = setup_with(recorder.clone());
+    (clients, recorder, registry)
+}
+
+fn setup_with(transport: Arc<dyn HttpTransport>) -> (Arc<InstanceClients>, Registry) {
     let registry = Arc::new(Mutex::new(HashMap::from([
         ("a".to_owned(), entry("a", "https://a.service-now.com")),
         ("b".to_owned(), entry("b", "https://b.service-now.com")),
     ])));
     let lookup = registry.clone();
     let deps = ClientDeps {
-        transport: recorder.clone(),
+        transport,
         clock: Arc::new(NoClock),
         credential_store: InstanceCredentialStore::new(Arc::new(MemStore::default())),
         token_store: Arc::new(MemStore::default()),
@@ -96,7 +101,7 @@ fn setup() -> (Arc<InstanceClients>, Arc<Recorder>, Registry) {
                 .ok_or_else(|| ClientError::plain(format!("Instance '{id}' not found")))
         }),
     );
-    (Arc::new(clients), recorder, registry)
+    (Arc::new(clients), registry)
 }
 
 fn resolved(id: &str, version: u64) -> ResolvedInstance {
@@ -385,4 +390,285 @@ async fn basic_without_password_or_ref_is_credential_not_found() {
         err.map(|e| e.to_string()).as_deref(),
         Some("Credential not found")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Flow-level pinned-generation tests (lanes C and D): instance "a" is
+// re-pointed while one request of a multi-step flow is in flight. Every later
+// step must fail stale; nothing may reach the new origin.
+// ---------------------------------------------------------------------------
+
+type Answer = Box<dyn Fn(&HttpRequest) -> HttpResponse + Send + Sync>;
+type Trip = Box<dyn Fn(&HttpRequest) -> bool + Send + Sync>;
+
+/// Answers via `answer`; the first request matching `trip` re-points "a"
+/// (after it was sent, before its response is seen).
+struct Scripted {
+    log: Mutex<Vec<(Method, String)>>,
+    answer: Answer,
+    trip: Trip,
+    hook: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+    tripped: std::sync::atomic::AtomicBool,
+}
+
+impl HttpTransport for Scripted {
+    fn send(&self, request: HttpRequest) -> BoxFut<'_, Result<HttpResponse, TransportError>> {
+        Box::pin(async move {
+            self.log
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((request.method, request.url.clone()));
+            if (self.trip)(&request)
+                && !self.tripped.swap(true, std::sync::atomic::Ordering::SeqCst)
+                && let Some(hook) = self.hook.get()
+            {
+                hook();
+            }
+            Ok((self.answer)(&request))
+        })
+    }
+}
+
+impl Scripted {
+    fn log(&self) -> Vec<(Method, String)> {
+        self.log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Requests sent after the tripping one.
+    fn after_trip(&self) -> Vec<(Method, String)> {
+        let log = self.log();
+        let at = log
+            .iter()
+            .position(|(m, u)| {
+                let mut req = HttpRequest::new(*m, u.clone());
+                req.max_redirects = 0;
+                (self.trip)(&req)
+            })
+            .unwrap_or_else(|| panic!("trip request never sent: {log:?}"));
+        log[at + 1..].to_vec()
+    }
+}
+
+/// A flow client pinned to "a" (as `ServiceNowAccess::client` hands tools)
+/// over a transport that re-points "a" on the first `trip` request.
+fn flow_setup(answer: Answer, trip: Trip) -> (ServiceNowClient, Arc<Scripted>) {
+    let transport = Arc::new(Scripted {
+        log: Mutex::new(Vec::new()),
+        answer,
+        trip,
+        hook: std::sync::OnceLock::new(),
+        tripped: std::sync::atomic::AtomicBool::new(false),
+    });
+    let (clients, registry) = setup_with(transport.clone());
+    // The hook owns `clients` (a test-only reference cycle through the
+    // transport), so the registry stays live for the whole flow.
+    let owner = clients.clone();
+    let hook: Box<dyn Fn() + Send + Sync> = Box::new(move || repoint_a(&owner, &registry));
+    assert!(transport.hook.set(hook).is_ok());
+    let a = clients
+        .client_for(&resolved("a", 1))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let pinned = clients
+        .pinned(&binding("a", 1, a.generation()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    (pinned.client().clone(), transport)
+}
+
+fn assert_never_new_origin(log: &[(Method, String)]) {
+    assert!(
+        log.iter()
+            .all(|(_, u)| u.starts_with("https://a.service-now.com/")),
+        "{log:?}"
+    );
+}
+
+const PROGRESS_ID: &str = "2123456789abcdef0123456789abcdef";
+const TEST_ID: &str = "0123456789abcdef0123456789abcdef";
+const UPDATE_SET_ID: &str = "4123456789abcdef0123456789abcdef";
+const PICKER: &str = "/api/now/ui/concoursepicker/updateset";
+
+fn atf_answer() -> Answer {
+    Box::new(|r| {
+        if r.method == Method::Post && r.url.contains("/api/sn_cicd/tests/run_test") {
+            HttpResponse::json(
+                200,
+                &json!({"result": {"status": "0", "links": {"progress": {"id": PROGRESS_ID, "url": "x"}}}}),
+            )
+        } else {
+            HttpResponse::json(
+                200,
+                &json!({"result": {"status": "1", "state": "Running", "percent_complete": 10}}),
+            )
+        }
+    })
+}
+
+fn atf_payload(result: &Value) -> Value {
+    serde_json::from_str(result["content"][0]["text"].as_str().unwrap_or("null"))
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn atf_repointed_between_dispatch_and_poll_is_unknown_and_never_polls_new_host() {
+    let (flow, transport) = flow_setup(
+        atf_answer(),
+        Box::new(|r| r.method == Method::Get && r.url.contains("/api/sn_cicd/progress/")),
+    );
+    let result = crate::client::cicd_atf::handle_atf_tool(
+        "SN-Run-ATF-Test",
+        &json!({"test_sys_id": TEST_ID, "wait": true, "timeout_seconds": 60}),
+        &flow,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("{e}"));
+    let payload = atf_payload(&result);
+    assert_eq!(payload["status"], json!("unknown"), "{payload}");
+    assert_eq!(payload["progress_id"], json!(PROGRESS_ID));
+    assert!(transport.after_trip().is_empty(), "{:?}", transport.log());
+    assert_never_new_origin(&transport.log());
+}
+
+#[tokio::test]
+async fn atf_repointed_during_dispatch_is_unknown_and_never_polls() {
+    let (flow, transport) = flow_setup(
+        atf_answer(),
+        Box::new(|r| r.method == Method::Post && r.url.contains("/api/sn_cicd/tests/run_test")),
+    );
+    let result = crate::client::cicd_atf::handle_atf_tool(
+        "SN-Run-ATF-Test",
+        &json!({"test_sys_id": TEST_ID, "wait": true, "timeout_seconds": 60}),
+        &flow,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("{e}"));
+    // The POST left: the run may have started, so the outcome is unknown.
+    let payload = atf_payload(&result);
+    assert_eq!(payload["status"], json!("unknown"), "{payload}");
+    assert_eq!(result["isError"], json!(true), "{result}");
+    assert!(transport.after_trip().is_empty(), "{:?}", transport.log());
+    assert_never_new_origin(&transport.log());
+}
+
+fn picker_answer() -> Answer {
+    Box::new(|r| {
+        if r.url.contains("/api/now/table/sys_update_set/") {
+            HttpResponse::json(
+                200,
+                &json!({"result": {"sys_id": UPDATE_SET_ID, "name": "US"}}),
+            )
+        } else if r.url.contains(PICKER) {
+            HttpResponse::json(
+                200,
+                &json!({"result": {"current": {"sysId": UPDATE_SET_ID, "name": "US"}}}),
+            )
+        } else {
+            HttpResponse::new(200, "<html></html>")
+                .with_header("set-cookie", "JSESSIONID=s1; Path=/")
+        }
+    })
+}
+
+/// Picker switch: re-pointed on `trip`; the verify GET never runs, and the
+/// only later request is the session's logout on the old host.
+async fn picker_switch_repointed_on(trip: Trip) {
+    let (flow, transport) = flow_setup(picker_answer(), trip);
+    let err = flow
+        .set_current_update_set(UPDATE_SET_ID)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("switch across a re-point must fail"));
+    assert!(err.is_stale(), "{err}");
+    let later = transport.after_trip();
+    assert_eq!(later.len(), 1, "{later:?}");
+    assert!(later[0].1.ends_with("/logout.do"), "{later:?}");
+    assert_never_new_origin(&transport.log());
+}
+
+#[tokio::test]
+async fn update_set_switch_repointed_at_session_open_stops_before_put() {
+    picker_switch_repointed_on(Box::new(|r| {
+        r.method == Method::Get && r.url == "https://a.service-now.com/"
+    }))
+    .await;
+}
+
+#[tokio::test]
+async fn update_set_switch_repointed_at_put_never_verifies() {
+    picker_switch_repointed_on(Box::new(|r| {
+        r.method == Method::Put && r.url.ends_with(PICKER)
+    }))
+    .await;
+}
+
+#[tokio::test]
+async fn update_set_switch_on_repointed_instance_sends_nothing() {
+    let (flow, transport) = flow_setup(picker_answer(), Box::new(|_| false));
+    if let Some(hook) = transport.hook.get() {
+        hook();
+    }
+    let err = flow
+        .set_current_update_set(UPDATE_SET_ID)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("switch on a moved generation must fail"));
+    assert!(err.is_stale(), "{err}");
+    assert!(transport.log().is_empty(), "{:?}", transport.log());
+}
+
+fn trigger_answer() -> Answer {
+    Box::new(|_| {
+        HttpResponse::json(
+            200,
+            &json!({"result": {"sys_id": "5123456789abcdef0123456789abcdef", "name": "MCP_Script_1"}}),
+        )
+    })
+}
+
+fn trigger_options() -> crate::client::TriggerOptions {
+    crate::client::TriggerOptions {
+        wait: true,
+        timeout_ms: 1000,
+        interval_ms: 100,
+        ctx: None,
+    }
+}
+
+#[tokio::test]
+async fn trigger_repointed_after_create_never_updates_or_polls() {
+    let (flow, transport) = flow_setup(
+        trigger_answer(),
+        Box::new(|r| r.method == Method::Post && r.url.contains("/api/now/table/sys_trigger")),
+    );
+    let err = flow
+        .execute_script_via_trigger("gs.info('x')", "", true, &trigger_options())
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("trigger across a re-point must fail"));
+    // The insert left: the outcome is unknown, never "not sent".
+    assert!(err.is_stale_after_send(), "{err}");
+    assert!(transport.after_trip().is_empty(), "{:?}", transport.log());
+    assert_never_new_origin(&transport.log());
+}
+
+#[tokio::test]
+async fn trigger_repointed_at_update_is_result_unknown_and_never_polls() {
+    let (flow, transport) = flow_setup(
+        trigger_answer(),
+        Box::new(|r| r.method == Method::Put && r.url.contains("/api/now/table/sys_trigger/")),
+    );
+    let err = flow
+        .execute_script_via_trigger("gs.info('x')", "", true, &trigger_options())
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("trigger across a re-point must fail"));
+    // The row exists: "inserted, result unknown" (never "not sent").
+    assert_eq!(
+        err.code.as_deref(),
+        Some(crate::client::error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE)
+    );
+    assert!(transport.after_trip().is_empty(), "{:?}", transport.log());
+    assert_never_new_origin(&transport.log());
 }
