@@ -134,6 +134,11 @@ impl<'a> Progress<'a> {
 }
 
 /// `path.resolve(process.cwd(), 'scripts')`, with the working directory from deps.
+///
+/// When `deps.working_dir` is `None` the relative `scripts` path is resolved
+/// against the process working directory (6.2.0 parity, see
+/// `generated_scripts::write_fix_script_file`). The composition root should
+/// always set `working_dir` so fix scripts never land in an arbitrary cwd.
 fn scripts_dir(deps: &FamilyDeps) -> PathBuf {
     deps.working_dir
         .as_ref()

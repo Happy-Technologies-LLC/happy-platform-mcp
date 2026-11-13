@@ -85,11 +85,17 @@ pub(super) fn list_update_sets(
 }
 
 pub(super) fn set_current_application(
-    _: &Value,
+    args: &Value,
     i: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
+    // Core verifies "global" against sys_scope and any other id against sys_app.
+    let table = if args.get("app_sys_id").and_then(Value::as_str) == Some("global") {
+        "sys_scope"
+    } else {
+        "sys_app"
+    };
     set(vec![
-        on("SN-Set-Current-Application", Action::Read, "sys_scope", i).at("app_sys_id"),
+        on("SN-Set-Current-Application", Action::Read, table, i).at("app_sys_id"),
         op("SN-Set-Current-Application", Action::ConfigWrite, i).at("app_sys_id"),
     ])
 }
@@ -252,10 +258,18 @@ pub(super) fn move_records_to_update_set(
     } else {
         on(T, Action::Update, table, i)
     };
+    let mut read = on(T, Action::Read, table, i)
+        .at("record_sys_ids")
+        .returned_fields(fields(&["sys_id", "name", "type"]));
+    if truthy_opt(args.get("time_range")) {
+        let mut predicates = fields(&["sys_created_on"]);
+        if truthy_opt(args.get("source_update_set")) {
+            predicates.push("update_set.name".to_owned());
+        }
+        read = read.at("time_range").predicate_fields(predicates);
+    }
     set(vec![
-        on(T, Action::Read, table, i)
-            .at("record_sys_ids")
-            .returned_fields(fields(&["sys_id", "name", "type"])),
+        read,
         write
             .at("update_set_id")
             .written_fields(fields(&["update_set"])),

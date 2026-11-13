@@ -114,6 +114,7 @@ fn render_logs(result: &Value) -> String {
 /// `runViaTrigger(notice)`: the sys_trigger path, with a fix-script fallback.
 async fn run_via_trigger(
     deps: &FamilyDeps,
+    ctx: &RequestContext,
     client: &PinnedClient,
     input: &ExecInput<'_>,
     notice: &str,
@@ -123,6 +124,7 @@ async fn run_via_trigger(
         .map_or_else(|| "MCP Script Execution".to_owned(), js::to_js_string);
     let options = TriggerOptions {
         wait: input.wait,
+        ctx: Some(ctx.clone()),
         ..TriggerOptions::default()
     };
     let result = match client
@@ -131,6 +133,11 @@ async fn run_via_trigger(
         .await
     {
         Ok(r) => r,
+        // Cancelled mid-poll: the trigger exists and may run; never offer a
+        // manual re-run fix script.
+        Err(_) if !ctx.is_live() => {
+            return done(MutationOutcome::Unknown, Err(ToolError::Cancelled));
+        }
         Err(e) => return trigger_fix_script(deps, input, notice, failed_outcome(&e)).await,
     };
     let desc = input.description_line();
@@ -337,7 +344,7 @@ pub(super) fn execute_background_script<'a>(
             return done(MutationOutcome::NotSent, Err(ToolError::Cancelled));
         }
         if !input.wait {
-            return run_via_trigger(deps, &client, &input, "").await;
+            return run_via_trigger(deps, ctx, &client, &input, "").await;
         }
         let options = ProcessorOptions {
             scope: input.scope.map(js::to_js_string),
@@ -363,7 +370,7 @@ pub(super) fn execute_background_script<'a>(
                         if !ctx.is_live() {
                             return done(MutationOutcome::NotSent, Err(ToolError::Cancelled));
                         }
-                        run_via_trigger(deps, client, input, &notice).await
+                        run_via_trigger(deps, ctx, client, input, &notice).await
                     }
                 }
             }

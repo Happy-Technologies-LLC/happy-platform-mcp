@@ -214,7 +214,15 @@ pub(super) fn move_records_to_update_set<'a>(
             let body = json!({"update_set": update_set_id.cloned().unwrap_or(Value::Null)});
             for (i, record) in to_move.iter().enumerate() {
                 if !ctx.is_live() {
-                    let outcome = after_failure(moved.len(), None);
+                    let outcome = if !moved.is_empty() {
+                        MutationOutcome::PartiallyCommitted
+                    } else if unknown {
+                        MutationOutcome::Unknown
+                    } else if !errors.is_empty() {
+                        MutationOutcome::Failed
+                    } else {
+                        MutationOutcome::NotSent
+                    };
                     return done(outcome, Err(ToolError::Cancelled));
                 }
                 let sys_id = record.get("sys_id");
@@ -417,9 +425,14 @@ pub(super) fn clone_update_set<'a>(
         let mut failed = 0usize;
         for (i, record) in updates.iter().enumerate() {
             if !ctx.is_live() {
+                // The new set exists: name it so the partial clone can be found.
                 return done(
                     MutationOutcome::PartiallyCommitted,
-                    Err(ToolError::Cancelled),
+                    Err(ToolError::Text(format!(
+                        "Cancelled: update set clone stopped after {cloned} of {total} records. The partial update set \"{}\" (sys_id {}) was created and remains on the instance.",
+                        text(new_set.get("name")),
+                        text(new_set.get("sys_id"))
+                    ))),
                 );
             }
             let mut body = Map::new();

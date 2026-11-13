@@ -33,6 +33,15 @@ pub(super) fn set_update_set<'a>(
     Box::pin(async move {
         let sys_id_value = args.get("update_set_sys_id");
         let sys_id = text(sys_id_value);
+        if !crate::logic::bulk_limits::is_sys_id(&sys_id) {
+            return done(
+                MutationOutcome::NotSent,
+                Err(ToolError::Text(
+                    "❌ update_set_sys_id must be a 32-character lowercase hexadecimal sys_id"
+                        .to_owned(),
+                )),
+            );
+        }
         let client = match pinned(deps, ctx, MutationOutcome::NotSent).await {
             Ok(c) => c,
             Err(d) => return d,
@@ -59,12 +68,6 @@ pub(super) fn set_update_set<'a>(
             }
             Err(e) => e,
         };
-        if error.message.contains("must be a 32-character") {
-            return done(
-                MutationOutcome::NotSent,
-                Err(ToolError::Text(format!("❌ {}", error.message))),
-            );
-        }
         // Automated change failed or did not verify: fall back to a fix script.
         let outcome = failed_outcome(&error);
         let update_set = match client
