@@ -200,22 +200,49 @@ fn has_servicenow_env_credentials(env: &hpm_core::config::Env) -> bool {
         && (passwordless || (set("SERVICENOW_USERNAME") && set("SERVICENOW_PASSWORD")))
 }
 
-/// 6.2.0 `createConfiguredMcpServer` mode decision (`src/stdio-server.js:47-100`):
+/// The stdio server's mode: docs-only, or the resolved default instance's name and url.
+enum StdioMode {
+    DocsOnly,
+    Instance { name: String, url: String },
+}
+
+fn field(instance: &hpm_core::config::Object, key: &str) -> String {
+    match instance.get(key) {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => "undefined".to_string(),
+    }
+}
+
+/// 6.2.0 `createConfiguredMcpServer` mode decision (`src/stdio-server.js:47-104`):
 /// `HAPPY_MCP_DOCS_ONLY` true/1/yes (any case) forces docs-only; otherwise the
 /// default instance is resolved and a "Missing ServiceNow credentials" /
 /// "servicenow-instances.json not found" error falls back to docs-only unless
 /// `HAPPY_MCP_DOCS_ONLY=false` (any case) or env credentials are set. Any other
-/// resolution error aborts startup. `--docs-only` itself is not read (`src/cli.js:34`
-/// only routes it to `main()`), so it serves docs-only only through this fallback.
-fn stdio_docs_only(config: &ConfigManager) -> Result<bool, String> {
+/// resolution error aborts startup with exit 1 — including `REGISTRY_EMPTY` for a
+/// registry file with zero instances, which 6.2.0 also refuses (parity, not docs-only).
+/// `--docs-only` itself is not read (`src/cli.js:34` only routes it to `main()`), so
+/// it serves docs-only only through this fallback. Prints the pre-connect stderr lines.
+fn stdio_mode(config: &ConfigManager) -> Result<StdioMode, String> {
     let env = config.env();
     let flag = env.get("HAPPY_MCP_DOCS_ONLY");
+    let docs_only = || {
+        // `src/stdio-server.js:80`
+        eprintln!("📚 Starting Happy MCP in docs-only mode");
+        Ok(StdioMode::DocsOnly)
+    };
     if boolean_env(flag.as_deref()) {
-        return Ok(true);
+        return docs_only();
     }
     let instance = env.get("SERVICENOW_INSTANCE");
     match config.get_instance_or_default(instance.as_deref()) {
-        Ok(_) => Ok(false),
+        Ok(instance) => {
+            let (name, url) = (field(&instance, "name"), field(&instance, "url"));
+            // `src/stdio-server.js:103-104`
+            eprintln!("🔗 Default ServiceNow instance: {name} ({url})");
+            eprintln!("💡 Use SN-Set-Instance tool to switch instances during session");
+            Ok(StdioMode::Instance { name, url })
+        }
         Err(e) => {
             let msg = e.message.to_lowercase();
             let explicitly_disabled = flag.as_deref().unwrap_or("").to_lowercase() == "false";
@@ -224,7 +251,7 @@ fn stdio_docs_only(config: &ConfigManager) -> Result<bool, String> {
                 && (msg.contains("missing servicenow credentials")
                     || msg.contains("servicenow-instances.json not found"))
             {
-                Ok(true)
+                docs_only()
             } else {
                 Err(format!("Failed to start Happy MCP Server: {}", e.message))
             }
@@ -239,11 +266,14 @@ fn single_user_dispatcher(
     config: Arc<ConfigManager>,
     usage: &UsageTracker,
 ) -> Result<Arc<Dispatcher>, String> {
-    let docs_only = stdio_docs_only(&config)?;
-    if docs_only {
-        // `src/stdio-server.js:80`
-        eprintln!("📚 Starting Happy MCP in docs-only mode");
-    }
+    build_dispatcher(config, usage, false)
+}
+
+fn build_dispatcher(
+    config: Arc<ConfigManager>,
+    usage: &UsageTracker,
+    docs_only: bool,
+) -> Result<Arc<Dispatcher>, String> {
     let key = AdmissionKey::mint()
         .ok_or_else(|| "admission key already minted in this process".to_string())?;
     SingleUser::from_process(config)?
@@ -278,7 +308,15 @@ pub fn serve_stdio() -> ExitCode {
     let config = Arc::new(ConfigManager::from_process_env());
     let usage = UsageTracker::from_env(config.env());
     usage.set_transport("stdio");
-    let dispatcher = match single_user_dispatcher(config.clone(), &usage) {
+    let mode = match stdio_mode(&config) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{NAME}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let docs_only = matches!(mode, StdioMode::DocsOnly);
+    let dispatcher = match build_dispatcher(config.clone(), &usage, docs_only) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("{NAME}: {e}");
@@ -288,7 +326,14 @@ pub fn serve_stdio() -> ExitCode {
     let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
         .registry(config)
         .build();
-    // 6.2.0 `stdio-server.js` prints the notice to stderr (stdout carries the protocol).
+    // 6.2.0 `src/stdio-server.js:132-141`, after `server.connect`; stderr only
+    // (stdout carries the protocol).
+    eprintln!("Happy MCP Server (stdio) started successfully");
+    match &mode {
+        StdioMode::DocsOnly => eprintln!("Mode: docs-only"),
+        StdioMode::Instance { name, url } => eprintln!("Instance: {name} - {url}"),
+    }
+    eprintln!("{}", updates_hint());
     if usage.enabled() {
         eprintln!("{}", usage.describe());
     }
