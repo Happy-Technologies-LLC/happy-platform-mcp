@@ -44,7 +44,7 @@ use oauth_policy::{
     MAX_URL_LENGTH, TRUSTED_OAUTH_ORIGINS_ENV, assert_approved_oauth_endpoint,
     resolve_oauth_endpoints, trim_trailing_slashes,
 };
-pub use pickers::PICKER_CHANGE_NOT_SENT_CODE;
+pub use pickers::PickerChange;
 pub use pinned::PinnedClient;
 pub use scripts::{ProcessorOptions, ProcessorRun, TriggerOptions};
 

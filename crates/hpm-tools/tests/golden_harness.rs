@@ -338,6 +338,65 @@ mod selftest {
                 "{bad}"
             );
         }
+
+        // OutboundPrefixThenErrorText (review L-3).
+        let req = |method: &str, path: &str, cookie: bool| {
+            json!({"method": method, "path": path,
+                "credentials": {"scheme": "basic", "sessionCookie": cookie}})
+        };
+        let recorded = [
+            req("POST", "/sys.scripts.do", true),
+            req("POST", "/api/now/table/sys_trigger", false),
+        ];
+        let prefix = Expected::OutboundPrefixThenErrorText {
+            requests: 1,
+            then: &["/logout.do"],
+            contains: "opt in",
+        };
+        let refused = |files: Value| {
+            json!({"files": files, "response": {"result": {"isError": true,
+                "content": [{"type": "text", "text": "not run; opt in"}]}}})
+        };
+        let logout = req("GET", "/logout.do", true);
+        let good_out = [recorded[0].clone(), logout.clone()];
+        let none = json!({});
+        assert!(
+            prefix
+                .check(&refused(none.clone()), &good_out, &none, &recorded)
+                .is_empty()
+        );
+        let bad_outs = [
+            vec![recorded[0].clone()],
+            vec![recorded[0].clone(), req("POST", "/logout.do", true)],
+            vec![recorded[0].clone(), req("GET", "/logout.do", false)],
+            vec![recorded[0].clone(), logout.clone(), logout.clone()],
+            vec![logout.clone()],
+        ];
+        for bad in &bad_outs {
+            assert!(
+                !prefix
+                    .check(&refused(none.clone()), bad, &none, &recorded)
+                    .is_empty(),
+                "{bad:?}"
+            );
+        }
+        // A fix script written alongside the refusal is rejected.
+        assert!(
+            !prefix
+                .check(
+                    &refused(json!({"scripts/x.js": "y"})),
+                    &good_out,
+                    &none,
+                    &recorded
+                )
+                .is_empty()
+        );
+        // A golden that records no more than `requests` cannot shrink the prefix.
+        assert!(
+            !prefix
+                .check(&refused(none.clone()), &good_out, &none, &recorded[..1])
+                .is_empty()
+        );
     }
 
     #[test]

@@ -151,3 +151,88 @@ async fn fallback_is_refused_without_opt_in() {
     );
     assert_eq!(r.files, json!({}), "no fix script without opt-in");
 }
+
+/// Opt-in success path end to end (review L-2): the stub answers syslog with
+/// this run's `MARKER:LOG` lines, another run's line and the END marker.
+fn succeeding_trigger(env: Vec<(&'static str, &'static str)>) -> Scenario {
+    let processor = processor_stub(|| None, 403);
+    Scenario {
+        stub: Some(Arc::new(move |req, state| {
+            if req.method == "GET"
+                && req.path == "/api/now/table/syslog"
+                && let Some(marker) = state.trigger_marker.clone()
+            {
+                let end = json!({"message": format!("{marker}:END{}", json!({"ok": true})), "sys_created_on": "2099-01-01 00:00:01"});
+                let end_poll = req
+                    .query
+                    .iter()
+                    .any(|(k, v)| k == "sysparm_query" && v.starts_with("messageLIKE"));
+                let rows = if end_poll {
+                    json!([end])
+                } else {
+                    json!([
+                        {"message": format!("{marker}:LOG hello from this run"), "sys_created_on": "2099-01-01 00:00:00"},
+                        {"message": "MCP_other:LOG someone else", "sys_created_on": "2099-01-01 00:00:00"},
+                        end
+                    ])
+                };
+                return Some(json_answer(200, json!({"result": rows})));
+            }
+            processor(req, state)
+        })),
+        env,
+        ..Scenario::default()
+    }
+}
+
+async fn run_success(id: &str, sc: Scenario, args: Value) -> (String, bool, usize) {
+    let world = World::start().await;
+    let r = harness::call_tool(&world, id, sc, "SN-Execute-Background-Script", args)
+        .await
+        .expect("call");
+    let result = &r.response["result"];
+    let text = result["content"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    let posts = r
+        .outbound
+        .iter()
+        .filter(|d| d.method == "POST" && d.path == "/api/now/table/sys_trigger")
+        .count();
+    assert_eq!(r.files, json!({}), "no fix script on success");
+    (text, result["isError"] == true, posts)
+}
+
+fn assert_trigger_success(text: &str, is_error: bool, posts: usize) {
+    assert!(!is_error, "{text}");
+    assert_eq!(posts, 1, "{text}");
+    assert!(text.contains("Script executed successfully!"), "{text}");
+    assert!(text.contains("hello from this run"), "{text}");
+    assert!(
+        !text.contains("someone else"),
+        "foreign run captured: {text}"
+    );
+}
+
+#[tokio::test]
+async fn opt_in_argument_runs_the_trigger_and_renders_this_runs_logs() {
+    let (text, is_error, posts) = run_success(
+        "flow/trigger-opt-in-arg",
+        succeeding_trigger(Vec::new()),
+        json!({"script": "gs.info('x');", "allow_trigger_fallback": true}),
+    )
+    .await;
+    assert_trigger_success(&text, is_error, posts);
+}
+
+#[tokio::test]
+async fn opt_in_environment_runs_the_trigger_without_the_argument() {
+    let (text, is_error, posts) = run_success(
+        "flow/trigger-opt-in-env",
+        succeeding_trigger(vec![("HAPPY_MCP_ALLOW_TRIGGER_FALLBACK", "1")]),
+        json!({"script": "gs.info('x');"}),
+    )
+    .await;
+    assert_trigger_success(&text, is_error, posts);
+}

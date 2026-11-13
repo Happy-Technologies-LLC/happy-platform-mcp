@@ -15,16 +15,29 @@ use super::{RecordParams, RecordQuery, ServiceNowClient, State, UI_USER_AGENT};
 const UPDATE_SET_PICKER: &str = "/api/now/ui/concoursepicker/updateset";
 const APPLICATION_PICKER: &str = "/api/now/ui/concoursepicker/application";
 
-/// The update-set change failed before its picker `PUT` was sent: the current
-/// update set is certainly unchanged (review TF-10). Set only on errors that
-/// carried no code of their own.
-pub const PICKER_CHANGE_NOT_SENT_CODE: &str = "PICKER_CHANGE_NOT_SENT";
+/// What a failed `set_current_update_set` did to the current update set
+/// (review TF-10, P3 decision 12): decided by the phase that failed, never by
+/// the error's code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerChange {
+    /// Failed before the picker `PUT` was sent: certainly unchanged.
+    NotSent,
+    /// The instance definitely did not apply it: the `PUT` got a non-408 4xx,
+    /// or the verification read named a different current update set.
+    Refused,
+    /// The `PUT` was sent and may have landed (its 408/5xx/transport error,
+    /// or any failure of the verification read).
+    Unknown,
+}
 
-fn before_change(mut e: ClientError) -> ClientError {
-    if e.code.is_none() {
-        e.code = Some(PICKER_CHANGE_NOT_SENT_CODE.to_owned());
+fn put_failure(e: &ClientError) -> PickerChange {
+    if e.is_stale() && !e.is_stale_after_send() {
+        return PickerChange::NotSent;
     }
-    e
+    match e.status {
+        Some(s) if (400..500).contains(&s) && s != 408 => PickerChange::Refused,
+        _ => PickerChange::Unknown,
+    }
 }
 
 /// `isSysId` (bulk-limits): 32 lowercase hex characters.
@@ -180,26 +193,30 @@ impl ServiceNowClient {
 
     /// `setCurrentUpdateSet`.
     pub async fn set_current_update_set(&self, sys_id: &str) -> Result<Value, ClientError> {
-        self.set_current_update_set_or(sys_id, |e| async { e })
+        self.set_current_update_set_or(sys_id, |e, _| async { e })
             .await
     }
 
     /// [`Self::set_current_update_set`], running `on_failure` while the UI
     /// session is still open, so the session's `/logout.do` is the
     /// operation's last request (after e.g. the tool's fix-script lookup).
+    /// `on_failure` also gets what the failure means for the change.
     pub async fn set_current_update_set_or<T, F, Fut>(
         &self,
         sys_id: &str,
         on_failure: F,
     ) -> Result<Value, T>
     where
-        F: FnOnce(ClientError) -> Fut,
+        F: FnOnce(ClientError, PickerChange) -> Fut,
         Fut: Future<Output = T>,
     {
         let mut slot = None;
         let result = match self.set_current_update_set_in(sys_id, &mut slot).await {
             Ok(v) => Ok(v),
-            Err(e) => Err(on_failure(e).await),
+            Err(failure) => {
+                let (e, change) = *failure;
+                Err(on_failure(e, change).await)
+            }
         };
         end_slot(slot).await;
         result
@@ -209,24 +226,19 @@ impl ServiceNowClient {
         &self,
         sys_id: &str,
         slot: &mut Option<PickerSession>,
-    ) -> Result<Value, ClientError> {
+    ) -> Result<Value, Box<(ClientError, PickerChange)>> {
+        let not_sent = |e| Box::new((e, PickerChange::NotSent));
         if !is_sys_id(sys_id) {
-            return Err(ClientError::plain(
+            return Err(not_sent(ClientError::plain(
                 "update_set_sys_id must be a 32-character lowercase hexadecimal sys_id",
-            ));
+            )));
         }
         let update_set = self
             .get_record("sys_update_set", sys_id, &RecordParams::default())
             .await
-            .map_err(before_change)?;
-        let session = self
-            .open_ui_picker_session(slot)
-            .await
-            .map_err(before_change)?;
-        let previous = session
-            .get(UPDATE_SET_PICKER)
-            .await
-            .map_err(before_change)?;
+            .map_err(not_sent)?;
+        let session = self.open_ui_picker_session(slot).await.map_err(not_sent)?;
+        let previous = session.get(UPDATE_SET_PICKER).await.map_err(not_sent)?;
         let previous = previous
             .pointer("/result/current")
             .filter(|v| !v.is_null())
@@ -234,14 +246,31 @@ impl ServiceNowClient {
         let name = update_set.get("name").cloned().unwrap_or(Value::Null);
         let response = session
             .put(UPDATE_SET_PICKER, &json!({"name": name, "sysId": sys_id}))
-            .await?;
+            .await
+            .map_err(|e| {
+                let change = put_failure(&e);
+                Box::new((e, change))
+            })?;
         self.sleep_ms(500).await;
-        let current = session.get(UPDATE_SET_PICKER).await?;
-        let current_id = str_at(&current, &["result", "current", "sysId"]);
+        let current = session
+            .get(UPDATE_SET_PICKER)
+            .await
+            .map_err(|e| Box::new((e, PickerChange::Unknown)))?;
+        let current_id =
+            str_at(&current, &["result", "current", "sysId"]).filter(|s| !s.is_empty());
         if current_id != Some(sys_id) {
-            return Err(ClientError::plain(format!(
-                "Update set verification failed: current is {}, expected {sys_id}",
-                current_id.filter(|s| !s.is_empty()).unwrap_or("unknown")
+            // A named other set is a definite answer; no answer is not.
+            let change = if current_id.is_some() {
+                PickerChange::Refused
+            } else {
+                PickerChange::Unknown
+            };
+            return Err(Box::new((
+                ClientError::plain(format!(
+                    "Update set verification failed: current is {}, expected {sys_id}",
+                    current_id.unwrap_or("unknown")
+                )),
+                change,
             )));
         }
         let prev = previous.map_or(Value::Null, |p| {

@@ -18,8 +18,9 @@ pub enum Expected {
     /// whole batch.` naming `operation_0..operation_{created-1}` (full text
     /// compared; the sys_ids come from the stub).
     RecordedTextThenNotRolledBack { created: usize },
-    /// Exactly the first `requests` recorded outbound requests, then only
-    /// requests to the `then` paths (in order), then an `isError: true`
+    /// Exactly the first `requests` recorded outbound requests (the golden must
+    /// record more than `requests`), then only cookie-session `GET` requests to
+    /// the `then` paths (in order), no written files, then an `isError: true`
     /// single text that contains `contains`.
     OutboundPrefixThenErrorText {
         requests: usize,
@@ -147,17 +148,28 @@ impl Expected {
                 then,
                 contains,
             } => {
-                let prefix = &want_outbound[..requests.min(want_outbound.len())];
-                let tail: Vec<&str> = outbound
-                    .get(prefix.len()..)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|r| r["path"].as_str().unwrap_or_default())
-                    .collect();
-                if outbound.get(..prefix.len()) != Some(prefix) || tail != then {
+                if want_outbound.len() <= requests {
                     problems.push(format!(
-                        "outbound differs: got {outbound:?}, want the first {requests} recorded {prefix:?} then {then:?}"
+                        "the golden records {} outbound requests; the deviation keeps {requests}, so it is not a strict prefix",
+                        want_outbound.len()
                     ));
+                    return problems;
+                }
+                let prefix = &want_outbound[..requests];
+                let tail_ok = outbound.get(..requests) == Some(prefix)
+                    && outbound.len() == requests + then.len()
+                    && outbound[requests..].iter().zip(then).all(|(r, path)| {
+                        r["method"] == "GET"
+                            && r["path"] == *path
+                            && r["credentials"]["sessionCookie"] == true
+                    });
+                if !tail_ok {
+                    problems.push(format!(
+                        "outbound differs: got {outbound:?}, want the first {requests} recorded {prefix:?} then cookie-session GET {then:?}"
+                    ));
+                }
+                if got["files"] != serde_json::json!({}) {
+                    problems.push(format!("expected no written files, got {}", got["files"]));
                 }
                 if got["response"]["result"]["isError"] != true {
                     problems.push(format!("expected isError: true, got {}", got["response"]));

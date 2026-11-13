@@ -270,17 +270,19 @@ pub fn write_fix_script_file(
         return Err(FixScriptError::NotDirectChild);
     }
 
-    write_in_dir(&root, file_name, |handle| {
+    write_in_dir(&root, &root_stat, file_name, |handle| {
         handle.write_all(content.as_bytes())
     })?;
     Ok(file_path)
 }
 
-/// Opens `root` once and creates `file_name` relative to that descriptor; a
-/// failed `write` unlinks it through the same descriptor.
+/// Opens `root` once, checks it is the directory `verified` (the lstat that
+/// passed the caller's checks) describes, and creates `file_name` relative to
+/// that descriptor; a failed `write` unlinks it through the same descriptor.
 #[cfg(unix)]
 fn write_in_dir(
     root: &Path,
+    verified: &std::fs::Metadata,
     file_name: &str,
     write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
 ) -> Result<(), FixScriptError> {
@@ -290,7 +292,7 @@ fn write_in_dir(
     use nix::unistd::{UnlinkatFlags, unlinkat};
     use std::os::unix::fs::MetadataExt as _;
 
-    let expected = std::fs::symlink_metadata(root)?;
+    let expected = verified;
     let dir = match open(
         root,
         OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
@@ -305,7 +307,8 @@ fn write_in_dir(
     let dir = std::fs::File::from(dir);
     let opened = dir.metadata()?;
     if (opened.dev(), opened.ino()) != (expected.dev(), expected.ino()) {
-        // An ancestor was swapped between the lstat and the open.
+        // The path no longer names the directory that was checked (e.g. an
+        // ancestor was swapped after the lstat).
         return Err(FixScriptError::ScriptsDirectoryIsSymlink(root.into()));
     }
     let fd = match openat(
@@ -334,6 +337,7 @@ fn write_in_dir(
 #[cfg(not(unix))]
 fn write_in_dir(
     root: &Path,
+    _verified: &std::fs::Metadata,
     file_name: &str,
     write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
 ) -> Result<(), FixScriptError> {
@@ -370,7 +374,8 @@ mod tests {
     #[test]
     fn failed_write_removes_the_partial_file() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let error = write_in_dir(temp.path(), "write_fails.js", |handle| {
+        let stat = std::fs::symlink_metadata(temp.path()).unwrap();
+        let error = write_in_dir(temp.path(), &stat, "write_fails.js", |handle| {
             handle.write_all(b"gs.info('partial');")?;
             Err(std::io::Error::other("simulated disk full"))
         })
@@ -378,6 +383,26 @@ mod tests {
         assert!(matches!(error, FixScriptError::Io(_)));
         assert_eq!(error.to_string(), "simulated disk full");
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    /// L-4: the opened directory is compared with the lstat the caller
+    /// verified, not a fresh one taken after a possible swap.
+    #[cfg(unix)]
+    #[test]
+    fn directory_other_than_the_verified_one_is_refused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let checked = temp.path().join("checked");
+        let swapped = temp.path().join("swapped");
+        std::fs::create_dir(&checked).unwrap();
+        std::fs::create_dir(&swapped).unwrap();
+        let verified = std::fs::symlink_metadata(&checked).unwrap();
+        let error = write_in_dir(&swapped, &verified, "a.js", |h| h.write_all(b"x"))
+            .expect_err("a different directory must be refused");
+        assert!(matches!(
+            error,
+            FixScriptError::ScriptsDirectoryIsSymlink(_)
+        ));
+        assert_eq!(std::fs::read_dir(&swapped).unwrap().count(), 0);
     }
 
     #[cfg(unix)]

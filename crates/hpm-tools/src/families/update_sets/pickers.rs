@@ -2,9 +2,7 @@
 //! SN-Set-Current-Application, SN-Inspect-Update-Set
 //! (6.2.0 `mcp-server-consolidated.js` 2053-2205, 2607-2622).
 
-use hpm_core::client::{
-    ClientError, PICKER_CHANGE_NOT_SENT_CODE, PinnedClient, RecordParams, RecordQuery,
-};
+use hpm_core::client::{ClientError, PickerChange, PinnedClient, RecordParams, RecordQuery};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
 use hpm_types::tool::{MutationOutcome, ToolError};
@@ -52,8 +50,8 @@ pub(super) fn set_update_set<'a>(
         // its `/logout.do` is deterministically the last request.
         match client
             .client()
-            .set_current_update_set_or(&sys_id, |error| {
-                fix_script_fallback(deps, &client, &sys_id, error)
+            .set_current_update_set_or(&sys_id, |error, change| {
+                fix_script_fallback(deps, &client, &sys_id, error, change)
             })
             .await
         {
@@ -81,7 +79,7 @@ pub(super) fn set_update_set<'a>(
     })
 }
 
-/// Automated change definitely failed (or was never sent): fall back to a
+/// The automated change was not sent or definitely refused: fall back to a
 /// fix script. When the picker write may have landed (`Unknown`), no fix
 /// script is written: the update set may already be current (review TF-10,
 /// P3 decision 12).
@@ -90,12 +88,12 @@ async fn fix_script_fallback(
     client: &PinnedClient,
     sys_id: &str,
     error: ClientError,
+    change: PickerChange,
 ) -> Done {
-    // A failure before the picker PUT left nothing changed (review TF-10).
-    let outcome = if error.code.as_deref() == Some(PICKER_CHANGE_NOT_SENT_CODE) {
-        MutationOutcome::NotSent
-    } else {
-        failed_outcome(&error)
+    let outcome = match change {
+        PickerChange::NotSent => MutationOutcome::NotSent,
+        PickerChange::Refused => MutationOutcome::Failed,
+        PickerChange::Unknown => MutationOutcome::Unknown,
     };
     if outcome == MutationOutcome::Unknown {
         return done(

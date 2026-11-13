@@ -86,11 +86,7 @@ impl SingleUser {
             ClientDeps::production(Arc::new(LazySecretStore::os()))
                 .map_err(|e| format!("ServiceNow client setup failed: {e}"))?,
         );
-        // Fix scripts land under the startup directory, captured once so a
-        // later cwd change cannot move them (review TF-11).
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Cannot read the current directory: {e}"))?;
-        Ok(root.working_dir(cwd))
+        Ok(with_startup_dir(root, std::env::current_dir()))
     }
 
     /// `config` fixes the instances file and env map
@@ -185,6 +181,16 @@ impl SingleUser {
     }
 }
 
+/// Fix scripts land under the startup directory (review TF-11). If it cannot
+/// be read, startup still succeeds and the directory is resolved when a fix
+/// script is written (review L-5).
+fn with_startup_dir(root: SingleUser, cwd: std::io::Result<PathBuf>) -> SingleUser {
+    match cwd {
+        Ok(cwd) => root.working_dir(cwd),
+        Err(_) => root,
+    }
+}
+
 /// Mints the process's one `AdmissionKey` and builds the shared dispatcher over the
 /// OS keychain and the instance registry of `config`. Errors are ready to print
 /// after the `NAME: ` prefix. `usage` counts the calls (6.2.0 `defaultUsageTracker()`).
@@ -253,5 +259,31 @@ pub fn serve_stdio() -> ExitCode {
             eprintln!("{NAME}: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hpm_core::config::Env;
+    use hpm_core::keychain::MemorySecretStore;
+    use hpm_core::registry::InstanceRegistry;
+
+    fn root() -> SingleUser {
+        let env = Env::from_pairs(&[]);
+        let registry = Arc::new(InstanceRegistry::new(env.clone()));
+        let config = Arc::new(ConfigManager::new(registry, env));
+        let deps = ClientDeps::production(Arc::new(MemorySecretStore::default())).expect("deps");
+        SingleUser::new(config, deps)
+    }
+
+    /// L-5: an unreadable cwd leaves the directory to write time; TF-11: a
+    /// readable one is pinned at startup.
+    #[test]
+    fn startup_dir_never_fails_startup() {
+        let pinned = with_startup_dir(root(), Ok(PathBuf::from("/srv/app")));
+        assert_eq!(pinned.working_dir, Some(PathBuf::from("/srv/app")));
+        let lazy = with_startup_dir(root(), Err(std::io::Error::other("cwd deleted")));
+        assert_eq!(lazy.working_dir, None);
     }
 }

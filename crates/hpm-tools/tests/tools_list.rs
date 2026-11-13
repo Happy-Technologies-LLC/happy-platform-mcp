@@ -25,14 +25,31 @@ use hpm_tools::tool_order::{DOCS_ONLY_ORDER, TOOLS_LIST_ORDER};
 use serde_json::{Map, Value, json};
 
 /// 7.0 corrections to 6.2.0 tool text (owner decisions): tool, JSON pointer into
-/// the tool, 6.2.0 value, decision.
-const DEVIATIONS_FROM_6_2_0: &[(&str, &str, &str, &str)] = &[(
-    "SN-Batch-Create",
-    "/inputSchema/properties/transaction/description",
-    "All-or-nothing transaction (default: true)",
-    "owner decision 11: 6.2.0 never rolls back; the 7.0 text says a mid-batch \
-     failure can leave earlier records created and that the error reports them",
-)];
+/// the tool, 6.2.0 value (`None`: added in 7.0), decision.
+const DEVIATIONS_FROM_6_2_0: &[(&str, &str, Option<&str>, &str)] = &[
+    (
+        "SN-Batch-Create",
+        "/inputSchema/properties/transaction/description",
+        Some("All-or-nothing transaction (default: true)"),
+        "owner decision 11: 6.2.0 never rolls back; the 7.0 text says a mid-batch \
+         failure can leave earlier records created and that the error reports them",
+    ),
+    (
+        "SN-Execute-Background-Script",
+        "/description",
+        Some(EXECUTE_BACKGROUND_SCRIPT_DESC_620),
+        "owner decision P4-2: the sys_trigger fallback is opt-in; the 7.0 text no \
+         longer says a refused processor run falls back to sys_trigger",
+    ),
+    (
+        "SN-Execute-Background-Script",
+        "/inputSchema/properties/allow_trigger_fallback",
+        None,
+        "owner decision P4-2: per-call consent to the sys_trigger fallback",
+    ),
+];
+
+const EXECUTE_BACKGROUND_SCRIPT_DESC_620: &str = r#"Executes server-side JavaScript the way Scripts - Background does. Use for complex GlideRecord operations the CRUD tools cannot express. By default (wait: true) the script is POSTed once to the instance's /sys.scripts.do processor as the authenticated user, and the response is parsed into success/failure, output lines, errors, the scope it ran in, and links to its Script Execution History and rollback context. Requires the admin role. A rollback context is recorded by default (record_for_rollback), so the run's record changes can be rolled back from that context. The processor runs in the authenticated user's own session, so that user's current update set is expected to capture tracked configuration writes, and `scope` picks the application scope. The script request is never retried: a timeout, 5xx, or dropped connection is reported as an unknown outcome (check Script Execution History; do not re-run blindly). Only when the processor provably did not run the script (HTTP 401/403/404, a login page, or a connection error before sending) does it fall back to a sys_trigger job, and the response says so. The sys_trigger path (that fallback, or wait: false) runs in the scheduler's own session, not the caller's: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), GlideUpdateSet calls in it cannot change the update set other tools or the UI use (use SN-Set-Update-Set), and no rollback context is recorded. As a fallback it polls syslog for a correlation marker and reports "completed", "failed", or "timeout" (not a success); wait: false returns only trigger scheduling metadata immediately (see issue #40)."#;
 
 fn fixture_path(name: &str) -> PathBuf {
     [env!("CARGO_MANIFEST_DIR"), "..", "..", "fixtures", name]
@@ -153,13 +170,29 @@ fn tools_list_7_0_is_6_2_0_plus_hints_and_owner_corrections() {
             .unwrap_or_else(|| panic!("{name} not in 6.2.0"))
             .clone();
         for (_, pointer, was, _) in DEVIATIONS_FROM_6_2_0.iter().filter(|d| d.0 == name) {
-            let slot = want
-                .pointer_mut(pointer)
-                .expect("deviation pointer in 6.2.0");
-            assert_eq!(slot, was, "{name}{pointer}: recorded 6.2.0 value");
             let now = tool.pointer(pointer).expect("deviation pointer in 7.0");
-            assert_ne!(now, was, "{name}{pointer}: 7.0 must differ");
-            *slot = now.clone();
+            match was {
+                Some(was) => {
+                    let slot = want
+                        .pointer_mut(pointer)
+                        .expect("deviation pointer in 6.2.0");
+                    assert_eq!(slot, was, "{name}{pointer}: recorded 6.2.0 value");
+                    assert_ne!(now, was, "{name}{pointer}: 7.0 must differ");
+                    *slot = now.clone();
+                }
+                // Added in 7.0: absent from 6.2.0, inserted into its parent.
+                None => {
+                    assert!(
+                        want.pointer(pointer).is_none(),
+                        "{name}{pointer}: new in 7.0"
+                    );
+                    let (parent, key) = pointer.rsplit_once('/').expect("pointer");
+                    want.pointer_mut(parent)
+                        .and_then(Value::as_object_mut)
+                        .expect("deviation parent in 6.2.0")
+                        .insert(key.to_owned(), now.clone());
+                }
+            }
         }
         // The 6.2.0 file is stored with recursively sorted keys (compat-manifest
         // `hashing`), so compare values; that is byte equality after canonical sort.
