@@ -126,6 +126,14 @@ pub enum ResultBody {
     Message(String),
     /// Scanned under protection; unknown shapes blocked.
     Json(serde_json::Value),
+    /// Verbatim 6.2.0 success text (no prefix). `explicit_is_error_false: true`
+    /// emits `"isError": false` (ATF `jsonResponse(payload, false)`); `false` omits
+    /// the field. Errors are never `Ok`: use `ToolError::Text`. Carries instance
+    /// data, so it is scanned under protection like `Json`, never fixed text.
+    ToolResult {
+        text: String,
+        explicit_is_error_false: bool,
+    },
 }
 
 /// Every handler return path carries the facts, independent of the error (edit 2).
@@ -176,6 +184,13 @@ pub enum ToolError {
     /// so it goes through `protect_error` like `Upstream`.
     #[error("{0}")]
     Message(String),
+    /// 6.2.0 `isError` text rendered verbatim with no `Error: ` prefix (e.g. `❌ …`,
+    /// `Batch update completed with errors:\n…`). A failure for audit and retry,
+    /// protected like `Message`, and may accompany any `MutationOutcome`
+    /// (PartiallyCommitted batch stop-on-error / rollback, Committed script that
+    /// reported errors): the handler's text always wins over generic texts.
+    #[error("{0}")]
+    Text(String),
     #[error("cancelled")]
     Cancelled,
     #[error("deadline exceeded")]

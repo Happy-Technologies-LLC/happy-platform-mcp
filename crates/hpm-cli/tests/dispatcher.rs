@@ -336,7 +336,7 @@ async fn renders_handler_result() {
         out,
         DispatchOutcome::Rendered(Rendered {
             text: r#"{"query":"active=true"}"#.into(),
-            is_error: false
+            is_error: None
         })
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);

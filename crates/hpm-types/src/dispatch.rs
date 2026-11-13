@@ -21,10 +21,12 @@ pub trait UsageSink: Send + Sync {
 }
 
 /// Text sent to the client (6.2.0: one text content item plus `isError`).
+/// `is_error`: `Some(true)` error result, `Some(false)` explicit `isError: false`,
+/// `None` omits `isError`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rendered {
     pub text: String,
-    pub is_error: bool,
+    pub is_error: Option<bool>,
 }
 
 /// The protocol adapter maps `ConnectRequired` to a continuation and a

@@ -244,6 +244,7 @@ pub(crate) fn error_text(e: &ToolError) -> String {
     match e {
         ToolError::Message(m) | ToolError::Upstream { message: m, .. } => format!("Error: {m}"),
         ToolError::Credential(c) => format!("Error: {c}"),
+        ToolError::Text(t) => t.clone(),
         other => other.to_string(),
     }
 }
@@ -253,6 +254,21 @@ fn success(content: Vec<ContentBlock>) -> CallToolResult {
     let mut result = CallToolResult::success(content);
     result.is_error = None;
     result
+}
+
+/// `Some(true)` → error result; `Some(false)` → success with `isError: false`;
+/// `None` → success without `isError` (6.2.0 default).
+fn rendered_result(r: hpm_types::dispatch::Rendered) -> CallToolResult {
+    let content = vec![ContentBlock::text(r.text)];
+    match r.is_error {
+        Some(true) => CallToolResult::error(content),
+        Some(false) => {
+            let mut result = CallToolResult::success(content);
+            result.is_error = Some(false);
+            result
+        }
+        None => success(content),
+    }
 }
 
 fn http_identity(context: &RequestContext<RoleServer>) -> Option<VerifiedHttpIdentity> {
@@ -409,15 +425,7 @@ impl ServerHandler for McpHandler {
             .call_tool(&ctx, &request.name, args.clone())
             .await
         {
-            Ok(DispatchOutcome::Rendered(r)) => {
-                let content = vec![ContentBlock::text(r.text)];
-                Ok(if r.is_error {
-                    CallToolResult::error(content)
-                } else {
-                    success(content)
-                }
-                .into())
-            }
+            Ok(DispatchOutcome::Rendered(r)) => Ok(rendered_result(r).into()),
             Ok(DispatchOutcome::ConnectRequired { connect_url }) => {
                 // RFC §4.1: chosen from the verified version and capabilities.
                 let handle = if ctx.protocol_version().supports_mrtr() {
@@ -482,5 +490,23 @@ mod error_text_tests {
             error_text(&ToolError::Message("boom".into())),
             "Error: boom"
         );
+        assert_eq!(
+            error_text(&ToolError::Text("❌ Script reported errors".into())),
+            "❌ Script reported errors"
+        );
+    }
+
+    fn rendered(is_error: Option<bool>) -> rmcp::model::CallToolResult {
+        super::rendered_result(hpm_types::dispatch::Rendered {
+            text: "t".into(),
+            is_error,
+        })
+    }
+
+    #[test]
+    fn rendered_is_error_maps_to_error_explicit_false_or_omitted() {
+        assert_eq!(rendered(Some(true)).is_error, Some(true));
+        assert_eq!(rendered(Some(false)).is_error, Some(false));
+        assert_eq!(rendered(None).is_error, None);
     }
 }
