@@ -1,0 +1,9 @@
+# PROTECTED (D-07 §2.4): redefining the `xtask` alias would redirect the golden comparison.
+[alias]
+xtask = "run --quiet --locked --package xtask --"
+
+[env]
+RUST_BACKTRACE = "1"
+
+[net]
+retry = 3

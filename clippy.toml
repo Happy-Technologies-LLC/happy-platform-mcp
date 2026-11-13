@@ -1,0 +1,7 @@
+msrv = "1.89"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
+disallowed-methods = [
+  { path = "std::process::exit", reason = "exit codes are owned by the binary's main; library code returns errors" },
+]

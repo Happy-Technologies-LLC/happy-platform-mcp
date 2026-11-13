@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["spikes"] # P1 spikes are standalone projects with their own [workspace]
+
+[workspace.package]
+# Lockstep with the npm major (D8). Pre-release until the first 7.x release PR.
+version = "7.0.0-alpha.0"
+edition = "2024"
+rust-version = "1.89" # workspace MSRV: rusqlite 0.42 needs 1.89; rmcp floor is 1.88 (plan §3.3)
+license = "Apache-2.0"
+repository = "https://github.com/Happy-Technologies-LLC/happy-platform-mcp"
+authors = ["Happy Technologies LLC"]
+
+[workspace.dependencies]
+# Internal crates carry BOTH path and exact version so `cargo publish` works (D-07 §1.6).
+hpm-contracts = { path = "crates/hpm-contracts", version = "=7.0.0-alpha.0" }
+# External dependencies are declared here only (lead-owned); crates use `x.workspace = true`.
+rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v7"] }
+zeroize = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+print_stdout = "deny" # C10: stdout carries only JSON-RPC in stdio mode
+dbg_macro = "deny"
+unwrap_used = "deny"  # tests allowed via clippy.toml
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind" # keep task-level panic isolation
+
+[profile.dist]
+inherits = "release"
