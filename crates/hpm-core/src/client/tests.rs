@@ -383,8 +383,51 @@ fn put_bound(creds: &MemStore, reference: &str, value: &str) {
     creds.put(reference, value);
     creds.put(
         &crate::keychain::origin_binding_account(reference),
-        URL.trim_end_matches('/'),
+        &crate::keychain::origin_binding_value(reference, value, URL.trim_end_matches('/')),
     );
+}
+
+/// M-B: a binding item an attacker can write without the secret (plain
+/// origin, wrong MAC, missing MAC, or one copied from another secret) is
+/// unbound: refused, nothing sent.
+#[tokio::test]
+async fn forged_or_copied_binding_is_refused_and_nothing_is_sent() {
+    const REF: &str = "keychain:instance/dev/password";
+    let origin = URL.trim_end_matches('/');
+    let other = crate::keychain::origin_binding_value(
+        "keychain:instance/other/password",
+        "other-pass",
+        origin,
+    );
+    let wrong_key = crate::keychain::origin_binding_value(REF, "not-the-secret", origin);
+    for planted in [
+        origin.to_owned(),
+        format!(r#"{{"origin":"{origin}"}}"#),
+        format!(r#"{{"origin":"{origin}","mac":"{}"}}"#, "0".repeat(64)),
+        wrong_key,
+        other,
+    ] {
+        let h = harness(
+            ref_config(AuthType::Basic, json!(REF)),
+            FakeTransport::new(ok_result(json!([]))),
+            FakePoster::new(vec![]),
+            Value::Null,
+        );
+        h.creds.put(REF, "kc-pass");
+        h.creds
+            .put(&crate::keychain::origin_binding_account(REF), &planted);
+        let err = h
+            .client
+            .get_records("x", &RecordQuery::default())
+            .await
+            .expect_err("forged binding");
+        assert_eq!(
+            err.code(),
+            Some(error::CREDENTIAL_ORIGIN_UNBOUND_CODE),
+            "{planted}"
+        );
+        assert!(h.transport.requests().is_empty(), "{planted}");
+    }
 }
 
 #[tokio::test]
@@ -1042,6 +1085,54 @@ async fn current_update_set_reads_picker() {
         last.and_then(|r| r.header("Cookie").map(str::to_owned))
             .is_some()
     );
+}
+
+/// L-3: on the app picker's error path the UI session is still ended in
+/// line: exactly one `/logout.do`, with the cookie, as the last request.
+#[tokio::test]
+async fn set_application_failure_ends_session_last() {
+    let transport = FakeTransport::new(|r| {
+        let path = r
+            .url
+            .trim_start_matches(URL)
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        let j = |s: u16, v: Value| Ok(HttpResponse::json(s, &v));
+        match (r.method, path.as_str()) {
+            (Method::Get, "/") => Ok(HttpResponse::new(200, "<html></html>")
+                .with_header("set-cookie", "JSESSIONID=s1; Path=/")),
+            (Method::Get, "/api/now/table/sys_scope/global") => j(
+                200,
+                json!({"result": {"sys_id": "global", "name": "Global"}}),
+            ),
+            (Method::Get, "/api/now/ui/concoursepicker/application") => {
+                j(200, json!({"result": {"current": "x", "list": []}}))
+            }
+            (Method::Put, "/api/now/ui/concoursepicker/application") => {
+                j(500, json!({"error": {"message": "boom"}}))
+            }
+            _ => j(200, json!({})),
+        }
+    });
+    let h = harness(
+        basic(Some("inert")),
+        transport,
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    assert!(h.client.set_current_application("global").await.is_err());
+    let requests = h.transport.requests();
+    assert!(requests.iter().any(|r| r.method == Method::Put));
+    let logouts = requests
+        .iter()
+        .filter(|r| r.url.ends_with("/logout.do"))
+        .count();
+    let last = requests.last().unwrap();
+    assert_eq!(logouts, 1);
+    assert_eq!(last.url, format!("{URL}/logout.do"));
+    assert!(last.header("Cookie").is_some());
 }
 
 #[tokio::test]

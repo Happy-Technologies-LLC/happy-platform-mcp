@@ -127,15 +127,17 @@ impl ServiceNowClient {
         let mut landing = session.request(Method::Get, "/");
         landing.set_header("Accept", "text/html");
         let response = self.send(&session.state, landing).await?;
-        if !(200..300).contains(&response.status) {
-            return Err(session.fail(RawError::http(response.status, response.data())));
-        }
+        // Captured before the status check so the logout can end a session
+        // the landing page opened even when it answered non-2xx (review L-2).
         session.cookie = response
             .header_all("set-cookie")
             .map(|e| e.split(';').next().unwrap_or(""))
             .filter(|p| !p.is_empty())
             .collect::<Vec<_>>()
             .join("; ");
+        if !(200..300).contains(&response.status) {
+            return Err(session.fail(RawError::http(response.status, response.data())));
+        }
         Ok(&*session)
     }
 

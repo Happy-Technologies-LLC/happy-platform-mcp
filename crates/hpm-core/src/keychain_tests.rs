@@ -99,6 +99,18 @@ async fn secrets_are_bound_at_write_time_and_only_read_for_their_origin() {
     assert_eq!(s.bound_origin(r).await.unwrap(), None);
     s.restore_secret(r, "prior", Some(ORIGIN)).await.unwrap();
     assert_eq!(s.bound_origin(r).await.unwrap().as_deref(), Some(ORIGIN));
+    // ...with a MAC that verifies for the restored value (M-B).
+    let item = mem.value(SERVICE_NAME, &origin_binding_account(r)).unwrap();
+    assert_eq!(
+        verified_binding_origin(r, "prior", &item).as_deref(),
+        Some(ORIGIN)
+    );
+    // The secret item itself stays the plain value 6.x reads.
+    assert_eq!(mem.value(SERVICE_NAME, r).as_deref(), Some("prior"));
+    // A value replaced outside the store (e.g. by 6.x) invalidates the MAC.
+    mem.insert(SERVICE_NAME, r, "changed-elsewhere");
+    assert_eq!(s.bound_origin(r).await.unwrap(), None);
+    s.restore_secret(r, "prior", Some(ORIGIN)).await.unwrap();
 
     // A failed write leaves the secret unbound (never sent), not bound to
     // the old origin.

@@ -8,7 +8,10 @@ use std::sync::Arc;
 use base64::Engine;
 use hpm_types::credential::Secret;
 
-use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError, origin_binding_account};
+use crate::keychain::{
+    SERVICE_NAME, SecretStore, SecretStoreError, origin_binding_account, origin_binding_value,
+    verified_binding_origin,
+};
 
 pub mod provider;
 
@@ -223,6 +226,7 @@ impl InstanceCredentialStore {
             return Err(CredentialStoreError::Operation);
         }
         self.clear_origin_binding(&parsed.reference).await?;
+        let binding = origin_binding_value(&parsed.reference, value.expose(), origin);
         self.store
             .set(&self.service, &parsed.reference, value)
             .await
@@ -231,36 +235,56 @@ impl InstanceCredentialStore {
             .set(
                 &self.service,
                 &origin_binding_account(&parsed.reference),
-                Secret::new(origin.to_owned()),
+                Secret::new(binding),
             )
             .await
             .map_err(CredentialStoreError::Store)
     }
 
-    /// The origin `reference`'s secret is bound to (`None`: unbound).
+    /// The origin `reference`'s secret is bound to (`None`: unbound, which
+    /// includes a binding item whose MAC does not verify for the secret).
     pub async fn bound_origin(
         &self,
         reference: &str,
     ) -> Result<Option<String>, CredentialStoreError> {
         let parsed = parse_credential_ref(reference)?;
-        Ok(self
+        let Some(secret) = self
             .store
-            .get(&self.service, &origin_binding_account(&parsed.reference))
+            .get(&self.service, &parsed.reference)
             .await
             .map_err(CredentialStoreError::Store)?
-            .map(|v| v.expose().to_owned()))
+        else {
+            return Ok(None);
+        };
+        self.verified_origin(&parsed.reference, &secret).await
+    }
+
+    async fn verified_origin(
+        &self,
+        reference: &str,
+        secret: &Secret,
+    ) -> Result<Option<String>, CredentialStoreError> {
+        Ok(self
+            .store
+            .get(&self.service, &origin_binding_account(reference))
+            .await
+            .map_err(CredentialStoreError::Store)?
+            .and_then(|s| verified_binding_origin(reference, secret.expose(), s.expose())))
     }
 
     /// The secret, only when it is bound to `origin`. Never binds: an unbound
-    /// secret is refused until the operator binds it with the CLI.
+    /// secret is refused until the operator binds it with the CLI. The MAC is
+    /// checked against the secret read here (a forged, copied or stale
+    /// binding counts as unbound).
     pub async fn get_secret_for_origin(
         &self,
         reference: &str,
         origin: &str,
     ) -> Result<Secret, CredentialStoreError> {
-        let secret = self.get_secret(reference).await?;
-        let name = parse_credential_ref(reference)?.instance_name;
-        match self.bound_origin(reference).await? {
+        let parsed = parse_credential_ref(reference)?;
+        let secret = self.get_secret(&parsed.reference).await?;
+        let name = parsed.instance_name;
+        match self.verified_origin(&parsed.reference, &secret).await? {
             Some(bound) if bound == origin => Ok(secret),
             Some(bound) => Err(CredentialStoreError::OriginMismatch(Box::new(
                 OriginMismatch {

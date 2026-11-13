@@ -27,6 +27,8 @@ pub const SECRET_ARGUMENT_ERROR: &str =
     "Secret flags and values are not accepted in command arguments; use a masked prompt.";
 /// First line of `instance migrate` before its confirm prompt (not in 6.2.0).
 pub const MIGRATION_SOURCE_PREFIX: &str = "Migration source: ";
+/// First line of `instance credential set` before any prompt (not in 6.2.0).
+pub const CREDENTIAL_ORIGIN_PREFIX: &str = "Saving the credential for ";
 const NON_INTERACTIVE: &str = "Non-interactive use requires an interactive TTY for masked prompts; rerun in a terminal or inject the required prompt function.";
 /// 6.2.0 text, verbatim (CLI goldens). `instance credential bind <name>` is
 /// not listed; the unbound-secret errors print that command instead.
@@ -1398,6 +1400,28 @@ async fn credential_set_command(
     ctx.registry
         .validate(&Value::Object(merged(&instance, &patch)))?;
     let origin = origin_of_instance(&instance)?;
+    // M-A: the operator sees the target before typing the secret, and a new
+    // or changed binding needs an explicit yes (default No), as `bind`.
+    ctx.out(&format!(
+        "{CREDENTIAL_ORIGIN_PREFIX}{origin}; it will only ever be sent there."
+    ));
+    let current = ctx.credentials.bound_origin(&reference).await?;
+    if current.as_deref() != Some(origin.as_str()) {
+        let question = match &current {
+            Some(bound) => format!(
+                "The saved credential for '{name}' is bound to {bound}. Check the instance URL: re-bind it to {origin}?"
+            ),
+            None => format!("Bind the credential for '{name}' to {origin}?"),
+        };
+        let confirmed = ctx.ask(
+            PromptKind::Confirm,
+            spec("confirmOrigin", &question, Some(json!(false))),
+        )?;
+        if !hpm_core::config::truthy(Some(&confirmed)) {
+            ctx.out("Cancelled.");
+            return Ok(0);
+        }
+    }
     let snapshots = vec![snapshot_secret(&ctx.credentials, &reference).await?];
     let label = if kind == CredentialType::Password {
         "Password"

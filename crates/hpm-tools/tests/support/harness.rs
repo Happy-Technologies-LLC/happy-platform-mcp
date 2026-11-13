@@ -349,7 +349,7 @@ fn make_sandbox_with(
         secrets.insert(
             SERVICE_NAME,
             &hpm_core::keychain::origin_binding_account(account),
-            &origin,
+            &hpm_core::keychain::origin_binding_value(account, secret, &origin),
         );
     }
     Ok(Sandbox {

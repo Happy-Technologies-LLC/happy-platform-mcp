@@ -421,6 +421,46 @@ pub fn origin_binding_account(reference: &str) -> String {
     )
 }
 
+/// Domain label of the origin-binding MAC (review M-B).
+const BINDING_MAC_LABEL: &[u8] = b"happy-platform-mcp/origin-binding/v1";
+
+fn binding_mac_input(reference: &str, origin: &str) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(BINDING_MAC_LABEL.len() + reference.len() + origin.len() + 2);
+    msg.extend_from_slice(BINDING_MAC_LABEL);
+    msg.push(0);
+    msg.extend_from_slice(reference.as_bytes());
+    msg.push(0);
+    msg.extend_from_slice(origin.as_bytes());
+    msg
+}
+
+/// The stored binding item: the origin in clear (for error text) plus
+/// HMAC-SHA256 keyed by the secret over label, reference and origin, so only
+/// a holder of the secret can create a binding that verifies.
+pub fn origin_binding_value(reference: &str, secret: &str, origin: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+    let tag = ring::hmac::sign(&key, &binding_mac_input(reference, origin));
+    let mac: String = tag.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    serde_json::json!({"origin": origin, "mac": mac}).to_string()
+}
+
+/// The origin of a stored binding item, only when its MAC verifies for
+/// `secret` (constant-time). A plain, forged, copied or stale item is `None`.
+pub fn verified_binding_origin(reference: &str, secret: &str, stored: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(stored).ok()?;
+    let origin = v.get("origin")?.as_str()?;
+    let hex = v.get("mac")?.as_str()?;
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mac = (0..32)
+        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+    ring::hmac::verify(&key, &binding_mac_input(reference, origin), &mac).ok()?;
+    Some(origin.to_owned())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialType {
     Password,
@@ -509,7 +549,7 @@ pub fn credential_origin_mismatch(name: &str, bound: &str, current: &str) -> Cod
     CodedError::new(
         crate::client::error::CREDENTIAL_ORIGIN_MISMATCH_CODE,
         format!(
-            "The saved credential for instance '{name}' was saved for {bound}, but the instance now points to {current}; it will not be sent there. Re-save it with: happy-platform-mcp instance credential set {name}"
+            "The saved credential for instance '{name}' was saved for {bound}, but the instance now points to {current}; it will not be sent there. Check the instance URL first: if {current} is not your instance, fix the URL. Only if the instance really moved, re-save the credential for {current} with: happy-platform-mcp instance credential set {name} (it asks you to confirm the new URL)"
         ),
     )
 }
@@ -664,49 +704,82 @@ impl InstanceCredentialStore {
             .await
             .map_err(store_error)?;
         match binding {
-            Some(origin) => self.bind_origin(&parsed.reference, origin).await,
+            Some(origin) => self.write_binding(&parsed.reference, value, origin).await,
             None => Ok(()),
         }
     }
 
-    /// The origin `reference`'s secret is bound to (`None`: unbound).
+    /// The origin `reference`'s secret is bound to (`None`: unbound, which
+    /// includes a binding item whose MAC does not verify for the saved secret).
     pub async fn bound_origin(&self, reference: &str) -> Result<Option<String>, CodedError> {
         let parsed = parse_credential_ref(reference)?;
-        Ok(self
-            .store
-            .get(&self.service, &origin_binding_account(&parsed.reference))
-            .await
-            .map_err(store_error)?
-            .map(|v| v.expose().to_owned()))
+        let get = |account: String| async move {
+            self.store
+                .get(&self.service, &account)
+                .await
+                .map_err(store_error)
+        };
+        let Some(stored) = get(origin_binding_account(&parsed.reference)).await? else {
+            return Ok(None);
+        };
+        let Some(secret) = get(parsed.reference.clone()).await? else {
+            return Ok(None);
+        };
+        Ok(verified_binding_origin(
+            &parsed.reference,
+            secret.expose(),
+            stored.expose(),
+        ))
     }
 
-    /// Binds `reference`'s existing secret to `origin` (`instance credential
-    /// bind`, and the last step of every secret write).
+    /// Binds `reference`'s existing secret to `origin`, a normalised web
+    /// origin (`instance credential bind`).
     pub async fn bind_origin(&self, reference: &str, origin: &str) -> Result<(), CodedError> {
         let parsed = parse_credential_ref(reference)?;
-        if origin.is_empty() || origin == "null" {
+        if instance_origin(origin).ok().as_deref() != Some(origin) {
             return Err(invalid_instance_origin());
         }
+        let secret = self.get_secret(&parsed.reference).await?;
+        self.write_binding(&parsed.reference, secret.expose(), origin)
+            .await
+    }
+
+    async fn write_binding(
+        &self,
+        reference: &str,
+        secret: &str,
+        origin: &str,
+    ) -> Result<(), CodedError> {
         self.store
             .set(
                 &self.service,
-                &origin_binding_account(&parsed.reference),
-                Secret::new(origin.to_owned()),
+                &origin_binding_account(reference),
+                Secret::new(origin_binding_value(reference, secret, origin)),
             )
             .await
             .map_err(store_error)
     }
 
     /// The secret, only when it is bound to `origin`; an unbound or
-    /// differently bound secret is refused without being returned.
+    /// differently bound secret is refused without being returned. The MAC
+    /// is checked against the secret read here, so a value/binding pair from
+    /// two different writes never verifies.
     pub async fn get_secret_for_origin(
         &self,
         reference: &str,
         origin: &str,
     ) -> Result<Secret, CodedError> {
-        let secret = self.get_secret(reference).await?;
-        let name = parse_credential_ref(reference)?.instance_name;
-        match self.bound_origin(reference).await? {
+        let parsed = parse_credential_ref(reference)?;
+        let secret = self.get_secret(&parsed.reference).await?;
+        let stored = self
+            .store
+            .get(&self.service, &origin_binding_account(&parsed.reference))
+            .await
+            .map_err(store_error)?;
+        let name = parsed.instance_name;
+        match stored
+            .and_then(|s| verified_binding_origin(&parsed.reference, secret.expose(), s.expose()))
+        {
             Some(bound) if bound == origin => Ok(secret),
             Some(bound) => Err(credential_origin_mismatch(&name, &bound, origin)),
             None => Err(credential_origin_unbound(&name)),

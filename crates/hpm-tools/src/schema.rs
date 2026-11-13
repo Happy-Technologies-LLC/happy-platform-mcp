@@ -137,7 +137,7 @@ fn lenient(schema: &serde_json::Value, err: &ValidationError<'_>) -> bool {
                     .as_str()
                     .strip_suffix("/type")
                     .and_then(|parent| schema.pointer(parent))
-                    .is_none_or(|sub| in_range(sub, v))
+                    .is_some_and(|sub| in_range(sub, v))
             })
         }
         serde_json::Value::Bool(_) if wants("object") => {

@@ -14,6 +14,7 @@ use hpm_cli::instance_cli::{
 use hpm_core::config::{CodedError, Env};
 use hpm_core::keychain::{
     InstanceCredentialStore, MemorySecretStore, SecretStore, origin_binding_account,
+    origin_binding_value, verified_binding_origin,
 };
 use hpm_core::registry::InstanceRegistry;
 use hpm_core::token_store::{InMemoryTokenStore, TokenStore};
@@ -175,6 +176,12 @@ impl Prompter for Scripted {
         .into()
     }
     fn ask(&mut self, kind: PromptKind, spec: &PromptSpec) -> Result<Option<Value>, CodedError> {
+        // Recorded deviation (review M-A): `credential set` confirms the
+        // origin it binds to; 6.2.0 had no such prompt. The operator accepts
+        // it and it stays out of the recorded prompt calls.
+        if spec.name == "confirmOrigin" {
+            return Ok(Some(json!(true)));
+        }
         let value = self
             .answers
             .get(&spec.name)
@@ -308,7 +315,11 @@ async fn replay(file: &Path) -> Result<(), String> {
             ("keychain:instance/oauth1/client-secret", FAKE_CLIENT_SECRET),
         ] {
             memory.insert(SERVICE, account, secret);
-            memory.insert(SERVICE, &origin_binding_account(account), &origin);
+            memory.insert(
+                SERVICE,
+                &origin_binding_account(account),
+                &origin_binding_value(account, secret, &origin),
+            );
         }
     }
     let secrets: Arc<dyn SecretStore> = memory.clone();
@@ -354,11 +365,16 @@ async fn replay(file: &Path) -> Result<(), String> {
         }
     };
     check("exit", json!(code), &golden["exit"]["code"]);
-    // Recorded deviation (review M2): `instance migrate` names its plaintext source
-    // before confirming; 6.2.0 did not. Only that one line is dropped.
+    // Recorded deviations: `instance migrate` names its plaintext source
+    // before confirming (review M2), and `instance credential set` names the
+    // origin it binds to (review M-A); 6.2.0 printed neither. Only those
+    // lines are dropped.
     let stdout_text: String = clean(&stdout)
         .split_inclusive('\n')
-        .filter(|l| !l.starts_with(hpm_cli::instance_cli::MIGRATION_SOURCE_PREFIX))
+        .filter(|l| {
+            !l.starts_with(hpm_cli::instance_cli::MIGRATION_SOURCE_PREFIX)
+                && !l.starts_with(hpm_cli::instance_cli::CREDENTIAL_ORIGIN_PREFIX)
+        })
         .collect();
     check("stdout", json!(stdout_text), &golden["stdout"]);
     check("stderr", json!(clean(&stderr)), &golden["stderr"]);
@@ -388,7 +404,10 @@ async fn replay(file: &Path) -> Result<(), String> {
         .iter()
         .filter(|a| a.starts_with("keychain:instance/"))
     {
-        let bound = memory.value(SERVICE, &origin_binding_account(a));
+        let secret = memory.value(SERVICE, a).unwrap_or_default();
+        let bound = memory
+            .value(SERVICE, &origin_binding_account(a))
+            .and_then(|b| verified_binding_origin(a, &secret, &b));
         if bound.as_deref() != Some(instance_url(a).as_str()) {
             unbound.push(format!("{a} bound to {bound:?}"));
         }
