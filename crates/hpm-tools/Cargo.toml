@@ -16,5 +16,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 jsonschema.workspace = true # C6; root pin disables remote `$ref` fetching
 
+[dev-dependencies]
+tempfile.workspace = true # root pin =3.27.0; fix-script containment tests
+
 [lints]
 workspace = true

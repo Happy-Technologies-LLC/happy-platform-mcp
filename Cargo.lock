@@ -906,6 +906,7 @@ dependencies = [
  "hpm-types",
  "jsonschema",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
