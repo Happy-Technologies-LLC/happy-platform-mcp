@@ -37,7 +37,7 @@ pub fn not_run_error(reason: &str) -> ClientError {
         format!("The /sys.scripts.do processor did not run the script: {reason}"),
         Some(NOT_RUN),
     );
-    e.reason = Some(reason.to_owned());
+    e.reason = Some(reason.into());
     e
 }
 
@@ -47,7 +47,7 @@ pub fn unknown_outcome_error(reason: &str) -> ClientError {
         format!("Unknown outcome from the /sys.scripts.do processor: {reason}"),
         Some(UNKNOWN_OUTCOME),
     );
-    e.reason = Some(reason.to_owned());
+    e.reason = Some(reason.into());
     e
 }
 
@@ -176,10 +176,10 @@ pub fn text_content(html: &str) -> String {
     let mut i = 0;
     while i < html.len() {
         let rest = &html[i..];
-        if rest.starts_with("<!--") {
-            i = rest[4..].find("-->").map_or(html.len(), |e| i + 4 + e + 3);
-        } else if rest.starts_with('<') {
-            i = rest[1..].find('>').map_or(html.len(), |e| i + 1 + e + 1);
+        if let Some(after) = rest.strip_prefix("<!--") {
+            i = after.find("-->").map_or(html.len(), |e| i + 4 + e + 3);
+        } else if let Some(after) = rest.strip_prefix('<') {
+            i = after.find('>').map_or(html.len(), |e| i + 1 + e + 1);
         } else {
             let stop = rest.find('<').unwrap_or(rest.len());
             text.push_str(&rest[..stop]);
@@ -260,21 +260,19 @@ fn find_execution_history_id(html: &str) -> Option<String> {
             let at = search + pos;
             let boundary = at == 0 || !tag_lower.as_bytes()[at - 1].is_ascii_alphanumeric();
             let after = tag[at + 4..].trim_start_matches(is_js_space);
-            if boundary {
-                if let Some(value) = after.strip_prefix('=') {
-                    let value = value.trim_start_matches(is_js_space);
-                    let raw = if let Some(v) = value.strip_prefix('"') {
-                        v.find('"').map(|e| &v[..e])
-                    } else if let Some(v) = value.strip_prefix('\'') {
-                        v.find('\'').map(|e| &v[..e])
-                    } else {
-                        let e = value
-                            .find(|c: char| is_js_space(c) || c == '>')
-                            .unwrap_or(value.len());
-                        (e > 0).then(|| &value[..e])
-                    };
-                    break raw;
-                }
+            if boundary && let Some(value) = after.strip_prefix('=') {
+                let value = value.trim_start_matches(is_js_space);
+                let raw = if let Some(v) = value.strip_prefix('"') {
+                    v.find('"').map(|e| &v[..e])
+                } else if let Some(v) = value.strip_prefix('\'') {
+                    v.find('\'').map(|e| &v[..e])
+                } else {
+                    let e = value
+                        .find(|c: char| is_js_space(c) || c == '>')
+                        .unwrap_or(value.len());
+                    (e > 0).then(|| &value[..e])
+                };
+                break raw;
             }
             search = at + 4;
         };
@@ -462,14 +460,13 @@ fn has_password_field(lower: &str) -> bool {
         };
         let rest = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
         let rest = rest.strip_prefix(['"', '\'']).unwrap_or(rest);
-        if let Some(after) = rest.strip_prefix("user_password") {
-            if after
+        if let Some(after) = rest.strip_prefix("user_password")
+            && after
                 .bytes()
                 .next()
                 .is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_'))
-            {
-                return true;
-            }
+        {
+            return true;
         }
     }
     false

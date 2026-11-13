@@ -18,6 +18,9 @@ use url::Url;
 use super::error::{ClientError, RawError};
 use super::http::{HttpRequest, HttpTransport, Method, form_encode};
 
+/// Ordered `application/x-www-form-urlencoded` pairs.
+pub type FormParams = Vec<(String, String)>;
+
 /// Token-endpoint POST boundary: form-encodes `params`, never follows a
 /// redirect, returns the parsed body.
 pub trait TokenPoster: Send + Sync {
@@ -852,7 +855,7 @@ mod tests {
         assert!(e.to_lowercase().contains("timed out"));
     }
 
-    struct CapturePost(Mutex<Vec<(String, Vec<(String, String)>)>>);
+    struct CapturePost(Mutex<Vec<(String, FormParams)>>);
     impl TokenPoster for CapturePost {
         fn post<'a>(
             &'a self,

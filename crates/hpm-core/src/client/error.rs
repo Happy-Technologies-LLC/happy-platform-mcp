@@ -27,11 +27,11 @@ pub struct ClientError {
     pub code: Option<String>,
     pub status: Option<u16>,
     /// Sanitized response body (credential fields removed, strings redacted).
-    pub response_data: Option<Value>,
+    pub response_data: Option<Box<Value>>,
     /// OAuth policy field (`authorizeUrl` / `tokenUrl`).
-    pub field: Option<String>,
+    pub field: Option<&'static str>,
     /// Script-processor reason / cicd detail.
-    pub reason: Option<String>,
+    pub reason: Option<Box<str>>,
 }
 
 impl ClientError {
@@ -106,7 +106,7 @@ impl ClientError {
             out.insert("status".into(), Value::from(status));
         }
         if let Some(field) = &self.field {
-            out.insert("field".into(), Value::String(field.clone()));
+            out.insert("field".into(), Value::String((*field).to_owned()));
         }
         if let Some(reason) = &self.reason {
             // `CicdApiError` names this field `detail`.
@@ -115,14 +115,14 @@ impl ClientError {
             } else {
                 "reason"
             };
-            out.insert(key.into(), Value::String(reason.clone()));
+            out.insert(key.into(), Value::String(reason.to_string()));
         }
         if let Some(data) = &self.response_data {
             let mut response = Map::new();
             if let Some(status) = self.status {
                 response.insert("status".into(), Value::from(status));
             }
-            response.insert("data".into(), data.clone());
+            response.insert("data".into(), (**data).clone());
             out.insert("response".into(), Value::Object(response));
         }
         Value::Object(out)
@@ -177,12 +177,12 @@ impl Redactor {
         }
         self.add(value);
         let mut rest = value;
-        if let Some(idx) = find_ci(rest, "authorization") {
-            if idx == 0 {
-                let after = rest["authorization".len()..].trim_start();
-                if let Some(stripped) = after.strip_prefix(':') {
-                    rest = stripped.trim_start();
-                }
+        if let Some(idx) = find_ci(rest, "authorization")
+            && idx == 0
+        {
+            let after = rest["authorization".len()..].trim_start();
+            if let Some(stripped) = after.strip_prefix(':') {
+                rest = stripped.trim_start();
             }
         }
         for scheme in ["basic", "bearer"] {
@@ -416,7 +416,7 @@ impl RawError {
             Some(403) => Some("AUTHORIZATION_FAILED".into()),
             _ => self.code.clone().filter(|c| !is_credential_error_code(c)),
         };
-        safe.response_data = self.data.as_ref().map(|d| redactor.sanitize(d));
+        safe.response_data = self.data.as_ref().map(|d| Box::new(redactor.sanitize(d)));
         safe
     }
 
@@ -441,7 +441,7 @@ impl RawError {
         );
         safe.code = self.code;
         safe.status = self.status;
-        safe.response_data = self.data.as_ref().map(|d| redactor.sanitize(d));
+        safe.response_data = self.data.as_ref().map(|d| Box::new(redactor.sanitize(d)));
         safe
     }
 
@@ -476,7 +476,7 @@ mod tests {
             safe.message,
             "403 Table access was denied. The table is not available through web services."
         );
-        assert_eq!(safe.response_data, Some(data));
+        assert_eq!(safe.response_data, Some(Box::new(data)));
     }
 
     /// 'returns a safe cycle-free copy': credential fields dropped, diagnostics kept.

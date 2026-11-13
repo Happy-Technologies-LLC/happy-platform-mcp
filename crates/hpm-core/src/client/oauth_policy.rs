@@ -15,9 +15,9 @@ pub const MAX_URL_LENGTH: usize = 4096;
 
 const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "[::1]"];
 
-fn policy_error(code: &str, message: String, field: Option<&str>) -> ClientError {
+fn policy_error(code: &str, message: String, field: Option<&'static str>) -> ClientError {
     let mut e = ClientError::new("OAuthEndpointPolicyError", message, Some(code));
-    e.field = field.map(str::to_owned);
+    e.field = field;
     e
 }
 
@@ -116,7 +116,7 @@ pub fn resolve_oauth_endpoints(
 pub fn assert_approved_oauth_endpoint(
     endpoint: &str,
     instance_url: &str,
-    field: &str,
+    field: &'static str,
     trusted_env: Option<&str>,
 ) -> Result<String, ClientError> {
     let trusted = parse_trusted_oauth_origins(trusted_env)?;

@@ -11,7 +11,7 @@ use hpm_types::BoxFut;
 use serde_json::{Value, json};
 
 use super::http::{Clock, HttpRequest, HttpResponse, HttpTransport, TransportError};
-use super::oauth_code::{AuthCodeFlow, AuthCodeFlowConfig, TokenPoster};
+use super::oauth_code::{AuthCodeFlow, AuthCodeFlowConfig, FormParams, TokenPoster};
 use super::*;
 use crate::credential::testing::MemStore;
 
@@ -90,7 +90,7 @@ impl Clock for FakeClock {
 
 /// Token endpoint fake: records params, answers from a script.
 struct FakePoster {
-    calls: Mutex<Vec<(String, Vec<(String, String)>)>>,
+    calls: Mutex<Vec<(String, FormParams)>>,
     responses: Mutex<Vec<Result<Value, RawError>>>,
 }
 
@@ -101,7 +101,7 @@ impl FakePoster {
             responses: Mutex::new(responses),
         })
     }
-    fn calls(&self) -> Vec<(String, Vec<(String, String)>)> {
+    fn calls(&self) -> Vec<(String, FormParams)> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     fn param(&self, i: usize, name: &str) -> Option<String> {
@@ -1451,8 +1451,8 @@ fn debug_output_never_shows_secrets() {
         expiry: None,
     };
     let mut req = HttpRequest::new(Method::Post, URL);
-    req.set_header("Authorization", &format!("Bearer {SECRET}"));
-    req.set_header("Cookie", &format!("JSESSIONID={SECRET}"));
+    req.set_header("Authorization", format!("Bearer {SECRET}"));
+    req.set_header("Cookie", format!("JSESSIONID={SECRET}"));
     req.body = Some(SECRET.as_bytes().to_vec());
     let pkce = oauth_code::PkcePair {
         code_verifier: SECRET.into(),

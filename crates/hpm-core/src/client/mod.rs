@@ -45,6 +45,9 @@ use oauth_policy::{
 };
 pub use scripts::{ProcessorOptions, TriggerOptions};
 
+/// Progress callback: `(message, current, total)`.
+pub type ProgressCallback = Arc<dyn Fn(&str, Option<u64>, Option<u64>) + Send + Sync>;
+
 pub const REST_USER_AGENT: &str = "axios/1.20.0";
 pub const UI_USER_AGENT: &str = "ServiceNow-MCP-Client/2.0";
 const REFRESH_TOKEN_IDENTITY_PREFIX: &str = "identity-v1-";
@@ -600,7 +603,7 @@ fn non_empty(v: Option<&String>) -> Option<&str> {
 pub(crate) struct Inner {
     deps: ClientDeps,
     current: RwLock<Arc<State>>,
-    progress: Mutex<Option<Arc<dyn Fn(&str, Option<u64>, Option<u64>) + Send + Sync>>>,
+    progress: Mutex<Option<ProgressCallback>>,
 }
 
 /// Cheap to clone; clones share one instance state.
@@ -704,10 +707,7 @@ impl ServiceNowClient {
         &self.inner.deps
     }
 
-    pub fn set_progress_callback(
-        &self,
-        callback: Option<Arc<dyn Fn(&str, Option<u64>, Option<u64>) + Send + Sync>>,
-    ) {
+    pub fn set_progress_callback(&self, callback: Option<ProgressCallback>) {
         *self
             .inner
             .progress
@@ -896,7 +896,7 @@ impl ServiceNowClient {
         Ok(token)
     }
 
-    fn approved_endpoint(&self, st: &State, field: &str) -> Result<String, ClientError> {
+    fn approved_endpoint(&self, st: &State, field: &'static str) -> Result<String, ClientError> {
         let endpoints = resolve_oauth_endpoints(
             &st.url,
             st.cfg.authorize_url.as_deref(),
@@ -1126,12 +1126,12 @@ impl ServiceNowClient {
             Err(e) if e.is_stale() || e.name == "CredentialResolutionError" => return Err(e),
             Err(e) => return Err(self.safe_auth(st, RawError::from_client(&e), None)),
         };
-        if let Some(legacy) = legacy {
-            if self.token_store_clear(&legacy).await.is_err() {
-                eprintln!(
-                    "Could not remove a legacy name-keyed OAuth refresh token entry; remove it from the token store manually"
-                );
-            }
+        if let Some(legacy) = legacy
+            && self.token_store_clear(&legacy).await.is_err()
+        {
+            eprintln!(
+                "Could not remove a legacy name-keyed OAuth refresh token entry; remove it from the token store manually"
+            );
         }
         Ok(token)
     }
