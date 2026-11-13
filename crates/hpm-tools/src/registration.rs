@@ -53,6 +53,11 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Registered tools in registration (`tools/list`) order; used to compile input schemas.
+    pub fn tools(&self) -> &[ToolDescriptor] {
+        &self.tools
+    }
+
     pub(crate) fn into_parts(self) -> (Vec<ToolDescriptor>, Vec<ResourceDescriptor>) {
         (self.tools, self.resources)
     }

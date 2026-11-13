@@ -19,7 +19,7 @@ unmaintained = "workspace"
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
 allow = [
-  "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT",
+  "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "MIT-0",
   "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0",
   "CDLA-Permissive-2.0",
   "MPL-2.0", # weak copyleft, file-level; counsel confirms for closed distribution (owner decision 5)

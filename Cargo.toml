@@ -25,6 +25,8 @@ hpm-protocol = { path = "crates/hpm-protocol", version = "=7.0.0-alpha.0" }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 clap = { version = "4.6.7", features = ["derive"] }
 inquire = "0.9.4"
+# C6 schema validation. No default features: they pull reqwest + aws-lc for remote `$ref`.
+jsonschema = { version = "=0.61.2", default-features = false }
 keyring-core = "1.0.1"
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
