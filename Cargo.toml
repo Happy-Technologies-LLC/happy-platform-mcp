@@ -25,6 +25,9 @@ hpm-protocol = { path = "crates/hpm-protocol", version = "=7.0.0-alpha.0" }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 bytes = "=1.12.1"
 clap = { version = "4.6.7", features = ["derive"] }
+futures-core = "=0.3.34" # the `Stream` trait axum's SSE body needs
+hyper = { version = "=1.12.0", default-features = false }
+hyper-util = { version = "=0.1.21", default-features = false }
 inquire = "0.9.4"
 # C6 schema validation. No default features: they pull reqwest + aws-lc for remote `$ref`.
 jsonschema = { version = "=0.61.2", default-features = false }
@@ -32,21 +35,25 @@ keyring-core = "1.0.1"
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
 windows-native-keyring-store = "1.1.0"
+nix = { version = "=0.31.3", default-features = false }
 notify = "8.2.2"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "json"] }
 rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-io"] }
 rusqlite = { version = "0.42", features = ["bundled"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# preserve_order: JSON objects keep insertion order, matching 6.2.0 (JS) key order in tool output.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11" # same major as rmcp's, so `cargo tree -d` stays empty
 tempfile = "=3.27.0"
 thiserror = "2"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-std"] }
 tokio-util = "0.7"
+tower = { version = "=0.5.3", default-features = false }
 tower-http = "0.6.11"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "=2.5.8"
 uuid = { version = "1", features = ["v7"] }
 zeroize = "1"
 

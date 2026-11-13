@@ -518,9 +518,28 @@ fn redact(value: &Value, inside_credential_ref: bool) -> Value {
     }
 }
 
-/// Keys sorted recursively, 2-space indent (serde_json maps are already sorted).
+/// 6.2.0 `JSON.stringify(stable(value), null, 2)`: object keys sorted recursively, 2-space indent.
+/// Sorting is explicit because the workspace enables serde_json `preserve_order`.
 fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
+    serde_json::to_string_pretty(&stable(value)).unwrap_or_default()
+}
+
+fn stable(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(stable).collect()),
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            // JS `Array.prototype.sort()` compares UTF-16 code units.
+            entries.sort_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), stable(v)))
+                    .collect(),
+            )
+        }
+        other => other.clone(),
+    }
 }
 
 fn message_for_error(error: &CodedError) -> String {
