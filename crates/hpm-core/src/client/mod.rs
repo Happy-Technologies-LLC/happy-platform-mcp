@@ -172,13 +172,13 @@ pub(crate) struct State {
     pub oauth: Mutex<OAuthCache>,
     pub secrets: Mutex<HashMap<String, String>>,
     /// Authorization values sent in this generation (`Set` per generation in
-    /// JS); deduplicated and capped at [`MAX_REQUEST_VALUES`], oldest first out.
+    /// JS): deduplicated and never evicted while the generation lives, so a
+    /// value that may still be valid always stays redacted. The set is
+    /// dropped (and zeroized) with the generation on `set_instance`; within
+    /// one generation it grows only with distinct tokens (one per refresh).
     pub request_values: Mutex<VecDeque<String>>,
     pub flights: Flights,
 }
-
-/// Distinct Authorization values remembered per generation for redaction.
-const MAX_REQUEST_VALUES: usize = 32;
 
 impl Drop for State {
     fn drop(&mut self) {
@@ -276,11 +276,7 @@ impl State {
         if values.iter().any(|v| v == value) {
             return;
         }
-        if values.len() >= MAX_REQUEST_VALUES
-            && let Some(mut old) = values.pop_front()
-        {
-            old.zeroize();
-        }
+        // No eviction: the whole set goes with the generation (see field doc).
         values.push_back(value.to_owned());
     }
 }

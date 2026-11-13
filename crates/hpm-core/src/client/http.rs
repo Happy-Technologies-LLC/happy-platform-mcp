@@ -88,11 +88,24 @@ impl HttpRequest {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+/// Set-Cookie values and token-endpoint bodies are credentials: `Debug`
+/// shows the status, header names and body length only.
+impl std::fmt::Debug for HttpResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
+        f.debug_struct("HttpResponse")
+            .field("status", &self.status)
+            .field("headers", &names)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 impl HttpResponse {

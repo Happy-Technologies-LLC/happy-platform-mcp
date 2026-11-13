@@ -498,6 +498,31 @@ async fn start_failure_hints_runner_disabled() {
     }
 }
 
+#[tokio::test]
+async fn malformed_progress_id_says_the_run_was_dispatched() {
+    let h = fake(|r| {
+        (r.path == "/api/sn_cicd/testsuite/run").then(|| {
+            (
+                200,
+                Body::Json(json!({"result": {"status": "0", "links": {"progress": {"id": "../x", "url": "x"}}}})),
+            )
+        })
+    });
+    let e = err_of(
+        &h,
+        "SN-Run-ATF-Suite",
+        json!({"test_suite_sys_id": SUITE_ID}),
+    )
+    .await;
+    assert_eq!(e.code(), Some("CICD_NO_PROGRESS_ID"));
+    assert!(e.message.contains("dispatched the"), "{}", e.message);
+    assert!(e.message.contains(SUITE_ID), "{}", e.message);
+    assert!(e.message.contains("malformed progress id"), "{}", e.message);
+    assert!(!e.message.contains("may not have started"), "{}", e.message);
+    // Never polled with the bad id.
+    assert!(reqs(&h).iter().all(|r| !r.path.contains("/progress/")));
+}
+
 // ---- progress and results --------------------------------------------------
 
 #[tokio::test]

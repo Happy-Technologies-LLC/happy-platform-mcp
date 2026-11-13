@@ -1201,10 +1201,10 @@ async fn dispatch_and_maybe_wait(
     options: WaitOptions,
 ) -> Result<Value, ClientError> {
     let dispatch_result = cicd_request(client, Method::Post, d.path, &d.query).await?;
-    let progress_id = link_of(dispatch_result.get("links"), "progress")
-        .and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_owned))
-        // Server-returned ids go into URL paths: only well-formed sys_ids.
-        .filter(|id| is_sys_id(id));
+    let raw_progress_id = link_of(dispatch_result.get("links"), "progress")
+        .and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_owned));
+    // Server-returned ids go into URL paths: only well-formed sys_ids.
+    let progress_id = raw_progress_id.clone().filter(|id| is_sys_id(id));
     let result_type = d.result_type;
     let label = d.label;
 
@@ -1225,15 +1225,20 @@ async fn dispatch_and_maybe_wait(
     }
 
     let Some(progress_id) = progress_id else {
-        return Err(cicd_error(
+        let message = if raw_progress_id.is_some() {
+            // The POST succeeded, so the run was dispatched; only the
+            // tracker id is unusable.
+            format!(
+                "sn_cicd request to {} dispatched the {label} ({}) but the instance returned a malformed progress id (not a 32-character sys_id); check the run on the instance instead of re-running it",
+                d.path, d.target
+            )
+        } else {
             format!(
                 "sn_cicd request to {} returned no progress id; the {label} may not have started",
                 d.path
-            ),
-            "CICD_NO_PROGRESS_ID",
-            None,
-            None,
-        ));
+            )
+        };
+        return Err(cicd_error(message, "CICD_NO_PROGRESS_ID", None, None));
     };
 
     let (snapshot, timed_out) = match poll_progress(client, &progress_id, options).await {

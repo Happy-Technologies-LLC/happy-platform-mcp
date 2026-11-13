@@ -1479,9 +1479,40 @@ fn debug_output_never_shows_secrets() {
         format!("{jar:?}"),
         format!("{raw:?}"),
         format!("{redactor:?}"),
+        format!(
+            "{:?}",
+            HttpResponse::new(200, format!(r#"{{"access_token":"{SECRET}"}}"#))
+                .with_header("Set-Cookie", &format!("JSESSIONID={SECRET}; Path=/"))
+        ),
     ] {
         assert!(!out.contains(SECRET), "{out}");
     }
+}
+
+#[test]
+fn redaction_never_forgets_a_value_from_the_live_generation() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(|_| Ok(HttpResponse::new(200, "{}"))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let st = h.client.state();
+    // Far past the old cap of 32: the first token must still be redacted.
+    for i in 0..100 {
+        st.note_request_value(&format!("Bearer token-{i:03}-zz"));
+    }
+    st.note_request_value("Bearer token-000-zz"); // deduplicated
+    assert_eq!(
+        st.request_values
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len(),
+        100
+    );
+    let out = st.redactor().redact("leak token-000-zz and token-099-zz");
+    assert!(!out.contains("token-000-zz"), "{out}");
+    assert!(!out.contains("token-099-zz"), "{out}");
 }
 
 mod atf;
