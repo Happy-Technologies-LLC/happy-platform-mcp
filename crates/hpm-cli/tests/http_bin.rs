@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -15,6 +15,9 @@ use serde_json::{Value, json};
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const REFUSED: &str = "Happy MCP Server HTTP startup refused: ";
 const TIMEOUT: Duration = Duration::from_secs(20);
+/// Distinctive fake credentials: no HTTP body may ever contain them.
+const SN_USERNAME: &str = "svc-user-u5ern4me";
+const SN_PASSWORD: &str = "pw-s3cr3t-9f2b7c1e";
 
 /// Env-only configuration: temp HOME and registry path (no registry file, so the
 /// `.env` fallback applies), fake ServiceNow credentials that are never used.
@@ -30,8 +33,8 @@ fn command(home: &Path, vars: &[(&str, &str)]) -> Command {
         .env("USERPROFILE", home)
         .env("HAPPY_CONFIG_PATH", home.join("instances.json"))
         .env("SERVICENOW_INSTANCE_URL", "https://dev.example.invalid")
-        .env("SERVICENOW_USERNAME", "admin")
-        .env("SERVICENOW_PASSWORD", "fake-password")
+        .env("SERVICENOW_USERNAME", SN_USERNAME)
+        .env("SERVICENOW_PASSWORD", SN_PASSWORD)
         .env("PORT", "0")
         .env("HAPPY_MCP_API_TOKEN", TOKEN)
         .stdin(Stdio::null())
@@ -47,7 +50,15 @@ struct Server {
     child: Child,
     addr: SocketAddr,
     stdout: mpsc::Receiver<String>,
+    stderr: Arc<Mutex<String>>,
     _home: tempfile::TempDir,
+}
+
+impl Server {
+    /// Everything the server wrote to stderr so far (for failure messages).
+    fn stderr(&self) -> String {
+        self.stderr.lock().unwrap().clone()
+    }
 }
 
 impl Drop for Server {
@@ -57,9 +68,32 @@ impl Drop for Server {
     }
 }
 
+type Drained = (Arc<Mutex<String>>, std::thread::JoinHandle<()>);
+
+/// Drains a child pipe on a thread so the child can never block on a full pipe.
+/// The thread ends at EOF (child exit).
+fn drain(pipe: impl Read + Send + 'static) -> Drained {
+    let buf = Arc::new(Mutex::new(String::new()));
+    let sink = buf.clone();
+    let thread = std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        let mut pipe = pipe;
+        while let Ok(n) = pipe.read(&mut chunk) {
+            if n == 0 {
+                return;
+            }
+            sink.lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(&chunk[..n]));
+        }
+    });
+    (buf, thread)
+}
+
 fn start(vars: &[(&str, &str)]) -> Server {
     let home = tempfile::tempdir().unwrap();
     let mut child = command(home.path(), vars).spawn().unwrap();
+    let (stderr, _) = drain(child.stderr.take().unwrap());
     let (tx, rx) = mpsc::channel();
     let out = child.stdout.take().unwrap();
     std::thread::spawn(move || {
@@ -74,7 +108,12 @@ fn start(vars: &[(&str, &str)]) -> Server {
     let addr = loop {
         let line = rx
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_else(|_| panic!("no listening line; stdout so far: {seen:?}"));
+            .unwrap_or_else(|_| {
+                panic!(
+                    "no listening line; stdout so far: {seen:?}; stderr: {}",
+                    stderr.lock().unwrap()
+                )
+            });
         if let Some(rest) = line.strip_prefix("Happy MCP Server listening on http://") {
             let authority = rest.split(' ').next().unwrap();
             break authority.parse::<SocketAddr>().unwrap();
@@ -89,18 +128,52 @@ fn start(vars: &[(&str, &str)]) -> Server {
         child,
         addr,
         stdout: rx,
+        stderr,
         _home: home,
     }
+}
+
+/// Runs `cmd` to completion within [`TIMEOUT`], draining both pipes; a child still
+/// running at the deadline is killed and the test fails (a refusal that turned
+/// into a listening server must fail CI, not hang it). Returns (code, stdout, stderr).
+fn run_bounded(mut cmd: Command) -> (i32, String, String) {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (stdout, out_thread) = drain(child.stdout.take().unwrap());
+    let (stderr, err_thread) = drain(child.stderr.take().unwrap());
+    let deadline = Instant::now() + TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "process still running after {TIMEOUT:?} (server started instead of refusing?); stdout: {}; stderr: {}",
+                stdout.lock().unwrap(),
+                stderr.lock().unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // The child has exited, so both pipes are at EOF and the threads finish.
+    out_thread.join().unwrap();
+    err_thread.join().unwrap();
+    let out = stdout.lock().unwrap().clone();
+    let err = stderr.lock().unwrap().clone();
+    (status.code().unwrap_or(-1), out, err)
 }
 
 /// Runs the binary to completion (startup refusals).
 fn refused(vars: &[(&str, &str)]) -> (i32, String) {
     let home = tempfile::tempdir().unwrap();
-    let out = command(home.path(), vars).output().unwrap();
-    (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    let (code, _, err) = run_bounded(command(home.path(), vars));
+    (code, err)
 }
 
 struct Reply {
@@ -222,8 +295,24 @@ fn guard_rejects_missing_token_and_foreign_host_or_origin() {
     let r = send(s.addr, "POST", "/mcp", &[JSON_CT, ACCEPT_BOTH], "{}");
     assert_eq!(
         (r.status, r.json()),
-        (401, json!({"error": "Unauthorized"}))
+        (401, json!({"error": "Unauthorized"})),
+        "stderr: {}",
+        s.stderr()
     );
+    // SSE open and the instance listing sit behind the same guard.
+    for (path, accept) in [
+        ("/mcp", ("Accept", "text/event-stream")),
+        ("/instances", ("Accept", "application/json")),
+    ] {
+        let r = send(s.addr, "GET", path, &[accept], "");
+        assert_eq!(
+            (r.status, r.json()),
+            (401, json!({"error": "Unauthorized"})),
+            "GET {path}; stderr: {}",
+            s.stderr()
+        );
+        assert_eq!(r.header("www-authenticate").as_deref(), Some("Bearer"));
+    }
 
     let r = authed(s.addr, "GET", "/health", &[("Host", "evil.example")], "");
     assert_eq!(
@@ -255,15 +344,37 @@ fn guard_rejects_missing_token_and_foreign_host_or_origin() {
 fn health_and_instances_report_the_default_instance() {
     let s = start(&[]);
     let r = authed(s.addr, "GET", "/health", &[], "");
-    assert_eq!(r.status, 200, "{}", r.body);
+    assert_eq!(r.status, 200, "{}; stderr: {}", r.body, s.stderr());
     let h = r.json();
-    assert_eq!(h["status"], "healthy");
-    assert_eq!(h["servicenow_instance"], "https://dev.example.invalid");
-    assert_eq!(h["instance_name"], "default");
-    assert!(h["timestamp"].as_str().unwrap().ends_with('Z'), "{h}");
+    let timestamp = h["timestamp"].as_str().unwrap_or_default().to_string();
+    assert!(timestamp.ends_with('Z'), "{h}");
+    // Exactly the 6.2.0 field set: nothing else (no credentials) may appear.
+    assert_eq!(
+        h,
+        json!({
+            "status": "healthy",
+            "servicenow_instance": "https://dev.example.invalid",
+            "instance_name": "default",
+            "timestamp": timestamp,
+        })
+    );
+    let health_body = r.body;
     let r = authed(s.addr, "GET", "/instances", &[], "");
-    assert_eq!(r.status, 200, "{}", r.body);
-    assert_eq!(r.json()["instances"][0]["name"], "default");
+    assert_eq!(r.status, 200, "{}; stderr: {}", r.body, s.stderr());
+    assert_eq!(
+        r.json(),
+        json!({"instances": [{
+            "name": "default",
+            "url": "https://dev.example.invalid",
+            "default": true,
+            "description": "Loaded from .env",
+        }]})
+    );
+    for body in [&health_body, &r.body] {
+        for secret in [SN_PASSWORD, SN_USERNAME, TOKEN] {
+            assert!(!body.contains(secret), "{secret} leaked in {body}");
+        }
+    }
 }
 
 #[test]
@@ -425,26 +536,78 @@ fn sigterm_closes_sessions_and_exits_zero() {
     let mut s = start(&[]);
     let mut sse = Sse::open(s.addr);
     let _ = sse.session_id();
+    send_signal(&s, "-TERM");
+    let deadline = Instant::now() + TIMEOUT;
+    wait_for_line(&s, deadline, "Received SIGTERM; closing MCP sessions");
+    let exit = wait_exit(&mut s, deadline);
+    assert_eq!(exit.code(), Some(0), "stderr: {}", s.stderr());
+}
+
+#[cfg(unix)]
+fn send_signal(s: &Server, sig: &str) {
     let status = Command::new("kill")
-        .args(["-TERM", &s.child.id().to_string()])
+        .args([sig, &s.child.id().to_string()])
+        .stdin(Stdio::null())
         .status()
         .unwrap();
     assert!(status.success());
-    let deadline = Instant::now() + TIMEOUT;
+}
+
+#[cfg(unix)]
+fn wait_for_line(s: &Server, deadline: Instant, want: &str) {
     loop {
         let wait = deadline.saturating_duration_since(Instant::now());
-        if s.stdout.recv_timeout(wait).unwrap() == "Received SIGTERM; closing MCP sessions" {
-            break;
+        let line = s
+            .stdout
+            .recv_timeout(wait)
+            .unwrap_or_else(|_| panic!("no {want:?}; stderr: {}", s.stderr()));
+        if line == want {
+            return;
         }
     }
-    let exit = loop {
+}
+
+#[cfg(unix)]
+fn wait_exit(s: &mut Server, deadline: Instant) -> std::process::ExitStatus {
+    loop {
         if let Some(code) = s.child.try_wait().unwrap() {
-            break code;
+            return code;
         }
-        assert!(Instant::now() < deadline, "server did not exit");
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    assert_eq!(exit.code(), Some(0));
+        assert!(
+            Instant::now() < deadline,
+            "server did not exit; stderr: {}",
+            s.stderr()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A request whose body never finishes holds the graceful shutdown for the full
+/// grace period; a second signal must cut it short.
+#[cfg(unix)]
+#[test]
+fn second_signal_forces_immediate_exit() {
+    let mut s = start(&[]);
+    let mut stalled = TcpStream::connect(s.addr).unwrap();
+    let head = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: {BEARER}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 1000\r\n\r\n{{",
+        s.addr.port()
+    );
+    stalled.write_all(head.as_bytes()).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    send_signal(&s, "-TERM");
+    let deadline = Instant::now() + TIMEOUT;
+    wait_for_line(&s, deadline, "Received SIGTERM; closing MCP sessions");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        s.child.try_wait().unwrap().is_none(),
+        "server exited before the second signal; the stalled request did not hold shutdown"
+    );
+    let second = Instant::now();
+    send_signal(&s, "-INT");
+    let exit = wait_exit(&mut s, second + Duration::from_secs(3));
+    assert_eq!(exit.code(), Some(130), "stderr: {}", s.stderr());
+    drop(stalled);
 }
 
 #[test]
@@ -495,14 +658,9 @@ fn startup_refuses_invalid_settings() {
 
 #[test]
 fn main_binary_rejects_unknown_flags_with_exit_2() {
-    let out = Command::new(env!("CARGO_BIN_EXE_happy-platform-mcp"))
-        .arg("--http")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        "Unknown command. Use --help for usage.\n"
-    );
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_happy-platform-mcp"));
+    cmd.arg("--http");
+    let (code, _, err) = run_bounded(cmd);
+    assert_eq!(code, 2);
+    assert_eq!(err, "Unknown command. Use --help for usage.\n");
 }

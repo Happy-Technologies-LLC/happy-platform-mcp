@@ -17,6 +17,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.github/workflows/rust-conformance.yml'
+      - '.github/conformance/**'
 
 permissions:
   contents: read
@@ -106,11 +107,13 @@ jobs:
         run: |
           set -euo pipefail
           export HAPPY_CONFIG_PATH="$RUNNER_TEMP/instances.json"
-          HAPPY_MCP_API_TOKEN="$(openssl rand -hex 32)"
-          export HAPPY_MCP_API_TOKEN
-          ./target/debug/happy-platform-mcp-http > "$RUNNER_TEMP/server.log" 2>&1 &
+          # The token goes only to the server and the proxy; it is never exported, so
+          # the third-party suite (and anything npx installs) cannot read it.
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          HAPPY_MCP_API_TOKEN="$token" ./target/debug/happy-platform-mcp-http > "$RUNNER_TEMP/server.log" 2>&1 &
           server=$!
-          node -e '
+          HAPPY_MCP_API_TOKEN="$token" node -e '
             const http = require("node:http");
             const upstream = Number(process.env.PORT);
             http.createServer((req, res) => {
@@ -122,6 +125,8 @@ jobs:
                 up.pipe(res);
               });
               out.on("error", () => { res.statusCode = 502; res.end(); });
+              // A client abort (e.g. a closed GET SSE stream) closes the upstream too.
+              res.on("close", () => out.destroy());
               req.pipe(out);
             }).listen(Number(process.env.PROXY_PORT), "127.0.0.1");
           ' &
@@ -135,6 +140,7 @@ jobs:
           # Baseline: scenarios that need the suite's reference fixtures (test_* tools,
           # resources/read, prompts/get, logging/setLevel). A new failure or a now-passing
           # baseline entry fails the job, so remove entries as the tool lanes land.
-          npx -y @modelcontextprotocol/conformance@0.1.16 server \
+          env -u HAPPY_MCP_API_TOKEN npm_config_ignore_scripts=true \
+            npx -y @modelcontextprotocol/conformance@0.1.16 server \
             --url "http://127.0.0.1:$PROXY_PORT/mcp" \
             --expected-failures .github/conformance/server-baseline.yml
