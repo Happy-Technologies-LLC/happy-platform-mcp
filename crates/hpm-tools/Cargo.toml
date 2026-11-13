@@ -16,6 +16,7 @@ hpm-core.workspace = true # G2/G1: PinnedClient and ConfigManager for families
 hpm-docs.workspace = true # lane E: docs tools register from hpm-tools
 reqwest.workspace = true # lane E: usage telemetry flush
 tokio = { workspace = true, features = ["time", "sync"] } # lane E: telemetry timer
+getrandom.workspace = true # lane E: telemetry session id
 serde_json.workspace = true
 thiserror.workspace = true
 jsonschema.workspace = true # C6; root pin disables remote `$ref` fetching

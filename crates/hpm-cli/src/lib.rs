@@ -158,6 +158,7 @@ impl SingleUser {
         family_deps.docs_base_url = self.docs_base_url;
         family_deps.working_dir = self.working_dir;
         family_deps.docs_cache_dir = self.docs_cache_dir;
+        family_deps.docs_only = self.docs_only;
         let mut registry = ToolRegistry::new()
             .and_then(|mut r| families::register_all(&mut r, &family_deps).map(|()| r))
             .and_then(|mut r| {
@@ -170,6 +171,8 @@ impl SingleUser {
         if self.docs_only {
             registry.retain_docs_only();
         }
+        // Read by resources at request time; set only after docs-only filtering.
+        let _ = family_deps.tool_count.set(registry.tools().len());
         let credentials = Arc::new(SingleUserCredentialProvider::new(clients));
         let services =
             single_user_services(&registry, credentials, self.usage).map_err(|e| e.to_string())?;
@@ -227,12 +230,18 @@ pub fn serve_stdio() -> ExitCode {
     let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
         .registry(config)
         .build();
+    // 6.2.0 `stdio-server.js` prints the notice to stderr (stdout carries the protocol).
+    if usage.enabled() {
+        eprintln!("{}", usage.describe());
+    }
     let served = runtime.block_on(async {
         let served = hpm_protocol::stdio::serve_handler(handler).await;
         usage.stop();
         usage.flush().await;
         served
     });
+    // Never wait unboundedly for `spawn_blocking` work (e.g. a resolver or keychain call).
+    runtime.shutdown_timeout(http::SHUTDOWN_GRACE);
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

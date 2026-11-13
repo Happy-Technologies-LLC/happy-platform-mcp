@@ -3,7 +3,7 @@
 //! `servicenow://tables/all`. Registered in that order, which is the
 //! `resources/list` order.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use hpm_core::config::{ConfigManager, PACKAGE_VERSION};
 use hpm_types::BoxFut;
@@ -18,8 +18,9 @@ use crate::table_metadata;
 
 struct InstanceInfo {
     config: Arc<ConfigManager>,
-    /// 6.2.0 `(await listTools()).tools.length`: the tools this server lists.
-    tool_count: usize,
+    /// 6.2.0 `(await listTools()).tools.length`: the tools this server lists. Set by
+    /// the composition root after docs-only filtering, so it is read per request.
+    tool_count: Arc<OnceLock<usize>>,
 }
 
 impl InstanceInfo {
@@ -43,7 +44,7 @@ impl InstanceInfo {
             "capabilities": {
                 "total_tables": table_metadata::tables().len(),
                 "operations": ["create", "read", "update", "query", "schema_lookup"],
-                "tools": self.tool_count,
+                "tools": self.tool_count.get().copied().unwrap_or(0),
             },
         })
     }
@@ -67,7 +68,6 @@ pub(super) fn register(
     registry: &mut ToolRegistry,
     deps: &FamilyDeps,
 ) -> Result<(), RegistrationError> {
-    let tool_count = registry.tools().len();
     registry.register_resource(ResourceDescriptor::new(
         "servicenow://instance",
         "ServiceNow Instance Info",
@@ -77,7 +77,7 @@ pub(super) fn register(
         CredentialNeed::None,
         Arc::new(InstanceInfo {
             config: deps.config.clone(),
-            tool_count,
+            tool_count: deps.tool_count.clone(),
         }),
     ))?;
     registry.register_resource(ResourceDescriptor::new(
@@ -101,9 +101,11 @@ mod tests {
     fn info(pairs: &[(&str, &str)], tool_count: usize) -> InstanceInfo {
         let env = Env::from_pairs(pairs);
         let registry = Arc::new(InstanceRegistry::new(env.clone()));
+        let count = Arc::new(OnceLock::new());
+        count.set(tool_count).unwrap();
         InstanceInfo {
             config: Arc::new(ConfigManager::new(registry, env)),
-            tool_count,
+            tool_count: count,
         }
     }
 

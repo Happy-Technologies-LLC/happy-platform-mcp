@@ -12,15 +12,13 @@
 //! `beforeExit`).
 
 use std::collections::BTreeMap;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hpm_core::config::{Env, PACKAGE_NAME, PACKAGE_VERSION};
 use hpm_types::dispatch::UsageSink;
 use serde_json::{Map, Value, json};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::logic::js::to_iso_string;
@@ -41,14 +39,52 @@ pub fn telemetry_enabled(env: &Env) -> bool {
     )
 }
 
-/// 6.2.0 `telemetryUrl`: the trimmed override, else the project default.
-pub fn telemetry_url(env: &Env) -> String {
+/// 6.2.0 `telemetryUrl`: the trimmed override, else the project default. Unlike 6.2.0,
+/// an override must be `https`, or `http` to a loopback host (tests, local collectors):
+/// anything else is an `Err` naming the problem, so counts never leave in plaintext.
+pub fn telemetry_url(env: &Env) -> Result<String, String> {
     let value = env.get("HAPPY_MCP_TELEMETRY_URL").unwrap_or_default();
     let value = value.trim();
     if value.is_empty() {
-        TELEMETRY_URL.to_owned()
+        Ok(TELEMETRY_URL.to_owned())
+    } else if url_allowed(value) {
+        Ok(value.to_owned())
     } else {
-        value.to_owned()
+        Err(format!(
+            "HAPPY_MCP_TELEMETRY_URL must be an https URL (or http to a loopback host); got {}",
+            redact_url(value)
+        ))
+    }
+}
+
+fn url_allowed(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => url.host().is_some(),
+        "http" => url.host_str().is_some_and(|host| {
+            let host = host.trim_matches(['[', ']']);
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        }),
+        _ => false,
+    }
+}
+
+/// `raw` without userinfo, query or fragment, for messages and logs.
+fn redact_url(raw: &str) -> String {
+    match reqwest::Url::parse(raw) {
+        Ok(mut url) => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        }
+        Err(_) => "(unparseable URL)".to_owned(),
     }
 }
 
@@ -61,14 +97,10 @@ fn platform() -> &'static str {
     }
 }
 
-/// A random v4-shaped session id (6.2.0 `randomUUID()`), from the std hasher's
-/// per-instance random keys.
+/// A random v4 session id (6.2.0 `randomUUID()`), from the OS random number generator.
 fn session_id() -> String {
     let mut bytes = [0_u8; 16];
-    for half in bytes.chunks_mut(8) {
-        let value = RandomState::new().build_hasher().finish();
-        half.copy_from_slice(&value.to_le_bytes());
-    }
+    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -95,21 +127,16 @@ struct Inner {
     url: String,
     session: String,
     state: Mutex<State>,
-    flushing: AtomicBool,
+    /// One flush at a time; a later flush waits for the one in flight, then sends
+    /// whatever was recorded since, so a shutdown flush never drops a batch.
+    flush_lock: tokio::sync::Mutex<()>,
+    /// Wakes the periodic flush so it exits without being aborted mid-send.
+    stop: Arc<Notify>,
 }
 
 impl Inner {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-/// Clears `flushing` on every exit path.
-struct FlushGuard<'a>(&'a AtomicBool);
-
-impl Drop for FlushGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -120,9 +147,19 @@ pub struct UsageTracker {
 }
 
 impl UsageTracker {
-    /// Reads the switch and the URL from `env`.
+    /// Reads the switch and the URL from `env`. A rejected URL override turns telemetry
+    /// off (stderr note when it was asked for) rather than sending to the default.
     pub fn from_env(env: &Env) -> Self {
-        Self::new(telemetry_enabled(env), telemetry_url(env))
+        let enabled = telemetry_enabled(env);
+        match telemetry_url(env) {
+            Ok(url) => Self::new(enabled, url),
+            Err(note) => {
+                if enabled {
+                    eprintln!("Telemetry: off ({note})");
+                }
+                Self::new(false, TELEMETRY_URL)
+            }
+        }
     }
 
     pub fn new(enabled: bool, url: impl Into<String>) -> Self {
@@ -135,7 +172,8 @@ impl UsageTracker {
                     transport: "unknown".to_owned(),
                     ..State::default()
                 }),
-                flushing: AtomicBool::new(false),
+                flush_lock: tokio::sync::Mutex::new(()),
+                stop: Arc::new(Notify::new()),
             }),
         }
     }
@@ -160,12 +198,13 @@ impl UsageTracker {
         }
     }
 
-    /// The startup line (6.2.0 `describe()`), printed by the HTTP entry point.
+    /// The startup line (6.2.0 `describe()`), printed by both entry points when on: stderr
+    /// for stdio, stdout for HTTP. The URL is shown without userinfo or query.
     pub fn describe(&self) -> String {
         if self.inner.enabled {
             format!(
                 "Telemetry: on (anonymous tool-call counts to {}; set HAPPY_MCP_TELEMETRY=off to disable)",
-                self.inner.url
+                redact_url(&self.inner.url)
             )
         } else {
             "Telemetry: off".to_owned()
@@ -203,16 +242,22 @@ impl UsageTracker {
     }
 
     /// Posts and clears the counts. Best effort: returns whether a request completed;
-    /// nothing is surfaced and nothing is retried.
+    /// nothing is surfaced and nothing is retried. A flush already in flight is awaited
+    /// first, and the whole call is bounded (two send timeouts plus a second).
     pub async fn flush(&self) -> bool {
-        Self::flush_inner(&self.inner).await
+        tokio::time::timeout(
+            SEND_TIMEOUT * 2 + Duration::from_secs(1),
+            Self::flush_inner(&self.inner),
+        )
+        .await
+        .unwrap_or(false)
     }
 
     async fn flush_inner(inner: &Inner) -> bool {
-        if !inner.enabled || inner.flushing.swap(true, Ordering::AcqRel) {
+        if !inner.enabled {
             return false;
         }
-        let _guard = FlushGuard(&inner.flushing);
+        let _flushing = inner.flush_lock.lock().await;
         let body = {
             let mut state = inner.state();
             if state.counts.is_empty() {
@@ -225,6 +270,7 @@ impl UsageTracker {
         };
         let Ok(client) = reqwest::Client::builder()
             .timeout(SEND_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()
         else {
@@ -239,10 +285,11 @@ impl UsageTracker {
             .is_ok()
     }
 
-    /// 6.2.0 `stop()`: cancels the periodic flush.
+    /// 6.2.0 `stop()`: ends the periodic flush. A send already running is not cut off;
+    /// [`UsageTracker::flush`] waits for it.
     pub fn stop(&self) {
-        if let Some(timer) = self.inner.state().timer.take() {
-            timer.abort();
+        if self.inner.state().timer.take().is_some() {
+            self.inner.stop.notify_one();
         }
     }
 
@@ -255,11 +302,13 @@ impl UsageTracker {
         };
         // Weak: the timer must not keep an abandoned tracker alive.
         let inner = Arc::downgrade(&self.inner);
+        let stop = Arc::clone(&self.inner.stop);
         state.timer = Some(runtime.spawn(async move {
-            let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
-            ticker.tick().await; // the first tick is immediate
-            loop {
-                ticker.tick().await;
+            // A notification (stop) ends the loop; a timeout is the next interval.
+            while tokio::time::timeout(FLUSH_INTERVAL, stop.notified())
+                .await
+                .is_err()
+            {
                 let Some(inner) = inner.upgrade() else { break };
                 Self::flush_inner(&inner).await;
             }
@@ -326,14 +375,68 @@ mod tests {
 
     #[test]
     fn url_is_the_trimmed_override_or_the_project_default() {
-        assert_eq!(telemetry_url(&env(&[])), TELEMETRY_URL);
+        assert_eq!(telemetry_url(&env(&[])).unwrap(), TELEMETRY_URL);
         assert_eq!(
-            telemetry_url(&env(&[("HAPPY_MCP_TELEMETRY_URL", "  ")])),
+            telemetry_url(&env(&[("HAPPY_MCP_TELEMETRY_URL", "  ")])).unwrap(),
             TELEMETRY_URL
         );
         assert_eq!(
-            telemetry_url(&env(&[("HAPPY_MCP_TELEMETRY_URL", " http://x.test/p ")])),
-            "http://x.test/p"
+            telemetry_url(&env(&[("HAPPY_MCP_TELEMETRY_URL", " https://x.test/p ")])).unwrap(),
+            "https://x.test/p"
+        );
+    }
+
+    #[test]
+    fn override_must_be_https_or_loopback_http() {
+        for ok in [
+            "https://collector.example/t",
+            "http://127.0.0.1:9/t",
+            "http://localhost:9/t",
+            "http://[::1]:9/t",
+        ] {
+            assert!(
+                telemetry_url(&env(&[("HAPPY_MCP_TELEMETRY_URL", ok)])).is_ok(),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "http://collector.example/t",
+            "ftp://127.0.0.1/t",
+            "file:///tmp/x",
+            "collector.example/t",
+            "https://",
+        ] {
+            assert!(
+                telemetry_url(&env(&[("HAPPY_MCP_TELEMETRY_URL", bad)])).is_err(),
+                "{bad}"
+            );
+        }
+        // A rejected override disables telemetry; it never falls back to the default.
+        let tracker = UsageTracker::from_env(&env(&[
+            ("HAPPY_MCP_TELEMETRY", "1"),
+            ("HAPPY_MCP_TELEMETRY_URL", "http://collector.example/t"),
+        ]));
+        assert!(!tracker.enabled());
+    }
+
+    #[test]
+    fn rejection_note_does_not_echo_credentials_or_query() {
+        let note = telemetry_url(&env(&[(
+            "HAPPY_MCP_TELEMETRY_URL",
+            "http://user:secret@collector.example/t?token=abc",
+        )]))
+        .unwrap_err();
+        assert!(!note.contains("secret") && !note.contains("abc"), "{note}");
+    }
+
+    #[test]
+    fn describe_redacts_userinfo_and_query() {
+        let tracker = UsageTracker::new(true, "https://user:secret@x.test/p?token=abc#frag");
+        let line = tracker.describe();
+        assert!(line.contains("https://x.test/p;"), "{line}");
+        assert!(
+            !line.contains("secret") && !line.contains("token"),
+            "{line}"
         );
     }
 
@@ -470,6 +573,121 @@ mod tests {
         let accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await;
         assert!(accepted.is_ok(), "the 200th call flushes");
         tracker.stop();
+    }
+
+    /// Reads one HTTP request (headers plus `content-length` body) from `socket`.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        let mut received = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let n = socket.read(&mut buf).await.unwrap();
+            received.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&received).into_owned();
+            if let Some(at) = text.find("\r\n\r\n") {
+                let length = text[..at]
+                    .to_ascii_lowercase()
+                    .split("content-length: ")
+                    .nth(1)
+                    .and_then(|rest| rest.split("\r\n").next()?.parse::<usize>().ok())
+                    .unwrap_or(0);
+                if received.len() >= at + 4 + length {
+                    return text;
+                }
+            }
+            assert!(n > 0, "connection closed early");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stalled_endpoint_bounds_the_flush() {
+        // Accepts and reads, never answers.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_request(&mut socket).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let tracker = UsageTracker::new(true, url);
+        tracker.record("SN-Docs-Get");
+        let started = std::time::Instant::now();
+        assert!(!tracker.flush().await);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        tracker.stop();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed() {
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_url = format!("http://{}/elsewhere", target.local_addr().unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_request(&mut socket).await;
+            let reply = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nlocation: {target_url}\r\ncontent-length: 0\r\n\r\n"
+            );
+            socket.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let tracker = UsageTracker::new(true, url);
+        tracker.record("SN-Docs-Get");
+        assert!(
+            tracker.flush().await,
+            "the 307 itself is a completed request"
+        );
+        server.await.unwrap();
+        let followed = tokio::time::timeout(Duration::from_millis(300), target.accept()).await;
+        assert!(
+            followed.is_err(),
+            "the redirect target must not be contacted"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_flush_waits_for_the_flush_in_flight() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for first in [true, false] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                requests.push(read_request(&mut socket).await);
+                if first {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+                socket
+                    .write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+            requests
+        });
+        let tracker = UsageTracker::new(true, url);
+        for _ in 0..FLUSH_THRESHOLD {
+            tracker.record("SN-Docs-Get");
+        }
+        // The threshold flush is now sending its 200 calls (the server delays its reply).
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tracker.record("SN-Docs-Search");
+        tracker.stop();
+        assert!(tracker.flush().await, "the shutdown flush sends the rest");
+        let requests = server.await.unwrap();
+        assert!(
+            requests[0].contains(r#""SN-Docs-Get":200"#),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            requests[1].contains(r#""tools":{"SN-Docs-Search":1}"#),
+            "{}",
+            requests[1]
+        );
     }
 
     #[tokio::test]
