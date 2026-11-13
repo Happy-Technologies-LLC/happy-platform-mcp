@@ -716,7 +716,6 @@ impl RegisterInstance {
         let not_sent = |e| outcome(MutationOutcome::NotSent, Err(e));
         let input = match args {
             Value::Object(o) => o,
-            Value::Null => Object::new(),
             _ => return not_sent(invalid("Instance metadata must be an object")),
         };
         let input_value = Value::Object(input);

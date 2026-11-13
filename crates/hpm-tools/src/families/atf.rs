@@ -210,9 +210,10 @@ fn tool_text(response: &Value) -> (String, bool) {
 
 /// What a failed run call did on the instance.
 /// - input, bulk-limit and name-resolution errors: before the dispatch POST;
-/// - an sn_cicd error with an HTTP status: the instance refused the dispatch;
+/// - an sn_cicd 4xx (except 408): the instance refused the dispatch;
 /// - `CICD_NO_PROGRESS_ID`: the dispatch POST succeeded;
-/// - stale generation or a transport failure without a status: unknown.
+/// - 5xx, 408, a 2xx with a non-JSON body, a stale generation or a transport
+///   failure without a status: the run may have started, so unknown.
 fn run_error_outcome(e: &ClientError) -> MutationOutcome {
     if e.is_stale() {
         return MutationOutcome::Unknown;
@@ -222,7 +223,42 @@ fn run_error_outcome(e: &ClientError) -> MutationOutcome {
     }
     match (e.code.as_deref(), e.status) {
         (Some("CICD_NO_PROGRESS_ID"), _) => MutationOutcome::Committed,
-        (_, Some(_)) => MutationOutcome::Failed,
-        (_, None) => MutationOutcome::Unknown,
+        // A definite refusal: the instance rejected the dispatch.
+        (_, Some(s)) if (400..500).contains(&s) && s != 408 => MutationOutcome::Failed,
+        // 5xx, 408, a 2xx with a non-JSON body, or no status: the run may have started.
+        _ => MutationOutcome::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cicd(code: &str, status: Option<u16>) -> ClientError {
+        ClientError::new("CicdApiError", "x", Some(code)).with_status(status)
+    }
+
+    #[test]
+    fn dispatch_outcomes_fail_only_on_definite_refusals() {
+        let o = |code, status| run_error_outcome(&cicd(code, status));
+        assert_eq!(o("CICD_HTTP_ERROR", Some(403)), MutationOutcome::Failed);
+        assert_eq!(o("CICD_HTTP_ERROR", Some(400)), MutationOutcome::Failed);
+        assert_eq!(o("CICD_HTTP_ERROR", Some(503)), MutationOutcome::Unknown);
+        assert_eq!(o("CICD_HTTP_ERROR", Some(500)), MutationOutcome::Unknown);
+        assert_eq!(o("CICD_HTTP_ERROR", Some(408)), MutationOutcome::Unknown);
+        // 200 with an HTML body (cicd_request's non-JSON branch).
+        assert_eq!(
+            o("CICD_PLUGIN_INACTIVE", Some(200)),
+            MutationOutcome::Unknown
+        );
+        assert_eq!(o("CICD_HTTP_ERROR", None), MutationOutcome::Unknown);
+        assert_eq!(
+            o("CICD_NO_PROGRESS_ID", Some(200)),
+            MutationOutcome::Committed
+        );
+        assert_eq!(
+            run_error_outcome(&ClientError::plain("bad input")),
+            MutationOutcome::NotSent
+        );
     }
 }
