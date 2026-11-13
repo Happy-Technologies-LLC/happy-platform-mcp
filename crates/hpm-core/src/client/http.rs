@@ -27,7 +27,7 @@ impl Method {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HttpRequest {
     pub method: Method,
     /// Absolute URL.
@@ -37,6 +37,22 @@ pub struct HttpRequest {
     pub timeout: Option<Duration>,
     /// 0 = never follow a redirect (3xx is returned to the caller).
     pub max_redirects: u8,
+}
+
+/// Header values and the body may carry credentials (Authorization, Cookie,
+/// token-exchange form): `Debug` shows header names and the body length only.
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &names)
+            .field("body_len", &self.body.as_ref().map(Vec::len))
+            .field("timeout", &self.timeout)
+            .field("max_redirects", &self.max_redirects)
+            .finish()
+    }
 }
 
 impl HttpRequest {

@@ -134,9 +134,17 @@ pub fn is_credential_error_code(code: &str) -> bool {
 }
 
 /// Set of secret strings to scrub, longest first.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Redactor {
     values: BTreeSet<String>,
+}
+
+impl std::fmt::Debug for Redactor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Redactor")
+            .field("values", &self.values.len())
+            .finish()
+    }
 }
 
 impl Redactor {
@@ -315,13 +323,26 @@ pub fn enrich_message(status: Option<u16>, data: &Value, fallback: &str) -> Stri
 /// A raw failure from an HTTP exchange or an injected seam (token POST,
 /// interactive flow). Its fields are untrusted and may contain secrets; it is
 /// only ever turned into a [`ClientError`] through a [`Redactor`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct RawError {
     pub name: Option<String>,
     pub message: String,
     pub code: Option<String>,
     pub status: Option<u16>,
     pub data: Option<Value>,
+}
+
+/// Unredacted: `Debug` shows only the classification fields.
+impl std::fmt::Debug for RawError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawError")
+            .field("name", &self.name)
+            .field("message", &"<redacted>")
+            .field("code", &self.code)
+            .field("status", &self.status)
+            .field("data", &self.data.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl RawError {

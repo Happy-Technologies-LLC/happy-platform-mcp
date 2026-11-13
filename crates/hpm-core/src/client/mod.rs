@@ -7,7 +7,8 @@
 //! fails the call with `INSTANCE_STALE_DURING_REQUEST` instead of mixing two
 //! instances' credentials or responses.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use hpm_types::BoxFut;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
+use zeroize::Zeroize;
 
 use crate::credential::{InstanceCredentialStore, parse_credential_ref};
 use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError};
@@ -66,7 +68,7 @@ impl AuthType {
 /// `setInstance` arguments. `password`/`client_secret` are legacy inline
 /// secrets; `credential_ref` is the 6.x keychain reference (a string, or an
 /// object with `password`/`clientSecret`/`passwordRef`/`clientSecretRef`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct InstanceConfig {
     pub url: String,
     pub name: Option<String>,
@@ -82,6 +84,32 @@ pub struct InstanceConfig {
     pub redirect_port: Option<u16>,
     pub callback_path: Option<String>,
     pub credential_ref: Option<Value>,
+}
+
+/// `Some("<redacted>")` / `None` for an optional secret in `Debug` output.
+pub(crate) fn redacted<T>(value: &Option<T>) -> Option<&'static str> {
+    value.as_ref().map(|_| "<redacted>")
+}
+
+impl fmt::Debug for InstanceConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstanceConfig")
+            .field("url", &self.url)
+            .field("name", &self.name)
+            .field("username", &self.username)
+            .field("password", &redacted(&self.password))
+            .field("auth_type", &self.auth_type)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &redacted(&self.client_secret))
+            .field("grant_type", &self.grant_type)
+            .field("scope", &self.scope)
+            .field("authorize_url", &self.authorize_url)
+            .field("token_url", &self.token_url)
+            .field("redirect_port", &self.redirect_port)
+            .field("callback_path", &self.callback_path)
+            .field("credential_ref", &redacted(&self.credential_ref))
+            .finish()
+    }
 }
 
 /// Injected seams. Production wires the OS keychain, reqwest and the loopback
@@ -107,11 +135,28 @@ impl ClientDeps {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct OAuthCache {
     pub token: Option<String>,
     pub refresh_token: Option<String>,
     pub expiry: Option<i64>,
+}
+
+impl fmt::Debug for OAuthCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuthCache")
+            .field("token", &redacted(&self.token))
+            .field("refresh_token", &redacted(&self.refresh_token))
+            .field("expiry", &self.expiry)
+            .finish()
+    }
+}
+
+impl Drop for OAuthCache {
+    fn drop(&mut self) {
+        self.token.zeroize();
+        self.refresh_token.zeroize();
+    }
 }
 
 pub(crate) struct State {
@@ -123,8 +168,34 @@ pub(crate) struct State {
     pub basic_auth: Option<String>,
     pub oauth: Mutex<OAuthCache>,
     pub secrets: Mutex<HashMap<String, String>>,
-    pub request_values: Mutex<Vec<String>>,
+    /// Authorization values sent in this generation (`Set` per generation in
+    /// JS); deduplicated and capped at [`MAX_REQUEST_VALUES`], oldest first out.
+    pub request_values: Mutex<VecDeque<String>>,
     pub flights: Flights,
+}
+
+/// Distinct Authorization values remembered per generation for redaction.
+const MAX_REQUEST_VALUES: usize = 32;
+
+impl Drop for State {
+    fn drop(&mut self) {
+        // `InstanceConfig` stays plain data (struct-update construction); its
+        // secrets are wiped with the generation that owns them.
+        self.cfg.password.zeroize();
+        self.cfg.client_secret.zeroize();
+        self.basic_auth.zeroize();
+        let secrets = self.secrets.get_mut().unwrap_or_else(|e| e.into_inner());
+        for v in secrets.values_mut() {
+            v.zeroize();
+        }
+        let values = self
+            .request_values
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner());
+        for v in values.iter_mut() {
+            v.zeroize();
+        }
+    }
 }
 
 impl State {
@@ -195,10 +266,19 @@ impl State {
     }
 
     fn note_request_value(&self, value: &str) {
-        self.request_values
+        let mut values = self
+            .request_values
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(value.to_owned());
+            .unwrap_or_else(|e| e.into_inner());
+        if values.iter().any(|v| v == value) {
+            return;
+        }
+        if values.len() >= MAX_REQUEST_VALUES
+            && let Some(mut old) = values.pop_front()
+        {
+            old.zeroize();
+        }
+        values.push_back(value.to_owned());
     }
 }
 
@@ -570,7 +650,7 @@ impl ServiceNowClient {
             basic_auth,
             oauth: Mutex::new(OAuthCache::default()),
             secrets: Mutex::new(HashMap::new()),
-            request_values: Mutex::new(Vec::new()),
+            request_values: Mutex::new(VecDeque::new()),
             flights: Flights::default(),
         })
     }

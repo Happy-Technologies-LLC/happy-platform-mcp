@@ -597,10 +597,27 @@ pub fn classify_processor_outcome(
 }
 
 /// Insertion-ordered cookie jar (`Map` semantics: re-set keeps position).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct CookieJar {
     order: Vec<String>,
     values: BTreeMap<String, String>,
+}
+
+/// Session cookies are credentials: `Debug` lists cookie names only.
+impl std::fmt::Debug for CookieJar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CookieJar")
+            .field("names", &self.order)
+            .finish()
+    }
+}
+
+impl Drop for CookieJar {
+    fn drop(&mut self) {
+        for v in self.values.values_mut() {
+            zeroize::Zeroize::zeroize(v);
+        }
+    }
 }
 
 impl CookieJar {

@@ -67,11 +67,27 @@ impl TokenPoster for HttpTokenPoster {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PkcePair {
     pub code_verifier: String,
     pub code_challenge: String,
     pub code_challenge_method: &'static str,
+}
+
+impl std::fmt::Debug for PkcePair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PkcePair")
+            .field("code_verifier", &"<redacted>")
+            .field("code_challenge", &self.code_challenge)
+            .field("code_challenge_method", &self.code_challenge_method)
+            .finish()
+    }
+}
+
+impl Drop for PkcePair {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.code_verifier);
+    }
 }
 
 fn random_bytes<const N: usize>() -> [u8; N] {
@@ -393,7 +409,7 @@ pub fn exchange_params(
     params
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AuthCodeFlowConfig {
     pub authorize_url: String,
     pub token_url: String,
@@ -403,6 +419,27 @@ pub struct AuthCodeFlowConfig {
     pub redirect_port: u16,
     pub callback_path: String,
     pub timeout: Duration,
+}
+
+impl std::fmt::Debug for AuthCodeFlowConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthCodeFlowConfig")
+            .field("authorize_url", &self.authorize_url)
+            .field("token_url", &self.token_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &super::redacted(&self.client_secret))
+            .field("scope", &self.scope)
+            .field("redirect_port", &self.redirect_port)
+            .field("callback_path", &self.callback_path)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+impl Drop for AuthCodeFlowConfig {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.client_secret);
+    }
 }
 
 impl AuthCodeFlowConfig {

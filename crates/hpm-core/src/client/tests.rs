@@ -1415,4 +1415,50 @@ async fn table_and_sys_id_segments_cannot_retarget() {
     assert_eq!(h.transport.requests().len(), 4);
 }
 
+#[test]
+fn debug_output_never_shows_secrets() {
+    const SECRET: &str = "planted-secret-7f3a";
+    let mut cfg = oauth(None);
+    cfg.password = Some(SECRET.into());
+    cfg.client_secret = Some(SECRET.into());
+    cfg.credential_ref = Some(json!({ "password": SECRET }));
+    let cache = OAuthCache {
+        token: Some(SECRET.into()),
+        refresh_token: Some(SECRET.into()),
+        expiry: None,
+    };
+    let mut req = HttpRequest::new(Method::Post, URL);
+    req.set_header("Authorization", &format!("Bearer {SECRET}"));
+    req.set_header("Cookie", &format!("JSESSIONID={SECRET}"));
+    req.body = Some(SECRET.as_bytes().to_vec());
+    let pkce = oauth_code::PkcePair {
+        code_verifier: SECRET.into(),
+        code_challenge: "challenge".into(),
+        code_challenge_method: "S256",
+    };
+    let mut flow = AuthCodeFlowConfig::new(URL, URL, "cid");
+    flow.client_secret = Some(SECRET.into());
+    let mut jar = script_processor::CookieJar::default();
+    jar.set("JSESSIONID", SECRET);
+    let raw = RawError {
+        message: SECRET.into(),
+        data: Some(json!({ "token": SECRET })),
+        ..RawError::default()
+    };
+    let mut redactor = Redactor::new();
+    redactor.add(SECRET);
+    for out in [
+        format!("{cfg:?}"),
+        format!("{cache:?}"),
+        format!("{req:?}"),
+        format!("{pkce:?}"),
+        format!("{flow:?}"),
+        format!("{jar:?}"),
+        format!("{raw:?}"),
+        format!("{redactor:?}"),
+    ] {
+        assert!(!out.contains(SECRET), "{out}");
+    }
+}
+
 mod atf;
