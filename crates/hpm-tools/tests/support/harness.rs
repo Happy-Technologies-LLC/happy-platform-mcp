@@ -399,10 +399,22 @@ impl Client {
         method: &str,
         params: &Value,
     ) -> Result<(Value, Vec<Value>), String> {
+        self.request_opt(method, params).await
+    }
+
+    /// As [`Self::request`]; a `Null` `params` is omitted from the message.
+    async fn request_opt(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<(Value, Vec<Value>), String> {
         self.next_id += 1;
         let id = self.next_id;
-        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
-            .await?;
+        let mut msg = json!({"jsonrpc": "2.0", "id": id, "method": method});
+        if !params.is_null() {
+            msg["params"] = params.clone();
+        }
+        self.send(&msg).await?;
         let mut notifications = Vec::new();
         let read = async {
             loop {
@@ -763,4 +775,149 @@ pub fn first_difference(got: &Value, want: &Value, at: String) -> Option<String>
         _ if got != want => Some(format!("at {at}:\n  got:  {got}\n  want: {want}")),
         _ => None,
     }
+}
+
+/// One surface golden (`fixtures/golden/surface/*.json`) as 7.0 answered it,
+/// scrubbed like the tool goldens.
+pub struct SurfaceRun {
+    /// Per `exchanges[i]`: `{response, notifications, outbound}`.
+    pub exchanges: Vec<Value>,
+    /// Per `wireExchanges[i]`: the messages received after the raw line.
+    pub wire: Vec<Vec<Value>>,
+    /// Tool names the composition registers, of those the golden names.
+    pub registered: Vec<String>,
+}
+
+pub fn surface_dir() -> PathBuf {
+    repo_root().join("fixtures/golden/surface")
+}
+
+/// Replays a surface golden: `exchanges[0]` is the `initialize` sent as
+/// recorded, then `notifications/initialized`, then every later exchange (params
+/// omitted when the golden has none), then each `wireExchanges[].sentRaw` line.
+/// `mode: "docs-only"` builds the `--docs-only` composition.
+pub async fn run_surface(world: &World, golden: &Value) -> Result<SurfaceRun, String> {
+    let id = golden["id"].as_str().unwrap_or_default();
+    let sc = scenarios::scenario(id);
+    let sandbox = make_sandbox(world, id, &sc)?;
+    let docs_only = golden["mode"] == "docs-only";
+    let dispatcher = SingleUser::new(sandbox.config.clone(), sandbox.client_deps())
+        .docs_base_url(sandbox.raw_github_base.clone())
+        .working_dir(sandbox.work.clone())
+        .docs_only(docs_only)
+        .dispatcher(*KEY)?;
+    let named: Vec<String> = golden["exchanges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e["response"]["result"]["tools"].as_array())
+        .flatten()
+        .chain(
+            golden["exchanges"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| &e["request"]["params"]),
+        )
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    let mut registered: Vec<String> = named
+        .into_iter()
+        .filter(|t| dispatcher.get_tool(t).is_some())
+        .collect();
+    registered.sort();
+    registered.dedup();
+    let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
+        .registry(sandbox.config.clone())
+        .build();
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let server = tokio::spawn(hpm_protocol::stdio::serve_io(
+        handler,
+        server_read,
+        server_write,
+    ));
+    let (client_read, client_write) = tokio::io::split(client_io);
+    let mut client = Client {
+        write: client_write,
+        lines: BufReader::new(client_read).lines(),
+        next_id: 0,
+    };
+    world.stub.reset(sc.stub.clone());
+    world.raw.take();
+
+    let mut exchanges = Vec::new();
+    for (i, ex) in golden["exchanges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let method = ex["request"]["method"].as_str().unwrap_or_default();
+        let params = &ex["request"]["params"];
+        let params: Value = if params.is_null() {
+            Value::Null
+        } else {
+            serde_json::from_str(&world.unscrub(&params.to_string())).map_err(|e| e.to_string())?
+        };
+        world.stub.take();
+        world.raw.take();
+        client.drain().await?;
+        let (message, notifications) = client.request_opt(method, &params).await?;
+        if i == 0 {
+            client
+                .send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+                .await?;
+        }
+        tokio::time::sleep(SETTLE).await;
+        let outbound: Vec<Value> = world
+            .stub
+            .take()
+            .iter()
+            .map(|r| r.to_json("servicenow"))
+            .chain(world.raw.take().iter().map(|r| r.to_json("github-raw")))
+            .collect();
+        exchanges.push(json!({
+            "response": strip_id(message),
+            "notifications": notifications,
+            "outbound": comparable_outbound(&Value::Array(outbound)),
+        }));
+    }
+
+    let mut wire = Vec::new();
+    for w in golden["wireExchanges"].as_array().into_iter().flatten() {
+        client.drain().await?;
+        let mut line = w["sentRaw"].as_str().unwrap_or_default().to_owned();
+        line.push('\n');
+        client
+            .write
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| format!("write to server: {e}"))?;
+        let mut received = Vec::new();
+        while let Ok(next) =
+            tokio::time::timeout(Duration::from_millis(300), client.next_message()).await
+        {
+            match next? {
+                Some(msg) => received.push(msg),
+                None => break,
+            }
+        }
+        wire.push(received);
+    }
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+
+    let scrubber = Scrubber::new(world.literals());
+    Ok(SurfaceRun {
+        exchanges: exchanges
+            .iter()
+            .map(|e| fold_tmp(scrubber.deep(e)))
+            .collect(),
+        wire: wire
+            .iter()
+            .map(|r| r.iter().map(|m| fold_tmp(scrubber.deep(m))).collect())
+            .collect(),
+        registered,
+    })
 }
