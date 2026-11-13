@@ -47,11 +47,25 @@ impl Default for ProcessorOptions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TriggerOptions {
     pub wait: bool,
     pub timeout_ms: u64,
     pub interval_ms: u64,
+    /// The calling request: the completion poll stops once it is no longer
+    /// live (cancelled or past its deadline).
+    pub ctx: Option<hpm_types::context::RequestContext>,
+}
+
+impl std::fmt::Debug for TriggerOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TriggerOptions")
+            .field("wait", &self.wait)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("interval_ms", &self.interval_ms)
+            .field("ctx", &self.ctx.is_some())
+            .finish()
+    }
 }
 
 impl Default for TriggerOptions {
@@ -60,9 +74,15 @@ impl Default for TriggerOptions {
             wait: true,
             timeout_ms: 15_000,
             interval_ms: 500,
+            ctx: None,
         }
     }
 }
+
+/// Message of the "result unknown" error raised when the request stops being
+/// live while the trigger completion poll is waiting.
+pub const TRIGGER_POLL_CANCELLED: &str =
+    "Cancelled while waiting for the sys_trigger script to report completion";
 
 struct ScopeTarget {
     scope_id: String,
@@ -661,6 +681,9 @@ impl ServiceNowClient {
                 break None;
             }
             self.sleep_ms(options.interval_ms).await;
+            if options.ctx.as_ref().is_some_and(|c| !c.is_live()) {
+                return Err(inserted(ClientError::plain(TRIGGER_POLL_CANCELLED)));
+            }
         };
 
         let Some(record) = found else {

@@ -235,7 +235,15 @@ pub fn write_fix_script_file(
     }
 
     let root = resolve(scripts_dir)?;
-    if let Err(error) = std::fs::create_dir_all(&root) {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        // Owner-only for any directory created here (fix scripts are private).
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    if let Err(error) = builder.create(&root) {
         // An existing non-directory or dangling link is reported by lstat below.
         if error.kind() != std::io::ErrorKind::AlreadyExists {
             return Err(error.into());
@@ -256,7 +264,23 @@ pub fn write_fix_script_file(
         return Err(FixScriptError::NotDirectChild);
     }
 
-    create_new_private_file(&file_path, |handle| handle.write_all(content.as_bytes()))?;
+    // Ancestor check: write through the canonical directory (no symlinks left
+    // in it), then re-check that the created file still sits directly in that
+    // directory, so a symlink swapped into an ancestor between the checks and
+    // the open is detected and the file removed.
+    let canonical = std::fs::canonicalize(&root)?;
+    let real_path = canonical.join(file_name);
+    create_new_private_file(&real_path, |handle| handle.write_all(content.as_bytes()))?;
+    let parent = real_path.parent().map(std::fs::canonicalize).transpose()?;
+    if parent.as_deref() != Some(canonical.as_path())
+        || std::fs::symlink_metadata(&real_path)
+            .map(|m| m.is_file())
+            .ok()
+            != Some(true)
+    {
+        let _ = std::fs::remove_file(&real_path);
+        return Err(FixScriptError::ScriptsDirectoryIsSymlink(root));
+    }
     Ok(file_path)
 }
 

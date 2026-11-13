@@ -31,18 +31,6 @@ use support::harness::{self, World};
 
 /// Tools no family registers yet. Lanes delete names as they port them.
 const NOT_PORTED: &[&str] = &[
-    "SN-Clone-Update-Set",
-    "SN-Create-Activity",
-    "SN-Create-Fix-Script",
-    "SN-Create-Transition",
-    "SN-Create-Workflow",
-    "SN-Execute-Background-Script",
-    "SN-Get-Current-Update-Set",
-    "SN-List-Update-Sets",
-    "SN-Move-Records-To-Update-Set",
-    "SN-Publish-Workflow",
-    "SN-Set-Current-Application",
-    "SN-Set-Update-Set",
 ];
 
 /// Cases run at once (each has its own stubs and sandbox).
