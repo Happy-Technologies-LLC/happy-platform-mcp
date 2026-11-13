@@ -1109,6 +1109,38 @@ async fn processor_posts_once_with_session_and_parses() {
 }
 
 #[tokio::test]
+async fn processor_not_run_fallback_runs_before_the_single_logout() {
+    let h = harness(
+        basic(Some("pw")),
+        processor_fake("not authorized"),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let transport = h.transport.clone();
+    let run = h
+        .client
+        .execute_script_via_processor_or("x", &ProcessorOptions::default(), |e| async move {
+            // Stands in for the sys_trigger fallback: no logout has been sent yet.
+            let logouts = transport
+                .requests()
+                .iter()
+                .filter(|r| r.url.ends_with("/logout.do"))
+                .count();
+            (e.code, logouts)
+        })
+        .await
+        .expect("not-run is not an error here");
+    let ProcessorRun::NotRun((code, logouts_during)) = run else {
+        panic!("expected NotRun");
+    };
+    assert_eq!(code, Some(script_processor::NOT_RUN.into()));
+    assert_eq!(logouts_during, 0);
+    let urls: Vec<_> = h.transport.requests().into_iter().map(|r| r.url).collect();
+    assert_eq!(urls.iter().filter(|u| u.ends_with("/logout.do")).count(), 1);
+    assert!(urls.last().is_some_and(|u| u.ends_with("/logout.do")));
+}
+
+#[tokio::test]
 async fn processor_not_run_and_unknown_outcomes() {
     let h = harness(
         basic(Some("pw")),

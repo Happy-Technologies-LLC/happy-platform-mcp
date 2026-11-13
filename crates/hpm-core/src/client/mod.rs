@@ -45,7 +45,7 @@ use oauth_policy::{
     resolve_oauth_endpoints, trim_trailing_slashes,
 };
 pub use pinned::PinnedClient;
-pub use scripts::{ProcessorOptions, TriggerOptions};
+pub use scripts::{ProcessorOptions, ProcessorRun, TriggerOptions};
 
 /// One call's progress route (6.2.0 per-request `progressContext`): the call's
 /// sink plus its monotonically increasing counter. Never shared across calls.
