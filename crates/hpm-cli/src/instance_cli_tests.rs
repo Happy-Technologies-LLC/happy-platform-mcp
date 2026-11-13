@@ -42,6 +42,15 @@ fn registry_error() -> CodedError {
         .with("path", "/tmp/registry.json")
 }
 
+/// `safe_registry_error` resolves the path like Node's `path.resolve`, so on
+/// Windows `/tmp/registry.json` gains the current drive.
+fn registry_path_field() -> String {
+    format!(
+        "path={}",
+        resolve_path(Path::new("/tmp/registry.json")).display()
+    )
+}
+
 // --- fakes -------------------------------------------------------------------
 
 /// `registryWith(instances)`: in-memory state, call log, one-shot failures.
@@ -496,7 +505,7 @@ async fn add_stores_credential_before_metadata_and_rolls_back_a_new_secret_on_re
     );
     assert!(secrets.value("keychain:instance/dev/password").is_none());
     assert!(err.contains("REGISTRY_WRITE_FAILED"));
-    assert!(err.contains("path=/tmp/registry.json"));
+    assert!(err.contains(&registry_path_field()), "{err}");
 }
 
 #[tokio::test]
@@ -536,7 +545,7 @@ async fn restores_an_overwritten_deterministic_secret_when_registration_fails() 
         Some("previous-secret")
     );
     assert!(err.contains("REGISTRY_WRITE_FAILED"));
-    assert!(err.contains("path=/tmp/registry.json"));
+    assert!(err.contains(&registry_path_field()), "{err}");
 }
 
 #[tokio::test]
@@ -548,7 +557,7 @@ async fn reports_credential_rollback_failure_without_replacing_the_registration_
     let (code, _, err) = h.run(&["instance", "add"]).await;
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("REGISTRY_WRITE_FAILED"), "{err}");
-    assert!(err.contains("path=/tmp/registry.json"));
+    assert!(err.contains(&registry_path_field()), "{err}");
     assert!(err.contains("rollback failed"));
     assert!(!err.contains("fixture-secret-value"));
 }
@@ -725,7 +734,7 @@ async fn remove_restores_all_secrets_when_metadata_removal_fails() {
         Some("old-password")
     );
     assert!(err.contains("REGISTRY_WRITE_FAILED"));
-    assert!(err.contains("path=/tmp/registry.json"));
+    assert!(err.contains(&registry_path_field()), "{err}");
 }
 
 #[tokio::test]

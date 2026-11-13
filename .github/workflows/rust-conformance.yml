@@ -55,7 +55,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Tests (includes the HTTP protocol e2e suite)
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Trusted-root gate
         run: cargo run -p xtask --locked -- check-trusted-root
