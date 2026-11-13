@@ -18,7 +18,7 @@ impl ReqwestTransport {
     /// The client always builds URLs on [`DOCS_RAW_ORIGIN`]; `origin` only substitutes the
     /// scheme and authority actually dialled. Production uses the pinned origin; tests point
     /// it at a loopback server.
-    pub(crate) fn with_origin(origin: &str) -> Result<Self, DocsError> {
+    pub fn with_origin(origin: &str) -> Result<Self, DocsError> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             // 6.2.0's fetch ignored HTTP(S)_PROXY/ALL_PROXY; keep docs traffic direct.
