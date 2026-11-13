@@ -37,9 +37,10 @@ pub enum SchemaCompileError {
     Duplicate(&'static str),
 }
 
-/// Validators for a fixed set of tools, compiled up front.
+/// Validators for a fixed set of tools, compiled up front (with the parsed schema,
+/// needed to judge the lenient-type exceptions).
 pub struct CompiledSchemaValidator {
-    by_tool: HashMap<&'static str, Validator>,
+    by_tool: HashMap<&'static str, (Validator, serde_json::Value)>,
 }
 
 impl CompiledSchemaValidator {
@@ -57,7 +58,7 @@ impl CompiledSchemaValidator {
                     tool: tool.name,
                     reason: schema_error_text(&e),
                 })?;
-            if by_tool.insert(tool.name, validator).is_some() {
+            if by_tool.insert(tool.name, (validator, schema)).is_some() {
                 return Err(SchemaCompileError::Duplicate(tool.name));
             }
         }
@@ -76,11 +77,15 @@ impl CompiledSchemaValidator {
 
 impl SchemaValidator for CompiledSchemaValidator {
     fn validate(&self, tool: &ToolDescriptor, args: &serde_json::Value) -> Result<(), String> {
-        let Some(validator) = self.by_tool.get(tool.name) else {
+        let Some((validator, schema)) = self.by_tool.get(tool.name) else {
             // Fail closed: a tool whose schema was never compiled is not callable.
             return Err("tool input schema is not registered".into());
         };
-        let mut messages: Vec<String> = validator.iter_errors(args).map(|e| describe(&e)).collect();
+        let mut messages: Vec<String> = validator
+            .iter_errors(args)
+            .filter(|e| !lenient(schema, e))
+            .map(|e| describe(&e))
+            .collect();
         if messages.is_empty() {
             return Ok(());
         }
@@ -94,6 +99,53 @@ impl SchemaValidator for CompiledSchemaValidator {
             text.push_str(&format!("; and {} more", total - MAX_REPORTED));
         }
         Err(text)
+    }
+}
+
+/// Owner decision (W3): type checks are as lenient as 6.2.0 effectively was, which
+/// passed raw arguments to handlers that coerce or test truthiness. Exactly two
+/// exceptions, nothing else:
+/// - `number`/`integer` accepts a string that parses as one (`"2"`; JS uses the
+///   value in query strings and arithmetic, e.g. SN-List-Incidents `priority`).
+/// - `object` accepts a boolean when every declared property of that object is a
+///   boolean flag: JS tests the object for truthiness and then reads flags off it
+///   (`validateCatalogConfiguration`: `if (checks.ui_policies)` then
+///   `checks.ui_policies.check_actions_linked`, undefined on `true`).
+///
+/// Arguments reach the handler unchanged; no value is coerced here.
+fn lenient(schema: &serde_json::Value, err: &ValidationError<'_>) -> bool {
+    let ValidationErrorKind::Type { kind } = err.kind() else {
+        return false;
+    };
+    let expected: Vec<String> = match kind {
+        TypeKind::Single(t) => vec![t.to_string()],
+        TypeKind::Multiple(set) => set.iter().map(|t| t.to_string()).collect(),
+    };
+    let wants = |t: &str| expected.iter().any(|e| e == t);
+    match err.instance().as_ref() {
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            !s.is_empty()
+                && ((wants("integer") && s.parse::<i64>().is_ok())
+                    || (wants("number") && s.parse::<f64>().is_ok_and(f64::is_finite)))
+        }
+        serde_json::Value::Bool(_) if wants("object") => {
+            // `schema_path` ends in `/type`; its parent is the object's subschema.
+            let Some(parent) = err.schema_path().as_str().strip_suffix("/type") else {
+                return false;
+            };
+            schema
+                .pointer(parent)
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.as_object())
+                .is_some_and(|props| {
+                    !props.is_empty()
+                        && props
+                            .values()
+                            .all(|p| p.get("type").and_then(|t| t.as_str()) == Some("boolean"))
+                })
+        }
+        _ => false,
     }
 }
 
@@ -357,6 +409,43 @@ mod tests {
         // must never block on, or succeed through, a network fetch.
         if let Ok(v) = CompiledSchemaValidator::new(std::slice::from_ref(&t)) {
             assert!(v.validate(&t, &json!({"x": 1})).is_err());
+        }
+    }
+
+    const LENIENT: &str = r#"{
+        "type":"object",
+        "properties":{
+            "priority":{"type":"number"},
+            "count":{"type":"integer"},
+            "checks":{"type":"object","properties":{
+                "ui_policies":{"type":"object","properties":{"check_a":{"type":"boolean"}}},
+                "mixed":{"type":"object","properties":{"n":{"type":"string"}}}
+            }}
+        }
+    }"#;
+
+    #[test]
+    fn numeric_strings_and_flag_object_booleans_pass_like_6_2_0() {
+        let t = tool("Lenient", LENIENT);
+        let v = CompiledSchemaValidator::new(std::slice::from_ref(&t)).expect("compiles");
+        for ok in [
+            json!({"priority": "2"}),
+            json!({"priority": "2.5", "count": "3"}),
+            json!({"checks": {"ui_policies": true, "business_rules": true}}),
+            json!({"checks": {"ui_policies": false}}),
+        ] {
+            assert_eq!(v.validate(&t, &ok), Ok(()), "{ok}");
+        }
+        for bad in [
+            json!({"priority": "two"}),
+            json!({"priority": ""}),
+            json!({"count": "2.5"}),
+            json!({"priority": true}),
+            json!({"checks": true}),
+            json!({"checks": {"mixed": true}}),
+            json!({"checks": {"ui_policies": "yes"}}),
+        ] {
+            assert!(v.validate(&t, &bad).is_err(), "{bad}");
         }
     }
 }

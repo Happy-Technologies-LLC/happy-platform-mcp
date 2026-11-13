@@ -1406,7 +1406,7 @@ async fn table_and_sys_id_segments_cannot_retarget() {
         (
             "incident",
             "../../x",
-            "/tenant/api/now/table/incident/%2E%2E%2F%2E%2E%2Fx",
+            "/tenant/api/now/table/incident/..%2F..%2Fx",
         ),
         (
             "incident",
@@ -1421,8 +1421,14 @@ async fn table_and_sys_id_segments_cannot_retarget() {
         (
             "@evil.example",
             "a",
-            "/tenant/api/now/table/%40evil%2Eexample/a",
+            "/tenant/api/now/table/%40evil.example/a",
         ),
+        // 6.2.0 encodeURIComponent keeps `!~*'().` unescaped.
+        ("bad table!", "a", "/tenant/api/now/table/bad%20table!/a"),
+        ("x", "~*'()", "/tenant/api/now/table/x/~*'()"),
+        // An already-encoded dot segment is re-encoded, never decoded.
+        ("x", "%2e%2e", "/tenant/api/now/table/x/%252e%252e"),
+        ("x", "100%", "/tenant/api/now/table/x/100%25"),
     ] {
         h.client
             .get_record(table, id, &params)
@@ -1435,7 +1441,7 @@ async fn table_and_sys_id_segments_cannot_retarget() {
         assert!(h.client.get_record("incident", id, &params).await.is_err());
     }
     assert!(h.client.delete_record("..", "a").await.is_err());
-    assert_eq!(h.transport.requests().len(), 4);
+    assert_eq!(h.transport.requests().len(), 8);
 }
 
 #[test]
@@ -1513,6 +1519,42 @@ fn redaction_never_forgets_a_value_from_the_live_generation() {
     let out = st.redactor().redact("leak token-000-zz and token-099-zz");
     assert!(!out.contains("token-000-zz"), "{out}");
     assert!(!out.contains("token-099-zz"), "{out}");
+}
+
+#[derive(Default)]
+struct Sink(Mutex<Vec<(f64, Option<String>)>>);
+impl hpm_types::context::ProgressSink for Sink {
+    fn emit(&self, progress: f64, _: Option<f64>, message: Option<String>) -> BoxFut<'_, ()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((progress, message));
+        Box::pin(async {})
+    }
+}
+
+#[tokio::test]
+async fn progress_is_per_call_and_monotonic() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let (a, b) = (Arc::new(Sink::default()), Arc::new(Sink::default()));
+    let call_a = h.client.with_progress(a.clone());
+    let call_b = h.client.with_progress(b.clone());
+    call_a.notify_progress("a1", Some(3), None).await;
+    call_b.notify_progress("b1", None, None).await;
+    call_a.notify_progress("a2", Some(2), None).await;
+    // The shared client and other clones have no route: dropped.
+    h.client.notify_progress("none", None, None).await;
+    let got = |s: &Sink| s.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        got(&a),
+        vec![(3.0, Some("a1".into())), (4.0, Some("a2".into()))]
+    );
+    assert_eq!(got(&b), vec![(1.0, Some("b1".into()))]);
 }
 
 mod atf;

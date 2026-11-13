@@ -359,6 +359,55 @@ async fn unknown_tool_and_missing_property_are_invalid_params() {
 }
 
 #[tokio::test]
+async fn handler_validated_tool_sees_schema_invalid_input_others_do_not() {
+    const SELF_CHECKING: &str = "SN-List-Incidents";
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new().expect("registry");
+    registry
+        .register_tool(read_tool(READ_TOOL, CredentialNeed::None, &calls))
+        .expect("register");
+    registry
+        .register_tool(
+            read_tool(SELF_CHECKING, CredentialNeed::None, &calls).handler_validates_input(true),
+        )
+        .expect("register");
+    let services = Services {
+        validator: Arc::new(RequiredPropertiesValidator),
+        classification: Arc::new(KnownIncident),
+        policy: Arc::new(AllowAll),
+        protector: Arc::new(PassThrough),
+        credentials: Arc::new(LocalOnlyCredentials),
+        audit: Arc::new(Recorder::default()),
+        script_guard: ScriptOperandGuard {
+            shared_account: false,
+        },
+        usage: None,
+    };
+    let d = Dispatcher::new(registry, services, key());
+    let bad = serde_json::json!({"secret": "x"});
+    // Unflagged: generic -32602 and the handler never runs.
+    let strict = d.call_tool(&ctx(), READ_TOOL, bad.clone()).await;
+    assert!(
+        matches!(strict, Err(ToolError::InvalidParams(_))),
+        "{strict:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // Flagged: the handler receives the unchanged bad input (Echo renders it).
+    let out = d
+        .call_tool(&ctx(), SELF_CHECKING, bad.clone())
+        .await
+        .expect("handler runs");
+    assert_eq!(
+        out,
+        DispatchOutcome::Rendered(Rendered {
+            text: bad.to_string(),
+            is_error: None
+        })
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn query_script_operand_guard_runs_in_single_user_mode() {
     let calls = Arc::new(AtomicUsize::new(0));
     let d = dispatcher(&calls);

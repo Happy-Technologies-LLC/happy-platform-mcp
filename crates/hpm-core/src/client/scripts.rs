@@ -334,11 +334,18 @@ impl ServiceNowClient {
             Ok(response) => classify_processor_outcome(&Ok(response)),
             Err(e) => classify_processor_outcome(&Err(e)),
         };
-        session.end().await;
+        // The UI logout (intentional 7.0 difference, RFC §4) is the operation's
+        // last request: after the execution-history read, never before it.
         let result = match result {
             ProcessorOutcome::Ran(r) => r,
-            ProcessorOutcome::NotRun(reason) => return Err(not_run_error(&reason)),
-            ProcessorOutcome::Unknown(reason) => return Err(unknown_outcome_error(&reason)),
+            ProcessorOutcome::NotRun(reason) => {
+                session.end().await;
+                return Err(not_run_error(&reason));
+            }
+            ProcessorOutcome::Unknown(reason) => {
+                session.end().await;
+                return Err(unknown_outcome_error(&reason));
+            }
         };
         let mut warnings = result.warnings.clone();
         if let Some(t) = target.as_ref().filter(|t| t.inactive) {
@@ -394,6 +401,7 @@ impl ServiceNowClient {
             "links".into(),
             script_execution_links(result.execution_history_id.as_deref(), rollback.as_deref()),
         );
+        session.end().await;
         Ok(Value::Object(out))
     }
 
