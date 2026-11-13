@@ -305,10 +305,39 @@ mod selftest {
             assert!(step.is_object(), "{dev:?}: no such step");
             // The recorded 6.2.0 behavior must fail the 7.0 expectation.
             let recorded = harness::outbound_of(step);
-            assert!(!dev.expected.check(step, &recorded).is_empty(), "{dev:?}");
+            assert!(
+                !dev.expected
+                    .check(step, &recorded, step, &recorded)
+                    .is_empty(),
+                "{dev:?}"
+            );
         }
         let ok = json!({"response": {"error": {"code": -32602, "message": "m"}}});
-        assert!(Expected::InvalidParamsNoOutbound.check(&ok, &[]).is_empty());
+        assert!(
+            Expected::InvalidParamsNoOutbound
+                .check(&ok, &[], &ok, &[])
+                .is_empty()
+        );
+
+        let text = |t: &str| json!({"response": {"result": {"isError": true, "content": [{"type": "text", "text": t}]}}});
+        let want = text("Error: Batch create failed at operation 1: 403 ACL");
+        let out = [json!({"path": "/api/now/table/incident"})];
+        let batch = Expected::RecordedTextThenNotRolledBack { created: 1 };
+        let good = text(
+            "Error: Batch create failed at operation 1: 403 ACL\nAlready created and not rolled back: {\"operation_0\":\"abc\"}. Do not re-run the whole batch.",
+        );
+        assert!(batch.check(&good, &out, &want, &out).is_empty());
+        assert!(!batch.check(&good, &[], &want, &out).is_empty());
+        for bad in [
+            "Error: Batch create failed at operation 1: 403 ACL",
+            "Error: Batch create failed at operation 1: 403 ACL\nAlready created and not rolled back: {}. Do not re-run the whole batch.",
+            "Error: Batch create failed at operation 1: 403 ACL\nAlready created and not rolled back: {\"operation_0\":\"abc\"}. Do not re-run the whole batch. extra",
+        ] {
+            assert!(
+                !batch.check(&text(bad), &out, &want, &out).is_empty(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

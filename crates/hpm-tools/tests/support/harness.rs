@@ -689,7 +689,8 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
         let got = fold_tmp(scrubber.deep(got));
         if let Some(dev) = super::deviations::lookup(id, i) {
             let outbound = comparable_outbound(&got["outbound"]);
-            for p in dev.expected.check(&got, &outbound) {
+            let want_outbound = comparable_outbound(&want["outbound"]);
+            for p in dev.expected.check(&got, &outbound, want, &want_outbound) {
                 problems.push(format!("step {i} deviation ({}): {p}", dev.reason));
             }
             continue;
