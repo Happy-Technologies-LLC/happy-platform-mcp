@@ -1,0 +1,17 @@
+[package]
+name = "hpm-core"
+description = "happy-platform-mcp core: configuration, instance registry, keychain and token store, ServiceNow client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# No `trusted-root`: only the composition root (hpm-cli) enables it.
+hpm-types.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

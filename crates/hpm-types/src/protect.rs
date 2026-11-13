@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use crate::BoxFut;
-#[cfg(feature = "trusted-root")]
 use crate::context::ProgressSink;
 use crate::context::RequestContext;
 use crate::operation::{OperationSet, Subject};
@@ -107,15 +106,14 @@ pub trait DataProtector: Send + Sync {
 
 /// The only progress sink a handler can reach after admission: every message passes
 /// `protect_progress` under the call's pinned context. Built by the dispatcher at
-/// admission (RFC §10.1 step 8). Composition-root only.
-#[cfg(feature = "trusted-root")]
+/// admission (RFC §10.1 step 8). Attaching it to a context needs an
+/// [`crate::context::AdmissionKey`].
 pub struct ProtectedProgress {
     inner: Arc<dyn ProgressSink>,
     protector: Arc<dyn DataProtector>,
     pinned: Arc<ProtectionContext>,
 }
 
-#[cfg(feature = "trusted-root")]
 impl ProtectedProgress {
     pub fn new(
         inner: Arc<dyn ProgressSink>,
@@ -130,7 +128,6 @@ impl ProtectedProgress {
     }
 }
 
-#[cfg(feature = "trusted-root")]
 impl ProgressSink for ProtectedProgress {
     fn emit(&self, progress: f64, total: Option<f64>, message: Option<String>) -> BoxFut<'_, ()> {
         let message = message.and_then(|m| self.protector.protect_progress(&self.pinned, m));

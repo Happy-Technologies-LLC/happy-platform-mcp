@@ -15,14 +15,34 @@ authors = ["Happy Technologies LLC"]
 [workspace.dependencies]
 # Internal crates carry BOTH path and exact version so `cargo publish` works (D-07 §1.6).
 hpm-types = { path = "crates/hpm-types", version = "=7.0.0-alpha.0" }
+hpm-core = { path = "crates/hpm-core", version = "=7.0.0-alpha.0" }
+hpm-docs = { path = "crates/hpm-docs", version = "=7.0.0-alpha.0" }
+hpm-tools = { path = "crates/hpm-tools", version = "=7.0.0-alpha.0" }
+hpm-protocol = { path = "crates/hpm-protocol", version = "=7.0.0-alpha.0" }
 # External dependencies are declared here only (lead-owned); crates use `x.workspace = true`.
+# Floors are the versions proven by the P1 spikes (spikes/*/Cargo.lock); rmcp is exact.
+# Lanes enable extra features per crate (`features = [...]` adds to these).
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+clap = { version = "4.6.7", features = ["derive"] }
+inquire = "0.9.4"
+keyring-core = "1.0.1"
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
+windows-native-keyring-store = "1.1.0"
+notify = "8.2.2"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "json"] }
 rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-io"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
+rusqlite = { version = "0.42", features = ["bundled"] }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11" # same major as rmcp's, so `cargo tree -d` stays empty
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-std"] }
 tokio-util = "0.7"
+tower-http = "0.6.11"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7"] }
 zeroize = "1"
 

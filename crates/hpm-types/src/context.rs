@@ -1,8 +1,9 @@
 //! RequestContext (RFC §2): resolved once per call (F5), immutable afterwards.
 //!
-//! Fields are private. Only the trusted composition root (feature `trusted-root`) can
-//! build a context or attach the bound credential and pinned protection context at
-//! admission (review edits 3, 4, 6).
+//! Fields are private. Only a `TrustedRoot` (constructible with feature `trusted-root`,
+//! composition root only) builds a context, and attaching the bound credential and
+//! pinned protection context at admission needs an [`AdmissionKey`] minted by that
+//! root (review edits 3, 4, 6).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -88,7 +89,6 @@ pub struct ResolvedInstance {
 pub struct CallId(String);
 
 impl CallId {
-    #[cfg(feature = "trusted-root")]
     fn generate() -> Self {
         Self(uuid::Uuid::now_v7().to_string())
     }
@@ -177,10 +177,10 @@ impl RequestContext {
     }
 
     /// Dispatcher step 8 (RFC §10.1): attach the admission products and return a new
-    /// immutable context. Composition-root only.
-    #[cfg(feature = "trusted-root")]
+    /// immutable context. Requires the [`AdmissionKey`] the composition root minted.
     pub fn admitted(
         &self,
+        _key: &AdmissionKey,
         credential: Option<CredentialBinding>,
         protection: Option<Arc<ProtectionContext>>,
         progress: Arc<dyn ProgressSink>,
@@ -229,9 +229,23 @@ pub enum AdmissionError {
     UnexpectedIdentity,
 }
 
-/// Trusted composition root. Transport and deployment mode come from here, never
-/// from the presence or absence of request extensions (edit 6).
-#[cfg(feature = "trusted-root")]
+/// Capability to attach admission products ([`RequestContext::admitted`]). Only the
+/// composition root can mint one (feature `trusted-root`) and hands it to the
+/// dispatcher; lane crates compile without the feature and cannot create it.
+#[derive(Clone, Copy, Debug)]
+pub struct AdmissionKey(());
+
+impl AdmissionKey {
+    #[cfg(feature = "trusted-root")]
+    pub fn mint() -> Self {
+        Self(())
+    }
+}
+
+/// Trusted admission for one listener. Transport and deployment mode come from here,
+/// never from the presence or absence of request extensions (edit 6). Constructors
+/// need feature `trusted-root` (composition root only); a protocol adapter receives a
+/// built `TrustedRoot` and calls [`TrustedRoot::admit`].
 #[derive(Debug)]
 pub struct TrustedRoot {
     mode: DeploymentMode,
@@ -259,6 +273,9 @@ impl TrustedRoot {
             transport: TransportKind::LegacySse,
         }
     }
+}
+
+impl TrustedRoot {
     pub fn mode(&self) -> DeploymentMode {
         self.mode
     }

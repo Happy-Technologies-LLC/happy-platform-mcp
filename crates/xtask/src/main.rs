@@ -101,7 +101,10 @@ fn fixtures_verify() -> Result<ExitCode, String> {
             fs::read(golden.join(rel)).map_err(|e| format!("fixtures/golden/{rel}: {e}"))?;
         let want_len = entry["bytes"].as_u64();
         let want_sha = entry["sha256"].as_str();
-        let got_sha = format!("{:x}", Sha256::digest(&bytes));
+        let got_sha: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         if want_len != Some(bytes.len() as u64) || want_sha != Some(got_sha.as_str()) {
             problems.push(format!("hash/size mismatch: fixtures/golden/{rel}"));
         }

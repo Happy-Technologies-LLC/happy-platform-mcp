@@ -6,8 +6,9 @@
 //! purpose: contracts stay transport-agnostic and testable without a transport; the
 //! protocol adapter maps rmcp's request context into [`context::RequestContext`].
 //!
-//! The `trusted-root` feature gates construction of request contexts and admission
-//! products. Only the composition root enables it (RFC §2.1).
+//! The `trusted-root` feature gates the constructors of [`context::TrustedRoot`] and
+//! [`context::AdmissionKey`]. Only the composition root (hpm-cli) enables it; it hands
+//! the root to the protocol adapter and the key to the dispatcher (RFC §2.1).
 
 pub mod audit;
 pub mod classification;

@@ -9,17 +9,18 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
-# Only the composition root enables this. Tool and handler crates depend on
-# hpm-types WITHOUT it, so they cannot build a RequestContext, manufacture a
-# principal or attach admission products (RFC v0.2 §2.1, review edit 6).
-trusted-root = ["dep:uuid"]
+# Only the composition root enables this. It unlocks the constructors of
+# `TrustedRoot` and `AdmissionKey`. Every other crate depends on hpm-types WITHOUT
+# it, so it cannot manufacture a principal or attach admission products; the
+# dispatcher receives a key minted by the root (RFC v0.2 §2.1, review edit 6).
+trusted-root = []
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
-uuid = { workspace = true, optional = true }
+uuid.workspace = true
 zeroize.workspace = true
 
 [lints]
