@@ -30,6 +30,7 @@ pub mod http;
 pub mod oauth_code;
 pub mod oauth_policy;
 mod pickers;
+mod pinned;
 pub mod script_processor;
 mod scripts;
 #[cfg(test)]
@@ -43,6 +44,7 @@ use oauth_policy::{
     MAX_URL_LENGTH, TRUSTED_OAUTH_ORIGINS_ENV, assert_approved_oauth_endpoint,
     resolve_oauth_endpoints, trim_trailing_slashes,
 };
+pub use pinned::PinnedClient;
 pub use scripts::{ProcessorOptions, TriggerOptions};
 
 /// Progress callback: `(message, current, total)`.
@@ -135,6 +137,24 @@ pub struct ClientDeps {
 impl ClientDeps {
     pub fn env_trusted_origins() -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
         Arc::new(|| std::env::var(TRUSTED_OAUTH_ORIGINS_ENV).ok())
+    }
+
+    /// Production seams: reqwest transport, system clock, the given secret store
+    /// for credential refs and OAuth refresh tokens, the loopback browser sign-in.
+    pub fn production(secrets: Arc<dyn SecretStore>) -> Result<Self, ClientError> {
+        let transport = http::ReqwestTransport::new().map_err(|e| ClientError::plain(e.message))?;
+        Ok(Self {
+            transport: Arc::new(transport),
+            clock: Arc::new(http::SystemClock),
+            credential_store: InstanceCredentialStore::new(secrets.clone()),
+            token_store: secrets,
+            auth_flow: Arc::new(oauth_code::LoopbackAuthCodeFlow::new(Arc::new(
+                oauth_code::SystemBrowserOpener,
+            ))),
+            token_poster: None,
+            os_user: crate::token_store::os_user().unwrap_or_default(),
+            trusted_origins: Self::env_trusted_origins(),
+        })
     }
 }
 
@@ -596,6 +616,58 @@ fn non_empty(v: Option<&String>) -> Option<&str> {
     v.map(String::as_str).filter(|s| !s.is_empty())
 }
 
+fn result_of(data: Value) -> Value {
+    match data {
+        Value::Object(mut m) => m.remove("result").unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+/// `getRecords` path: Table API query parameters in the 6.x order.
+fn records_path(table: &str, query: &RecordQuery) -> Result<String, ClientError> {
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for (name, value) in [
+        ("sysparm_query", &query.query),
+        ("sysparm_limit", &query.limit),
+        ("sysparm_fields", &query.fields),
+        ("sysparm_offset", &query.offset),
+        ("sysparm_order_by", &query.order_by),
+    ] {
+        if let Some(v) = non_empty(value.as_ref()) {
+            pairs.push((name, v));
+        }
+    }
+    Ok(format!(
+        "{}?{}",
+        table_path(table, None)?,
+        form_encode(&pairs)
+    ))
+}
+
+/// `getRecord` path.
+fn record_path(table: &str, sys_id: &str, params: &RecordParams) -> Result<String, ClientError> {
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for (name, value) in [
+        ("sysparm_fields", &params.fields),
+        ("sysparm_display_value", &params.display_value),
+        (
+            "sysparm_exclude_reference_link",
+            &params.exclude_reference_link,
+        ),
+    ] {
+        if let Some(v) = non_empty(value.as_ref()) {
+            pairs.push((name, v));
+        }
+    }
+    let qs = form_encode(&pairs);
+    let base = table_path(table, Some(sys_id))?;
+    Ok(if qs.is_empty() {
+        base
+    } else {
+        format!("{base}?{qs}")
+    })
+}
+
 pub(crate) struct Inner {
     deps: ClientDeps,
     current: RwLock<Arc<State>>,
@@ -676,6 +748,16 @@ impl ServiceNowClient {
 
     pub fn generation(&self) -> u64 {
         self.state().generation
+    }
+
+    /// A handle pinned to `generation` (`client.pinned(generation)`, W2-B L-C).
+    /// Stale when `generation` is not the current one.
+    pub fn pinned(&self, generation: u64) -> Result<PinnedClient, ClientError> {
+        let st = self.state();
+        if st.generation != generation {
+            return Err(ClientError::stale());
+        }
+        Ok(PinnedClient::new(self.clone(), st))
     }
 
     /// Drops the cached access token of `generation` (after a 401). Returns
@@ -1215,7 +1297,21 @@ impl ServiceNowClient {
         path: &str,
         body: Option<&Value>,
     ) -> Result<(u16, Value), ClientError> {
-        let st = self.state();
+        self.rest_in(&self.state(), method, path, body).await
+    }
+
+    /// [`Self::rest_with_status`] against the generation `st`: fails closed
+    /// (stale) before any credential is built when `st` is no longer current,
+    /// and after every await point (see [`PinnedClient`]).
+    pub(crate) async fn rest_in(
+        &self,
+        st: &Arc<State>,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value), ClientError> {
+        let st = st.clone();
+        self.assert_current(&st)?;
         // `requestBelongsToInstance`: checked before any credential is built.
         let url = resolve_instance_request(&st.url, path).ok_or_else(ClientError::stale)?;
         let header = self.auth_header_for(&st).await?;
@@ -1269,33 +1365,14 @@ impl ServiceNowClient {
         })
     }
 
-    fn result_of(data: Value) -> Value {
-        match data {
-            Value::Object(mut m) => m.remove("result").unwrap_or(Value::Null),
-            _ => Value::Null,
-        }
-    }
-
     /// `getRecords`.
     pub async fn get_records(
         &self,
         table: &str,
         query: &RecordQuery,
     ) -> Result<Value, ClientError> {
-        let mut pairs: Vec<(&str, &str)> = Vec::new();
-        for (name, value) in [
-            ("sysparm_query", &query.query),
-            ("sysparm_limit", &query.limit),
-            ("sysparm_fields", &query.fields),
-            ("sysparm_offset", &query.offset),
-            ("sysparm_order_by", &query.order_by),
-        ] {
-            if let Some(v) = non_empty(value.as_ref()) {
-                pairs.push((name, v));
-            }
-        }
-        let path = format!("{}?{}", table_path(table, None)?, form_encode(&pairs));
-        Ok(Self::result_of(self.rest(Method::Get, &path, None).await?))
+        let path = records_path(table, query)?;
+        Ok(result_of(self.rest(Method::Get, &path, None).await?))
     }
 
     /// `getRecord`.
@@ -1305,31 +1382,12 @@ impl ServiceNowClient {
         sys_id: &str,
         params: &RecordParams,
     ) -> Result<Value, ClientError> {
-        let mut pairs: Vec<(&str, &str)> = Vec::new();
-        for (name, value) in [
-            ("sysparm_fields", &params.fields),
-            ("sysparm_display_value", &params.display_value),
-            (
-                "sysparm_exclude_reference_link",
-                &params.exclude_reference_link,
-            ),
-        ] {
-            if let Some(v) = non_empty(value.as_ref()) {
-                pairs.push((name, v));
-            }
-        }
-        let qs = form_encode(&pairs);
-        let base = table_path(table, Some(sys_id))?;
-        let path = if qs.is_empty() {
-            base
-        } else {
-            format!("{base}?{qs}")
-        };
-        Ok(Self::result_of(self.rest(Method::Get, &path, None).await?))
+        let path = record_path(table, sys_id, params)?;
+        Ok(result_of(self.rest(Method::Get, &path, None).await?))
     }
 
     pub async fn create_record(&self, table: &str, data: &Value) -> Result<Value, ClientError> {
-        Ok(Self::result_of(
+        Ok(result_of(
             self.rest(Method::Post, &table_path(table, None)?, Some(data))
                 .await?,
         ))
@@ -1341,7 +1399,7 @@ impl ServiceNowClient {
         sys_id: &str,
         data: &Value,
     ) -> Result<Value, ClientError> {
-        Ok(Self::result_of(
+        Ok(result_of(
             self.rest(Method::Put, &table_path(table, Some(sys_id))?, Some(data))
                 .await?,
         ))

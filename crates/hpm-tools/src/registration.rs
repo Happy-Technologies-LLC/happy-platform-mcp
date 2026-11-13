@@ -1,12 +1,17 @@
-//! Tool and resource registration. Each tool lane exposes
-//! `pub fn register(registry: &mut ToolRegistry) -> Result<(), RegistrationError>`;
-//! the composition root calls every lane's `register` in 6.2.0 `tools/list` order (C5)
-//! and hands the registry to [`crate::dispatcher::Dispatcher::new`]. Listing order
-//! is registration order.
+//! Tool and resource registration. Each family module
+//! (`crate::families::{crud,itsm,update_sets,atf,instances,docs}`) exposes
+//! `pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), RegistrationError>`;
+//! the composition root calls them all and hands the registry to
+//! [`crate::dispatcher::Dispatcher::new`].
+//!
+//! Listing order (C5): 6.2.0 interleaves families in `tools/list`, so the registry
+//! keeps tools in D-05 row order, which is the 6.2.0 `tools/list` order, whatever
+//! order families register in. Resources list in registration order.
 //!
 //! Every tool must match its row in the bundled D-05 classification
 //! ([`ToolClassificationSet::bundled`]): declared access floor, output class, retry
-//! eligibility and side-effect class (review M3).
+//! eligibility and side-effect class (review M3). The registry attaches the row's
+//! `annotation_hints` as the descriptor's MCP annotations (D4, advisory only).
 
 use hpm_types::classification::{SideEffect, ToolClassification, ToolClassificationSet};
 use hpm_types::tool::{ResourceDescriptor, SideEffectClass, ToolDescriptor};
@@ -81,7 +86,7 @@ impl ToolRegistry {
         })
     }
 
-    pub fn register_tool(&mut self, tool: ToolDescriptor) -> Result<(), RegistrationError> {
+    pub fn register_tool(&mut self, mut tool: ToolDescriptor) -> Result<(), RegistrationError> {
         if self.tools.iter().any(|t| t.name == tool.name) {
             return Err(RegistrationError::DuplicateTool(tool.name));
         }
@@ -99,7 +104,15 @@ impl ToolRegistry {
                 field,
             });
         }
-        self.tools.push(tool);
+        tool.annotations = row.annotation_hints;
+        let rank = |name: &str| self.classification.iter().position(|r| r.name == name);
+        let own = rank(tool.name);
+        let at = self
+            .tools
+            .iter()
+            .position(|t| rank(t.name) > own)
+            .unwrap_or(self.tools.len());
+        self.tools.insert(at, tool);
         Ok(())
     }
 
@@ -114,7 +127,7 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Registered tools in registration (`tools/list`) order; used to compile input schemas.
+    /// Registered tools in D-05 (6.2.0 `tools/list`) order; used to compile input schemas.
     pub fn tools(&self) -> &[ToolDescriptor] {
         &self.tools
     }
@@ -178,6 +191,24 @@ mod tests {
             registry.register_tool(from_row(row)).expect(&row.name);
         }
         assert_eq!(registry.tools().len(), 60);
+    }
+
+    #[test]
+    fn listing_follows_d05_order_and_carries_its_hints() {
+        let mut registry = ToolRegistry::new().expect("registry");
+        let rows: Vec<_> = SET.iter().collect();
+        for row in rows.iter().rev() {
+            let mut tool = from_row(row);
+            tool.annotations = None;
+            registry.register_tool(tool).expect(&row.name);
+        }
+        let listed: Vec<_> = registry.tools().iter().map(|t| t.name).collect();
+        let expected: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(listed, expected);
+        for (tool, row) in registry.tools().iter().zip(rows) {
+            assert_eq!(tool.annotations, row.annotation_hints, "{}", row.name);
+        }
+        assert!(registry.tools().iter().any(|t| t.annotations.is_some()));
     }
 
     #[test]

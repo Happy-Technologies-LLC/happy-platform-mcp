@@ -13,7 +13,7 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
-use crate::tool::{AccessClass, OutputClass, RetryEligibility};
+use crate::tool::{AccessClass, OutputClass, RetryEligibility, ToolAnnotations};
 
 /// Bundled classification JSON (rev 2).
 pub const TOOL_CLASSIFICATION_JSON: &str = include_str!("../data/tool-classification.json");
@@ -80,6 +80,9 @@ pub struct ToolClassification {
     #[serde(rename = "dp_output_class")]
     pub output: OutputClass,
     pub retry: ClassifiedRetry,
+    /// MCP tool hints (D4), advisory only: never read by policy or protection.
+    #[serde(default)]
+    pub annotation_hints: Option<ToolAnnotations>,
 }
 
 impl ToolClassification {

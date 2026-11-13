@@ -270,7 +270,7 @@ pub async fn run(
         Ok(k) => k,
         Err(e) => return refuse(&e),
     };
-    let dispatcher = match single_user_dispatcher() {
+    let dispatcher = match single_user_dispatcher(config.clone()) {
         Ok(d) => d,
         Err(e) => return refuse(&e),
     };
@@ -317,8 +317,12 @@ pub async fn run(
     http.shutdown_grace = SHUTDOWN_GRACE;
     let (streamable_root, sse_root) = http_roots();
     let app = HttpApp::new(
-        McpHandler::new(streamable_root, dispatcher.clone()),
-        McpHandler::new(sse_root, dispatcher),
+        McpHandler::builder(streamable_root, dispatcher.clone())
+            .registry(config.clone())
+            .build(),
+        McpHandler::builder(sse_root, dispatcher)
+            .registry(config.clone())
+            .build(),
         http,
     );
 

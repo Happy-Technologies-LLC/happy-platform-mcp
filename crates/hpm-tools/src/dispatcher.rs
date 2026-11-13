@@ -17,7 +17,7 @@ use hpm_types::context::{AdmissionKey, ProgressSink, RequestContext};
 use hpm_types::credential::{CredentialError, CredentialNeed, CredentialProvider};
 use hpm_types::dispatch::{
     DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered, SchemaValidator,
-    UNCLASSIFIED_TABLE,
+    UNCLASSIFIED_TABLE, UsageSink,
 };
 use hpm_types::operation::{
     Action, ClassificationSource, Operation, OperationSet, ScriptOperandGuard, Subject,
@@ -51,6 +51,9 @@ pub struct Services {
     pub credentials: Arc<dyn CredentialProvider>,
     pub audit: Arc<dyn AuditSink>,
     pub script_guard: ScriptOperandGuard,
+    /// 6.2.0 per-call usage count (G7). Called once per `tools/call`, after lookup,
+    /// with the registered tool name only. `None`: no telemetry.
+    pub usage: Option<Arc<dyn UsageSink>>,
 }
 
 pub struct Dispatcher {
@@ -290,10 +293,25 @@ impl Dispatcher {
             .get_tool(name)
             .ok_or_else(|| ToolError::InvalidParams(format!("Unknown tool: {name}")))?;
         let subject = Subject::Tool(tool.name);
+        if let Some(usage) = &s.usage {
+            usage.record(tool.name);
+        }
 
         if let Err(msg) = s.validator.validate(tool, &args) {
             self.exceptional(ctx, &subject, "invalid_params").await;
             return Err(ToolError::InvalidParams(msg));
+        }
+        // 6.2.0 `resolveClient`: a per-call `instance` the registry does not know is
+        // a tool error, never a fallback to the default instance.
+        if tool.needs_instance
+            && ctx.instance().is_none()
+            && let Some(name) = args
+                .get("instance")
+                .and_then(serde_json::Value::as_str)
+                .filter(|n| !n.is_empty())
+        {
+            self.exceptional(ctx, &subject, "unknown_instance").await;
+            return Err(ToolError::Message(format!("Instance '{name}' not found")));
         }
         let classification = s.classification.snapshot(ctx.instance());
         let input = NormalizeInput::new(ctx.instance(), &classification);
@@ -419,7 +437,7 @@ impl Dispatcher {
             .resources
             .iter()
             .find(|r| r.uri == uri)
-            .ok_or_else(|| ToolError::InvalidParams("Unknown resource".into()))?;
+            .ok_or_else(|| ToolError::Message(format!("Unknown resource: {uri}")))?;
         let subject = Subject::Resource(res.uri.to_owned());
         let ops = Arc::new(OperationSet(vec![
             Operation::new(subject.clone(), Action::Read)

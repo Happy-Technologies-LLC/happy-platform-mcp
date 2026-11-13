@@ -12,6 +12,14 @@ pub trait SchemaValidator: Send + Sync {
     fn validate(&self, tool: &ToolDescriptor, args: &serde_json::Value) -> Result<(), String>;
 }
 
+/// Opt-in usage telemetry (6.2.0 `usageTracker.record`, Q5: off by default, tool
+/// names only). The dispatcher calls it once per `tools/call`, after lookup, with
+/// the registered name only (never an unknown name, never arguments). Must not
+/// block: implementations buffer and flush elsewhere.
+pub trait UsageSink: Send + Sync {
+    fn record(&self, tool: &'static str);
+}
+
 /// Text sent to the client (6.2.0: one text content item plus `isError`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rendered {
