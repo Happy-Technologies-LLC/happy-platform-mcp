@@ -26,6 +26,8 @@ pub const DEFAULT_LOG_LIMIT: i64 = 100;
 pub const MAX_LOG_LIMIT: i64 = 1000;
 pub const MAX_LOG_PATTERN_LENGTH: usize = 256;
 pub const MAX_SUITE_TEST_ROWS: usize = 200;
+/// Failing step rows read for a failed test result (P4-4).
+pub const MAX_FAILING_STEP_ROWS: usize = 5;
 /// `bulk-limits.js` `MAX_NAME_LENGTH`.
 pub const MAX_NAME_LENGTH: usize = 255;
 const MAX_OPTION_LENGTH: usize = 100;
@@ -1011,7 +1013,7 @@ fn coalesce<'a>(a: Option<&'a Value>, b: Option<&'a Value>) -> Option<&'a Value>
 async fn get_test_result(client: &ServiceNowClient, result_id: &str) -> Result<Value, ClientError> {
     let path = format!("/api/sn_cicd/tests/test/results/{result_id}");
     let result = cicd_request(client, Method::Get, &path, &[]).await?;
-    Ok(Obj::default()
+    let out = Obj::default()
         .set("result_type", "test")
         .set("result_id", result_id)
         .copy("test_name", &result)
@@ -1032,8 +1034,94 @@ async fn get_test_result(client: &ServiceNowClient, result_id: &str) -> Result<V
                 "api": api_url(client, &path),
                 "record": record_url(client, "sys_atf_test_result", result_id)
             }),
-        )
-        .build())
+        );
+    // P4-4 (TF-6): the CI/CD result of a failed test often has no `output`;
+    // the reason is on the failing step. One extra read, failed tests only.
+    let failed = matches!(
+        result.get("test_status").and_then(Value::as_str),
+        Some("failure" | "error")
+    );
+    let out = if failed && is_sys_id(result_id) {
+        get_failing_steps(client, result_id)
+            .await
+            .into_iter()
+            .fold(out, |o, (k, v)| o.set(k, v))
+    } else {
+        out
+    };
+    Ok(out.build())
+}
+
+/// Best-effort failing step rows of one test result (`sys_atf_test_result_step`,
+/// at most [`MAX_FAILING_STEP_ROWS`], one request); never fails the call. Adds
+/// `failing_steps` and, from the first row with text, `failure_message`; on a
+/// read failure only `failing_steps_error`.
+async fn get_failing_steps(
+    client: &ServiceNowClient,
+    result_id: &str,
+) -> Vec<(&'static str, Value)> {
+    let path = "/api/now/table/sys_atf_test_result_step";
+    let url = with_query(
+        path,
+        &[
+            (
+                "sysparm_query",
+                Some(format!(
+                    "test_result={result_id}^status!=success^ORDERBYstart_time"
+                )),
+            ),
+            (
+                "sysparm_fields",
+                Some("step,status,summary,output,start_time".into()),
+            ),
+            ("sysparm_display_value", Some("true".into())),
+            ("sysparm_exclude_reference_link", Some("true".into())),
+            ("sysparm_limit", Some(MAX_FAILING_STEP_ROWS.to_string())),
+        ],
+    );
+    match client.rest(Method::Get, &url, None).await {
+        Ok(body) => {
+            let rows = match body.get("result") {
+                Some(Value::Array(rows)) => rows.as_slice(),
+                _ => &[],
+            };
+            let text = |row: &Value, key: &str| {
+                truncate_value(display_value(row.get(key)), MAX_OUTPUT_FIELD_CHARS)
+            };
+            let steps: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    Obj::default()
+                        .opt("step", display_value(row.get("step")).cloned())
+                        .opt("status", display_value(row.get("status")).cloned())
+                        .opt("summary", text(row, "summary"))
+                        .opt("output", text(row, "output"))
+                        .opt("start_time", display_value(row.get("start_time")).cloned())
+                        .build()
+                })
+                .collect();
+            let message = rows.iter().find_map(|row| {
+                ["summary", "output"]
+                    .iter()
+                    .find_map(|k| non_empty_string(display_value(row.get(*k))))
+            });
+            let mut out = vec![("failing_steps", Value::Array(steps))];
+            if let Some(m) = message {
+                out.push((
+                    "failure_message",
+                    Value::String(truncate_str(&m, MAX_OUTPUT_FIELD_CHARS)),
+                ));
+            }
+            out
+        }
+        Err(e) => vec![(
+            "failing_steps_error",
+            Value::String(format!(
+                "Could not read the failing step results: {}",
+                to_cicd_error(e, path).message
+            )),
+        )],
+    }
 }
 
 fn display_value(value: Option<&Value>) -> Option<&Value> {
