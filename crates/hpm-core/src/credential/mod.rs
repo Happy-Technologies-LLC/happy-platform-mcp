@@ -227,6 +227,12 @@ impl InstanceCredentialStore {
         }
         self.clear_origin_binding(&parsed.reference).await?;
         let binding = origin_binding_value(&parsed.reference, value.expose(), origin);
+        // CR-11: delete, then create, so an item planted under this account
+        // (with an any-app ACL) is never updated in place.
+        self.store
+            .delete(&self.service, &parsed.reference)
+            .await
+            .map_err(CredentialStoreError::Store)?;
         self.store
             .set(&self.service, &parsed.reference, value)
             .await
@@ -579,6 +585,29 @@ mod tests {
             Some("fixture-secret")
         );
         assert!(mem.has(&reference()));
+    }
+
+    /// CR-11: both the secret and the binding item are deleted before they
+    /// are created, so a planted item is never updated in place.
+    #[tokio::test]
+    async fn set_deletes_planted_items_before_creating() {
+        let (mem, s) = store(MemStore::default());
+        let binding = origin_binding_account(&reference());
+        mem.put(&reference(), "squatted");
+        mem.put(&binding, "squatted");
+        assert!(
+            s.set_secret(&reference(), Secret::new("fixture-secret".into()), ORIGIN)
+                .await
+                .is_ok()
+        );
+        let calls = mem.calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for account in [reference(), binding] {
+            let first = |op: &str| calls.iter().position(|(o, a)| *o == op && *a == account);
+            assert!(
+                matches!((first("delete"), first("set")), (Some(d), Some(w)) if d < w),
+                "{account}: {calls:?}"
+            );
+        }
     }
 
     #[tokio::test]
