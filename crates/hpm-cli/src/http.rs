@@ -15,6 +15,7 @@ use hpm_core::config::{ConfigManager, Env, InstanceSummary};
 use hpm_protocol::McpHandler;
 use hpm_protocol::transport::limits::HttpSecurity;
 use hpm_protocol::transport::{HttpApp, HttpConfig, InstancesFn};
+use hpm_tools::families::docs::telemetry::UsageTracker;
 use hpm_types::context::{DeploymentMode, TrustedRoot};
 use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
@@ -270,7 +271,9 @@ pub async fn run(
         Ok(k) => k,
         Err(e) => return refuse(&e),
     };
-    let dispatcher = match single_user_dispatcher() {
+    let usage = UsageTracker::from_env(env);
+    usage.set_transport("http");
+    let dispatcher = match single_user_dispatcher(config.clone(), &usage) {
         Ok(d) => d,
         Err(e) => return refuse(&e),
     };
@@ -317,8 +320,12 @@ pub async fn run(
     http.shutdown_grace = SHUTDOWN_GRACE;
     let (streamable_root, sse_root) = http_roots();
     let app = HttpApp::new(
-        McpHandler::new(streamable_root, dispatcher.clone()),
-        McpHandler::new(sse_root, dispatcher),
+        McpHandler::builder(streamable_root, dispatcher.clone())
+            .registry(config.clone())
+            .build(),
+        McpHandler::builder(sse_root, dispatcher)
+            .registry(config.clone())
+            .build(),
         http,
     );
 
@@ -343,13 +350,19 @@ pub async fn run(
         "Available instances: http://{host}:{port}/instances"
     ));
     say(&updates_hint());
+    if usage.enabled() {
+        say(&usage.describe());
+    }
     if env.get("DEBUG").as_deref() == Some("true") {
         say(&format!(
             "Active ServiceNow instance: {instance_name} - {instance_url}"
         ));
     }
 
-    match app.serve(listener, shutdown).await {
+    let served = app.serve(listener, shutdown).await;
+    usage.stop();
+    usage.flush().await;
+    match served {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{NAME}: {e}");

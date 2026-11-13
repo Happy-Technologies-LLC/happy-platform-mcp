@@ -126,6 +126,14 @@ pub enum ResultBody {
     Message(String),
     /// Scanned under protection; unknown shapes blocked.
     Json(serde_json::Value),
+    /// Verbatim 6.2.0 success text (no prefix). `explicit_is_error_false: true`
+    /// emits `"isError": false` (ATF `jsonResponse(payload, false)`); `false` omits
+    /// the field. Errors are never `Ok`: use `ToolError::Text`. Carries instance
+    /// data, so it is scanned under protection like `Json`, never fixed text.
+    ToolResult {
+        text: String,
+        explicit_is_error_false: bool,
+    },
 }
 
 /// Every handler return path carries the facts, independent of the error (edit 2).
@@ -166,9 +174,23 @@ pub enum ToolError {
     Denied { reason: String },
     #[error(transparent)]
     Credential(#[from] CredentialError),
-    /// ServiceNow error. `message` may echo data, so it goes through `protect_error`.
-    #[error("servicenow {status}: {message}")]
+    /// ServiceNow error. `message` is the 6.2.0 `enrichServiceNowError` text (it
+    /// already starts with the status) and may echo data, so it goes through
+    /// `protect_error`. Tools render `Error: {message}`.
+    #[error("{message}")]
     Upstream { status: u16, message: String },
+    /// 6.2.0 `error.message`, shown verbatim: tools render `Error: {message}` with
+    /// `isError`, resources answer JSON-RPC -32603 with `{message}`. May echo data,
+    /// so it goes through `protect_error` like `Upstream`.
+    #[error("{0}")]
+    Message(String),
+    /// 6.2.0 `isError` text rendered verbatim with no `Error: ` prefix (e.g. `❌ …`,
+    /// `Batch update completed with errors:\n…`). A failure for audit and retry,
+    /// protected like `Message`, and may accompany any `MutationOutcome`
+    /// (PartiallyCommitted batch stop-on-error / rollback, Committed script that
+    /// reported errors): the handler's text always wins over generic texts.
+    #[error("{0}")]
+    Text(String),
     #[error("cancelled")]
     Cancelled,
     #[error("deadline exceeded")]
@@ -225,6 +247,19 @@ pub type Normalizer =
 /// Pure; reproduces 6.2.0 bytes (golden-tested) for visible results.
 pub type Renderer = fn(&ResultBody) -> String;
 
+/// MCP tool annotations (D4). Advisory hints for clients, attached centrally at
+/// registration from the D-05 row's `annotation_hints`; never read by policy,
+/// protection or the dispatcher.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct ToolAnnotations {
+    pub read_only_hint: Option<bool>,
+    pub destructive_hint: Option<bool>,
+    pub idempotent_hint: Option<bool>,
+    pub open_world_hint: Option<bool>,
+}
+
 /// `#[non_exhaustive]`: build with [`ToolDescriptor::new`] and the setters. Defaults
 /// (`Read`, `OutputClass::None`, `SideEffectClass::None`, `Idempotent`, no instance,
 /// `CredentialNeed::None`) must be overridden to match the tool's D-05 row; the
@@ -246,6 +281,17 @@ pub struct ToolDescriptor {
     pub normalize: Normalizer,
     pub handler: Arc<dyn ToolHandler>,
     pub render: Renderer,
+    /// Optional display title (MCP `title`). Advisory only.
+    pub title: Option<&'static str>,
+    /// Set by the tool registry from the D-05 row; a value set by a lane is
+    /// overwritten. Advisory only.
+    pub annotations: Option<ToolAnnotations>,
+    /// The handler checks its own input and refuses junk with 6.2.0's specific
+    /// text (SN-Register-Instance INVALID_INSTANCE_CONFIG, SN-Get-ATF-Results bad
+    /// `result_type`). A central schema failure then does not stop the call; the
+    /// handler MUST refuse invalid input itself, and its normalizer must accept
+    /// schema-invalid arguments. Every other tool stays strictly checked.
+    pub handler_validates_input: bool,
 }
 
 impl ToolDescriptor {
@@ -270,6 +316,9 @@ impl ToolDescriptor {
             normalize,
             handler,
             render,
+            title: None,
+            annotations: None,
+            handler_validates_input: false,
         }
     }
     pub fn access(mut self, access: AccessClass) -> Self {
@@ -296,12 +345,25 @@ impl ToolDescriptor {
         self.credentials = credentials;
         self
     }
+    pub fn title(mut self, title: &'static str) -> Self {
+        self.title = Some(title);
+        self
+    }
+    /// See [`ToolDescriptor::handler_validates_input`].
+    pub fn handler_validates_input(mut self, yes: bool) -> Self {
+        self.handler_validates_input = yes;
+        self
+    }
 }
 
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct ResourceDescriptor {
     pub uri: &'static str,
+    /// 6.2.0 `resources/list` fields.
+    pub name: &'static str,
+    pub description: &'static str,
+    pub mime_type: &'static str,
     pub output: OutputClass,
     pub credentials: CredentialNeed,
     pub handler: Arc<dyn ResourceHandler>,
@@ -310,12 +372,18 @@ pub struct ResourceDescriptor {
 impl ResourceDescriptor {
     pub fn new(
         uri: &'static str,
+        name: &'static str,
+        description: &'static str,
+        mime_type: &'static str,
         output: OutputClass,
         credentials: CredentialNeed,
         handler: Arc<dyn ResourceHandler>,
     ) -> Self {
         Self {
             uri,
+            name,
+            description,
+            mime_type,
             output,
             credentials,
             handler,

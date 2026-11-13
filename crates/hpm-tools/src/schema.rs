@@ -37,9 +37,10 @@ pub enum SchemaCompileError {
     Duplicate(&'static str),
 }
 
-/// Validators for a fixed set of tools, compiled up front.
+/// Validators for a fixed set of tools, compiled up front (with the parsed schema,
+/// needed to judge the lenient-type exceptions).
 pub struct CompiledSchemaValidator {
-    by_tool: HashMap<&'static str, Validator>,
+    by_tool: HashMap<&'static str, (Validator, serde_json::Value)>,
 }
 
 impl CompiledSchemaValidator {
@@ -57,7 +58,7 @@ impl CompiledSchemaValidator {
                     tool: tool.name,
                     reason: schema_error_text(&e),
                 })?;
-            if by_tool.insert(tool.name, validator).is_some() {
+            if by_tool.insert(tool.name, (validator, schema)).is_some() {
                 return Err(SchemaCompileError::Duplicate(tool.name));
             }
         }
@@ -76,11 +77,15 @@ impl CompiledSchemaValidator {
 
 impl SchemaValidator for CompiledSchemaValidator {
     fn validate(&self, tool: &ToolDescriptor, args: &serde_json::Value) -> Result<(), String> {
-        let Some(validator) = self.by_tool.get(tool.name) else {
+        let Some((validator, schema)) = self.by_tool.get(tool.name) else {
             // Fail closed: a tool whose schema was never compiled is not callable.
             return Err("tool input schema is not registered".into());
         };
-        let mut messages: Vec<String> = validator.iter_errors(args).map(|e| describe(&e)).collect();
+        let mut messages: Vec<String> = validator
+            .iter_errors(args)
+            .filter(|e| !lenient(schema, e))
+            .map(|e| describe(&e))
+            .collect();
         if messages.is_empty() {
             return Ok(());
         }
@@ -95,6 +100,103 @@ impl SchemaValidator for CompiledSchemaValidator {
         }
         Err(text)
     }
+}
+
+/// Owner decision (W3): type checks are as lenient as 6.2.0 effectively was, which
+/// passed raw arguments to handlers that coerce or test truthiness. Exactly two
+/// exceptions, nothing else:
+/// - `number`/`integer` accepts a string that parses as one (`"2"`; JS uses the
+///   value in query strings and arithmetic, e.g. SN-List-Incidents `priority`).
+/// - `object` accepts a boolean when every declared property of that object is a
+///   boolean flag: JS tests the object for truthiness and then reads flags off it
+///   (`validateCatalogConfiguration`: `if (checks.ui_policies)` then
+///   `checks.ui_policies.check_actions_linked`, undefined on `true`).
+///
+/// Arguments reach the handler unchanged; no value is coerced here.
+fn lenient(schema: &serde_json::Value, err: &ValidationError<'_>) -> bool {
+    let ValidationErrorKind::Type { kind } = err.kind() else {
+        return false;
+    };
+    let expected: Vec<String> = match kind {
+        TypeKind::Single(t) => vec![t.to_string()],
+        TypeKind::Multiple(set) => set.iter().map(|t| t.to_string()).collect(),
+    };
+    let wants = |t: &str| expected.iter().any(|e| e == t);
+    match err.instance().as_ref() {
+        serde_json::Value::String(s) => {
+            let parsed = if wants("integer") && is_json_integer(s) {
+                s.parse::<i64>().ok().map(|v| v as f64)
+            } else if wants("number") && is_json_number(s) {
+                s.parse::<f64>().ok().filter(|v| v.is_finite())
+            } else {
+                None
+            };
+            // The range keywords skip strings, so apply them to the value here.
+            parsed.is_some_and(|v| {
+                err.schema_path()
+                    .as_str()
+                    .strip_suffix("/type")
+                    .and_then(|parent| schema.pointer(parent))
+                    .is_some_and(|sub| in_range(sub, v))
+            })
+        }
+        serde_json::Value::Bool(_) if wants("object") => {
+            // `schema_path` ends in `/type`; its parent is the object's subschema.
+            let Some(parent) = err.schema_path().as_str().strip_suffix("/type") else {
+                return false;
+            };
+            schema
+                .pointer(parent)
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.as_object())
+                .is_some_and(|props| {
+                    !props.is_empty()
+                        && props
+                            .values()
+                            .all(|p| p.get("type").and_then(|t| t.as_str()) == Some("boolean"))
+                })
+        }
+        _ => false,
+    }
+}
+
+/// `-?\d+`: no sign but `-`, no whitespace or control characters.
+fn is_json_integer(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?`, the JS numeric-literal subset 6.2.0
+/// handlers coerce; anything else (whitespace, CR/LF, `+`, `NaN`) is refused.
+fn is_json_number(s: &str) -> bool {
+    let s = s.strip_prefix('-').unwrap_or(s);
+    let (mantissa, exponent) = match s.find(['e', 'E']) {
+        Some(i) => (&s[..i], Some(&s[i + 1..])),
+        None => (s, None),
+    };
+    let (int, frac) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (mantissa, None),
+    };
+    let digits = |p: &str| p.bytes().all(|b| b.is_ascii_digit());
+    let mantissa_ok = digits(int)
+        && frac.is_none_or(digits)
+        && (!int.is_empty() || frac.is_some_and(|f| !f.is_empty()));
+    let exponent_ok = exponent.is_none_or(|e| {
+        let e = e.strip_prefix(['+', '-']).unwrap_or(e);
+        !e.is_empty() && digits(e)
+    });
+    mantissa_ok && exponent_ok
+}
+
+/// `minimum` / `maximum` / `exclusive*` / `multipleOf` of `sub` on `v`.
+fn in_range(sub: &serde_json::Value, v: f64) -> bool {
+    let num = |k: &str| sub.get(k).and_then(serde_json::Value::as_f64);
+    num("minimum").is_none_or(|m| v >= m)
+        && num("maximum").is_none_or(|m| v <= m)
+        && num("exclusiveMinimum").is_none_or(|m| v > m)
+        && num("exclusiveMaximum").is_none_or(|m| v < m)
+        && num("multipleOf").is_none_or(|m| m > 0.0 && (v / m).fract() == 0.0)
 }
 
 /// One violation as text, built from the schema keyword and the instance location only.
@@ -357,6 +459,66 @@ mod tests {
         // must never block on, or succeed through, a network fetch.
         if let Ok(v) = CompiledSchemaValidator::new(std::slice::from_ref(&t)) {
             assert!(v.validate(&t, &json!({"x": 1})).is_err());
+        }
+    }
+
+    const LENIENT: &str = r#"{
+        "type":"object",
+        "properties":{
+            "priority":{"type":"number"},
+            "count":{"type":"integer"},
+            "limit":{"type":"integer","minimum":1,"maximum":1000},
+            "ratio":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":1},
+            "checks":{"type":"object","properties":{
+                "ui_policies":{"type":"object","properties":{"check_a":{"type":"boolean"}}},
+                "mixed":{"type":"object","properties":{"n":{"type":"string"}}}
+            }}
+        }
+    }"#;
+
+    #[test]
+    fn numeric_strings_and_flag_object_booleans_pass_like_6_2_0() {
+        let t = tool("Lenient", LENIENT);
+        let v = CompiledSchemaValidator::new(std::slice::from_ref(&t)).expect("compiles");
+        for ok in [
+            json!({"priority": "2"}),
+            json!({"priority": "2.5", "count": "3"}),
+            json!({"checks": {"ui_policies": true, "business_rules": true}}),
+            json!({"priority": "-1", "count": "-7", "limit": "1000"}),
+            json!({"priority": ".5"}),
+            json!({"priority": "1e3"}),
+            json!({"ratio": "0.5"}),
+            json!({"checks": {"ui_policies": false}}),
+        ] {
+            assert_eq!(v.validate(&t, &ok), Ok(()), "{ok}");
+        }
+        for bad in [
+            json!({"priority": "two"}),
+            json!({"priority": ""}),
+            json!({"count": "2.5"}),
+            json!({"priority": true}),
+            json!({"checks": true}),
+            json!({"checks": {"mixed": true}}),
+            json!({"checks": {"ui_policies": "yes"}}),
+            // M1: strict JSON-number text only, no whitespace or line breaks.
+            json!({"priority": "2\r\n"}),
+            json!({"priority": "2\n"}),
+            json!({"priority": " 2"}),
+            json!({"priority": "\t2"}),
+            json!({"priority": "+2"}),
+            json!({"priority": "NaN"}),
+            json!({"priority": "1e"}),
+            json!({"priority": "."}),
+            json!({"priority": "-"}),
+            json!({"count": "1e3"}),
+            json!({"count": "3\r\n"}),
+            // Range keywords apply to the parsed value.
+            json!({"limit": "5000"}),
+            json!({"limit": "0"}),
+            json!({"ratio": "1"}),
+            json!({"ratio": "0"}),
+        ] {
+            assert!(v.validate(&t, &bad).is_err(), "{bad}");
         }
     }
 }

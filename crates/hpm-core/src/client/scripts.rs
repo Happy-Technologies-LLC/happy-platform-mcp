@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::error::ClientError;
+use super::error::{self, ClientError, RawError};
 use super::http::{
     HttpRequest, HttpResponse, Method, axios_query, form_encode, format_utc_datetime,
 };
@@ -18,6 +18,15 @@ use super::script_processor::{
     rollback_context_of, script_execution_links, unknown_outcome_error, with_reason,
 };
 use super::{AuthType, RecordQuery, ServiceNowClient, State, UI_TIMEOUT, UI_USER_AGENT};
+
+/// Result of [`ServiceNowClient::execute_script_via_processor_or`].
+#[derive(Debug)]
+pub enum ProcessorRun<T> {
+    /// The processor ran the script (the parsed result).
+    Ran(Value),
+    /// The processor provably did not run it; the fallback's output.
+    NotRun(T),
+}
 
 #[derive(Clone, Debug)]
 pub struct ProcessorOptions {
@@ -38,11 +47,25 @@ impl Default for ProcessorOptions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TriggerOptions {
     pub wait: bool,
     pub timeout_ms: u64,
     pub interval_ms: u64,
+    /// The calling request: the completion poll stops once it is no longer
+    /// live (cancelled or past its deadline).
+    pub ctx: Option<hpm_types::context::RequestContext>,
+}
+
+impl std::fmt::Debug for TriggerOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TriggerOptions")
+            .field("wait", &self.wait)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("interval_ms", &self.interval_ms)
+            .field("ctx", &self.ctx.is_some())
+            .finish()
+    }
 }
 
 impl Default for TriggerOptions {
@@ -51,9 +74,15 @@ impl Default for TriggerOptions {
             wait: true,
             timeout_ms: 15_000,
             interval_ms: 500,
+            ctx: None,
         }
     }
 }
+
+/// Message of the "result unknown" error raised when the request stops being
+/// live while the trigger completion poll is waiting.
+pub const TRIGGER_POLL_CANCELLED: &str =
+    "Cancelled while waiting for the sys_trigger script to report completion";
 
 struct ScopeTarget {
     scope_id: String,
@@ -106,11 +135,13 @@ impl Drop for ScriptSession {
 }
 
 impl ScriptSession {
-    /// Ends the UI session (`GET /logout.do`); failures are ignored.
+    /// Ends the UI session (`GET /logout.do`); failures are ignored. Marked
+    /// ended only once the send finished: a cancelled send still leaves the
+    /// `Drop` logout as a fallback (review L4).
     async fn end(&self) {
-        self.ended.store(true, std::sync::atomic::Ordering::Release);
         let req = logout_request(&self.state.url, &self.auth_header);
         let _ = self.request(req).await;
+        self.ended.store(true, std::sync::atomic::Ordering::Release);
     }
 
     async fn request(
@@ -275,6 +306,30 @@ impl ServiceNowClient {
         script: &str,
         options: &ProcessorOptions,
     ) -> Result<Value, ClientError> {
+        match self
+            .execute_script_via_processor_or(script, options, |e| async move { e })
+            .await?
+        {
+            ProcessorRun::Ran(v) => Ok(v),
+            ProcessorRun::NotRun(e) => Err(e),
+        }
+    }
+
+    /// The processor run with a fallback for the provable not-run case
+    /// (`SCRIPT_PROCESSOR_NOT_RUN`): `on_not_run` receives that error and runs
+    /// while the UI session is still open (e.g. the `sys_trigger` fallback), and
+    /// the session's single `/logout.do` is sent after it finishes. Any other
+    /// failure, including an unknown outcome, is `Err` and runs no fallback.
+    pub async fn execute_script_via_processor_or<T, F, Fut>(
+        &self,
+        script: &str,
+        options: &ProcessorOptions,
+        on_not_run: F,
+    ) -> Result<ProcessorRun<T>, ClientError>
+    where
+        F: FnOnce(ClientError) -> Fut,
+        Fut: Future<Output = T>,
+    {
         if script.trim().is_empty() {
             return Err(ClientError::plain("script must be a non-empty string"));
         }
@@ -318,7 +373,12 @@ impl ServiceNowClient {
         if options.record_for_rollback {
             form.push(("record_for_rollback", "on"));
         }
-        self.assert_current(&state)?;
+        // Every exit ends the session in line (never left to `Drop`), so the
+        // logout is deterministically the operation's last request.
+        if let Err(e) = self.assert_current(&state) {
+            session.end().await;
+            return Err(e);
+        }
         let mut req = HttpRequest::new(Method::Post, session.url(SCRIPT_PROCESSOR_PATH));
         req.set_header(
             "Content-Type",
@@ -334,11 +394,19 @@ impl ServiceNowClient {
             Ok(response) => classify_processor_outcome(&Ok(response)),
             Err(e) => classify_processor_outcome(&Err(e)),
         };
-        session.end().await;
+        // The UI logout (intentional 7.0 difference, RFC §4) is the operation's
+        // last request: after the execution-history read, never before it.
         let result = match result {
             ProcessorOutcome::Ran(r) => r,
-            ProcessorOutcome::NotRun(reason) => return Err(not_run_error(&reason)),
-            ProcessorOutcome::Unknown(reason) => return Err(unknown_outcome_error(&reason)),
+            ProcessorOutcome::NotRun(reason) => {
+                let fallback = on_not_run(not_run_error(&reason)).await;
+                session.end().await;
+                return Ok(ProcessorRun::NotRun(fallback));
+            }
+            ProcessorOutcome::Unknown(reason) => {
+                session.end().await;
+                return Err(unknown_outcome_error(&reason));
+            }
         };
         let mut warnings = result.warnings.clone();
         if let Some(t) = target.as_ref().filter(|t| t.inactive) {
@@ -394,7 +462,8 @@ impl ServiceNowClient {
             "links".into(),
             script_execution_links(result.execution_history_id.as_deref(), rollback.as_deref()),
         );
-        Ok(Value::Object(out))
+        session.end().await;
+        Ok(ProcessorRun::Ran(Value::Object(out)))
     }
 
     async fn resolve_script_scope(&self, scope: &str) -> Result<ScopeTarget, ClientError> {
@@ -500,6 +569,9 @@ impl ServiceNowClient {
                 let mut wrapped =
                     ClientError::plain(format!("Failed to create script trigger: {}", e.message));
                 wrapped.status = e.status;
+                wrapped.code = e.code;
+                // Trigger identity ("sys_id …" / "name …") for result-unknown text.
+                wrapped.reason = e.reason;
                 wrapped
             })
     }
@@ -511,6 +583,14 @@ impl ServiceNowClient {
         auto_delete: bool,
         options: &TriggerOptions,
     ) -> Result<Value, ClientError> {
+        // Once the trigger row exists the script may run regardless of what
+        // fails next, so every later error is tagged "result unknown" and
+        // names the trigger (its sys_id) in `reason`.
+        let inserted = |mut e: ClientError, sys_id: &str| {
+            e.code = Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
+            e.reason = Some(format!("sys_id {sys_id}").into());
+            e
+        };
         let now = self.now_ms();
         let next_action = format_utc_datetime(now + 1000);
         let marker = generate_script_execution_marker(self.now_ms());
@@ -521,8 +601,9 @@ impl ServiceNowClient {
         } else {
             description
         };
+        let trigger_name = format!("MCP_Script_{}", self.now_ms());
         let base = json!({
-            "name": format!("MCP_Script_{}", self.now_ms()),
+            "name": trigger_name,
             "next_action": next_action,
             "trigger_type": "0",
             "state": "0",
@@ -533,10 +614,17 @@ impl ServiceNowClient {
             v["script"] = json!(s);
             v
         };
+        // A failed insert carries the trigger name, so an ambiguous one (5xx,
+        // timeout) can still be traced on the instance.
+        let named = |mut e: ClientError| {
+            e.reason = Some(format!("name {trigger_name}").into());
+            e
+        };
         let trigger = if auto_delete {
             let trigger = self
                 .create_record("sys_trigger", &with_script(script.to_owned()))
-                .await?;
+                .await
+                .map_err(named)?;
             let sys_id = trigger
                 .get("sys_id")
                 .and_then(Value::as_str)
@@ -544,14 +632,17 @@ impl ServiceNowClient {
                 .to_owned();
             let wrapped = build_background_script_wrapper(script, &marker, true, Some(&sys_id));
             self.update_record("sys_trigger", &sys_id, &json!({"script": wrapped}))
-                .await?;
+                .await
+                .map_err(|e| inserted(e, &sys_id))?;
             trigger
         } else {
             let wrapped = build_background_script_wrapper(script, &marker, false, None);
             self.create_record("sys_trigger", &with_script(wrapped))
-                .await?
+                .await
+                .map_err(named)?
         };
         let trigger_sys_id = trigger.get("sys_id").cloned().unwrap_or(Value::Null);
+        let trigger_id = trigger_sys_id.as_str().unwrap_or("undefined").to_owned();
         let mut out = Map::new();
         out.insert("trigger_sys_id".into(), trigger_sys_id.clone());
         out.insert(
@@ -602,7 +693,8 @@ impl ServiceNowClient {
                         ..RecordQuery::default()
                     },
                 )
-                .await?;
+                .await
+                .map_err(|e| inserted(e, &trigger_id))?;
             if let Some(first) = records.as_array().and_then(|r| r.first()).cloned() {
                 break Some(first);
             }
@@ -610,6 +702,12 @@ impl ServiceNowClient {
                 break None;
             }
             self.sleep_ms(options.interval_ms).await;
+            if options.ctx.as_ref().is_some_and(|c| !c.is_live()) {
+                return Err(inserted(
+                    ClientError::plain(TRIGGER_POLL_CANCELLED),
+                    &trigger_id,
+                ));
+            }
         };
 
         let Some(record) = found else {
@@ -635,7 +733,8 @@ impl ServiceNowClient {
             .to_owned();
         let (logs, truncated, unverified) = self
             .collect_background_script_logs(&end_marker, &next_action, &until)
-            .await?;
+            .await
+            .map_err(|e| inserted(e, &trigger_id))?;
         let mut o = match &outcome {
             MarkerOutcome::Completed(output) => {
                 let mut o = with(
@@ -696,7 +795,10 @@ impl ServiceNowClient {
         if token.is_empty() {
             token = session.lookup_csrf().await.unwrap_or_default();
         }
-        self.assert_current(&state)?;
+        if let Err(e) = self.assert_current(&state) {
+            session.end().await;
+            return Err(e);
+        }
         let cookie = session.jar.lock().await.serialize();
         // Ownership passes to the caller, who ends it with `logout_ui_session`.
         session
@@ -705,17 +807,32 @@ impl ServiceNowClient {
         Ok((cookie, token, state.generation))
     }
 
-    /// `GET /logout.do` in the session's jar.
+    /// `GET /logout.do` in the session's jar, on this client's (pinned) instance.
+    /// When that generation has moved, the session is still ended on its own
+    /// host, with its cookie only: no credential of any generation is attached.
     pub async fn logout_ui_session(&self, cookie: &str) -> Result<(), ClientError> {
         let state = self.state();
-        let header = self.auth_header_for(&state).await?;
         let mut req = HttpRequest::new(Method::Get, format!("{}/logout.do", state.url));
-        req.set_header("Authorization", header);
         req.set_header("User-Agent", UI_USER_AGENT);
         if !cookie.is_empty() {
             req.set_header("Cookie", cookie);
         }
         req.timeout = Some(UI_TIMEOUT);
+        if self.assert_current(&state).is_err() {
+            return match self.deps().transport.send(req).await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(self.sanitize(
+                    &state,
+                    RawError {
+                        message: e.message,
+                        code: e.code,
+                        ..RawError::default()
+                    },
+                )),
+            };
+        }
+        let header = self.auth_header_for(&state).await?;
+        req.set_header("Authorization", header);
         self.send(&state, req).await.map(|_| ())
     }
 

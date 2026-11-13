@@ -7,8 +7,8 @@ use axum::http::request::Parts;
 use hpm_tools::dispatcher::Dispatcher;
 use hpm_types::BoxFut;
 use hpm_types::context::{
-    AdmissionInput, DeploymentMode, ProgressSink, ProtocolVersion, TrustedRoot,
-    VerifiedHttpIdentity,
+    AdmissionInput, DeploymentMode, Principal, ProgressSink, ProtocolVersion, TransportKind,
+    TrustedRoot, VerifiedHttpIdentity,
 };
 use hpm_types::continuation::{
     ConnectPrompt, ContinuationBinding, ContinuationHandle, ContinuationStore, select_prompt,
@@ -19,9 +19,10 @@ use hpm_types::registry::RegistryStore;
 use hpm_types::tool::{ToolDescriptor, ToolError};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    DiscoverResult, Implementation, InitializeResult, JsonObject, ListToolsResult,
-    PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ServerCapabilities,
-    ServerConfig, Tool,
+    DiscoverResult, Implementation, InitializeResult, JsonObject, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProgressToken,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -120,6 +121,78 @@ impl McpHandler {
             _ => CacheScope::Private,
         }
     }
+
+    /// Step 0: trusted admission of one request. `instance` is the raw per-call
+    /// `instance` argument (tools) or `None` (the selected default); it is
+    /// interpreted once here, with 6.2.0 `resolveClient` semantics.
+    fn admit(
+        &self,
+        context: &RequestContext<RoleServer>,
+        instance: Option<&Value>,
+    ) -> Result<hpm_types::context::RequestContext, ErrorData> {
+        let inner = &self.inner;
+        // Modern requests carry version and capabilities per request (`_meta`);
+        // legacy ones negotiated them at initialize.
+        let peer_info = context.peer.peer_info();
+        let protocol_version = context
+            .meta
+            .protocol_version()
+            .or_else(|| peer_info.as_ref().map(|i| i.protocol_version.clone()))
+            .map(|v| ProtocolVersion::new(v.as_str()))
+            .unwrap_or_else(|| ProtocolVersion::new(""));
+        let client_capabilities = context
+            .meta
+            .client_capabilities()
+            .and_then(|c| serde_json::to_value(c).ok())
+            .or_else(|| {
+                peer_info
+                    .as_ref()
+                    .and_then(|i| serde_json::to_value(&i.capabilities).ok())
+            })
+            .unwrap_or(Value::Null);
+        let client_name = context
+            .meta
+            .client_info()
+            .map(|i| i.name)
+            .or_else(|| peer_info.as_ref().map(|i| i.client_info.name.clone()))
+            .unwrap_or_default();
+        let identity = http_identity(context).or_else(|| self.session_identity.clone());
+        let mut input = AdmissionInput {
+            mcp_request_id: context.id.to_string(),
+            protocol_version,
+            client_capabilities,
+            client_name,
+            instance: None,
+            instance_miss: None,
+            cancel: context.ct.child_token(),
+            deadline: Instant::now() + CALL_DEADLINE,
+            progress: Arc::new(PeerProgress {
+                peer: context.peer.clone(),
+                token: context.meta.get_progress_token(),
+            }),
+        };
+        // Principal is fixed by the transport: only stdio is the local operator;
+        // HTTP is the verified identity, and a missing one resolves nothing (it
+        // fails in `admit`, W2-E L6).
+        let principal = match (&identity, inner.root.transport()) {
+            (Some(i), _) => Some(i.principal.clone()),
+            (None, TransportKind::Stdio) => Some(Principal::LocalOperator),
+            (None, _) => None,
+        };
+        if let (Some(registry), Some(principal)) = (&inner.registry, principal) {
+            match registry
+                .snapshot_for(&principal)
+                .resolve_requested(instance)
+            {
+                Ok(resolved) => input.instance = resolved,
+                Err(miss) => input.instance_miss = Some(miss),
+            }
+        }
+        inner
+            .root
+            .admit(input, identity)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))
+    }
 }
 
 /// Request-bound progress: routed by the request's progress token; unroutable
@@ -147,7 +220,55 @@ impl ProgressSink for PeerProgress {
 fn to_rmcp_tool(d: &ToolDescriptor) -> Tool {
     // Registration guarantees the schema parses as an object.
     let schema: JsonObject = serde_json::from_str(d.input_schema_json).unwrap_or_default();
-    Tool::new(d.name, d.description, Arc::new(schema))
+    let mut tool = Tool::new(d.name, d.description, Arc::new(schema));
+    if let Some(title) = d.title {
+        tool = tool.with_title(title);
+    }
+    // D4 hints from the D-05 row: advisory only.
+    if let Some(hints) = &d.annotations {
+        let mut a = ToolAnnotations::new();
+        a.read_only_hint = hints.read_only_hint;
+        a.destructive_hint = hints.destructive_hint;
+        a.idempotent_hint = hints.idempotent_hint;
+        a.open_world_hint = hints.open_world_hint;
+        tool = tool.with_annotations(a);
+    }
+    tool
+}
+
+/// 6.2.0 tool-call text for a failure: `Error: ${message}` for handler messages
+/// and for credential preparation failures (`Credential not found`, OAuth
+/// errors, `Instance changed during credential resolution`), which 6.2.0 throws
+/// inside the request and renders through the same catch block.
+pub(crate) fn error_text(e: &ToolError) -> String {
+    match e {
+        ToolError::Message(m) | ToolError::Upstream { message: m, .. } => format!("Error: {m}"),
+        ToolError::Credential(c) => format!("Error: {c}"),
+        ToolError::Text(t) => t.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// 6.2.0 success results carry no `isError` (rmcp's `success` sets `false`).
+fn success(content: Vec<ContentBlock>) -> CallToolResult {
+    let mut result = CallToolResult::success(content);
+    result.is_error = None;
+    result
+}
+
+/// `Some(true)` → error result; `Some(false)` → success with `isError: false`;
+/// `None` → success without `isError` (6.2.0 default).
+fn rendered_result(r: hpm_types::dispatch::Rendered) -> CallToolResult {
+    let content = vec![ContentBlock::text(r.text)];
+    match r.is_error {
+        Some(true) => CallToolResult::error(content),
+        Some(false) => {
+            let mut result = CallToolResult::success(content);
+            result.is_error = Some(false);
+            result
+        }
+        None => success(content),
+    }
 }
 
 fn http_identity(context: &RequestContext<RoleServer>) -> Option<VerifiedHttpIdentity> {
@@ -160,9 +281,14 @@ fn http_identity(context: &RequestContext<RoleServer>) -> Option<VerifiedHttpIde
 
 impl ServerHandler for McpHandler {
     fn get_info(&self) -> ServerConfig {
-        // C9: tools only; no logging/prompts/sampling/roots.
-        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
+        // C9: tools and resources; no logging/prompts/sampling/roots.
+        InitializeResult::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
     }
 
     async fn discover(
@@ -206,69 +332,67 @@ impl ServerHandler for McpHandler {
         self.inner.dispatcher.get_tool(name).map(to_rmcp_tool)
     }
 
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(
+            self.inner
+                .dispatcher
+                .resources()
+                .iter()
+                .map(|r| {
+                    Resource::new(r.uri, r.name)
+                        .with_description(r.description)
+                        .with_mime_type(r.mime_type)
+                })
+                .collect(),
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let ctx = self.admit(&context, None)?;
+        let mime_type = self
+            .inner
+            .dispatcher
+            .resources()
+            .iter()
+            .find(|r| r.uri == request.uri)
+            .map(|r| r.mime_type.to_owned());
+        // 6.2.0: every failure, unknown URI included, is a JSON-RPC internal error
+        // carrying the message (`Unknown resource: ${uri}`).
+        let body = self
+            .inner
+            .dispatcher
+            .read_resource(&ctx, &request.uri)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let text = serde_json::to_string_pretty(&body)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(
+            ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                uri: request.uri,
+                mime_type,
+                text,
+                meta: None,
+            }])
+            .into(),
+        )
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let inner = &self.inner;
-        // Modern requests carry version and capabilities per request (`_meta`);
-        // legacy ones negotiated them at initialize.
-        let peer_info = context.peer.peer_info();
-        let protocol_version = context
-            .meta
-            .protocol_version()
-            .or_else(|| peer_info.as_ref().map(|i| i.protocol_version.clone()))
-            .map(|v| ProtocolVersion::new(v.as_str()))
-            .unwrap_or_else(|| ProtocolVersion::new(""));
-        let client_capabilities = context
-            .meta
-            .client_capabilities()
-            .and_then(|c| serde_json::to_value(c).ok())
-            .or_else(|| {
-                peer_info
-                    .as_ref()
-                    .and_then(|i| serde_json::to_value(&i.capabilities).ok())
-            })
-            .unwrap_or(Value::Null);
-        let client_name = context
-            .meta
-            .client_info()
-            .map(|i| i.name)
-            .or_else(|| peer_info.as_ref().map(|i| i.client_info.name.clone()))
-            .unwrap_or_default();
-        let identity = http_identity(&context).or_else(|| self.session_identity.clone());
         let args = Value::Object(request.arguments.unwrap_or_default());
-
-        // Step 0: trusted admission. Stdio carries no HTTP identity.
-        let mut input = AdmissionInput {
-            mcp_request_id: context.id.to_string(),
-            protocol_version,
-            client_capabilities,
-            client_name,
-            instance: None,
-            cancel: context.ct.child_token(),
-            deadline: Instant::now() + CALL_DEADLINE,
-            progress: Arc::new(PeerProgress {
-                peer: context.peer.clone(),
-                token: context.meta.get_progress_token(),
-            }),
-        };
-        if let Some(registry) = &inner.registry {
-            // Principal is fixed by the transport: stdio is the local operator, HTTP
-            // the verified identity. A missing HTTP identity fails in `admit`.
-            let principal = identity
-                .as_ref()
-                .map(|i| i.principal.clone())
-                .unwrap_or(hpm_types::context::Principal::LocalOperator);
-            input.instance = registry
-                .snapshot_for(&principal)
-                .resolve(args.get("instance").and_then(Value::as_str));
-        }
-        let ctx = inner
-            .root
-            .admit(input, identity)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let ctx = self.admit(&context, args.get("instance"))?;
 
         let subject_name = inner.dispatcher.get_tool(&request.name).map(|d| d.name);
         let binding = |expires_at: SystemTime| {
@@ -301,15 +425,7 @@ impl ServerHandler for McpHandler {
             .call_tool(&ctx, &request.name, args.clone())
             .await
         {
-            Ok(DispatchOutcome::Rendered(r)) => {
-                let content = vec![ContentBlock::text(r.text)];
-                Ok(if r.is_error {
-                    CallToolResult::error(content)
-                } else {
-                    CallToolResult::success(content)
-                }
-                .into())
-            }
+            Ok(DispatchOutcome::Rendered(r)) => Ok(rendered_result(r).into()),
             Ok(DispatchOutcome::ConnectRequired { connect_url }) => {
                 // RFC §4.1: chosen from the verified version and capabilities.
                 let handle = if ctx.protocol_version().supports_mrtr() {
@@ -346,7 +462,51 @@ impl ServerHandler for McpHandler {
             // C6: lookup and validation failures are JSON-RPC invalid params.
             Err(ToolError::InvalidParams(msg)) => Err(ErrorData::invalid_params(msg, None)),
             // Every other failure is a tool result with isError (6.2.0 parity).
-            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e.to_string())]).into()),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(error_text(&e))]).into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod error_text_tests {
+    use hpm_types::credential::CredentialError;
+    use hpm_types::tool::ToolError;
+
+    use super::error_text;
+
+    #[test]
+    fn credential_errors_render_like_the_6_2_0_catch_block() {
+        assert_eq!(
+            error_text(&ToolError::Credential(CredentialError::GenerationMoved)),
+            "Error: Instance changed during credential resolution"
+        );
+        assert_eq!(
+            error_text(&ToolError::Credential(CredentialError::Backend(
+                "Credential not found".into()
+            ))),
+            "Error: Credential not found"
+        );
+        assert_eq!(
+            error_text(&ToolError::Message("boom".into())),
+            "Error: boom"
+        );
+        assert_eq!(
+            error_text(&ToolError::Text("❌ Script reported errors".into())),
+            "❌ Script reported errors"
+        );
+    }
+
+    fn rendered(is_error: Option<bool>) -> rmcp::model::CallToolResult {
+        super::rendered_result(hpm_types::dispatch::Rendered {
+            text: "t".into(),
+            is_error,
+        })
+    }
+
+    #[test]
+    fn rendered_is_error_maps_to_error_explicit_false_or_omitted() {
+        assert_eq!(rendered(Some(true)).is_error, Some(true));
+        assert_eq!(rendered(Some(false)).is_error, Some(false));
+        assert_eq!(rendered(None).is_error, None);
     }
 }

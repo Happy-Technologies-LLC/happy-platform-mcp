@@ -1,2 +1,4 @@
 # rustfmt.toml sets newline_style = "Unix"; keep Rust sources LF on Windows checkouts.
 *.rs text eol=lf
+# Fixtures are compared byte for byte and pinned by sha256: never convert line endings.
+fixtures/** -text

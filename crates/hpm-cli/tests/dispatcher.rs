@@ -20,7 +20,7 @@ use hpm_types::context::{
 };
 use hpm_types::credential::{CredentialError, CredentialNeed};
 use hpm_types::dispatch::{
-    DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered,
+    DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered, UsageSink,
 };
 use hpm_types::operation::{
     Action, ClassificationSnapshot, ClassificationSource, Operation, OperationSet,
@@ -254,9 +254,18 @@ fn dispatcher_with(
     protector: Arc<dyn DataProtector>,
     audit: Arc<Recorder>,
 ) -> Dispatcher {
+    dispatcher_full(calls, protector, audit, None)
+}
+
+fn dispatcher_full(
+    calls: &Arc<AtomicUsize>,
+    protector: Arc<dyn DataProtector>,
+    audit: Arc<Recorder>,
+    usage: Option<Arc<dyn UsageSink>>,
+) -> Dispatcher {
     let mut registry = ToolRegistry::new().expect("registry");
     registry
-        .register_tool(read_tool(READ_TOOL, CredentialNeed::None, calls))
+        .register_tool(read_tool(READ_TOOL, CredentialNeed::None, calls).needs_instance(true))
         .expect("register");
     registry
         .register_tool(read_tool(REMOTE_TOOL, CredentialNeed::Rest, calls))
@@ -272,6 +281,7 @@ fn dispatcher_with(
         script_guard: ScriptOperandGuard {
             shared_account: false,
         },
+        usage,
     };
     Dispatcher::new(registry, services, key())
 }
@@ -281,6 +291,11 @@ fn dispatcher(calls: &Arc<AtomicUsize>) -> Dispatcher {
 }
 
 fn ctx() -> RequestContext {
+    ctx_with_miss(None)
+}
+
+/// `instance_miss`: what the protocol adapter sets for an unknown per-call instance.
+fn ctx_with_miss(instance_miss: Option<String>) -> RequestContext {
     TrustedRoot::single_user_stdio()
         .admit(
             AdmissionInput {
@@ -289,6 +304,7 @@ fn ctx() -> RequestContext {
                 client_capabilities: serde_json::Value::Null,
                 client_name: "test".into(),
                 instance: None,
+                instance_miss,
                 cancel: CancellationToken::new(),
                 deadline: Instant::now() + Duration::from_secs(60),
                 progress: Arc::new(NoProgress),
@@ -320,10 +336,11 @@ async fn renders_handler_result() {
         out,
         DispatchOutcome::Rendered(Rendered {
             text: r#"{"query":"active=true"}"#.into(),
-            is_error: false
+            is_error: None
         })
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // Listing follows 6.2.0 source order, not registration order.
     assert_eq!(
         d.tools().iter().map(|t| t.name).collect::<Vec<_>>(),
         [READ_TOOL, REMOTE_TOOL, WRITE_TOOL]
@@ -339,6 +356,69 @@ async fn unknown_tool_and_missing_property_are_invalid_params() {
     let missing = d.call_tool(&ctx(), READ_TOOL, serde_json::json!({})).await;
     assert!(matches!(missing, Err(ToolError::InvalidParams(m)) if m.contains("query")));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn handler_validated_tool_sees_schema_invalid_input_others_do_not() {
+    // One of the allow-listed tools (`HANDLER_VALIDATED_TOOLS`); the real
+    // handlers' refusals are proven in `handler_validated_tools.rs`.
+    const SELF_CHECKING: &str = "SN-Get-ATF-Results";
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new().expect("registry");
+    // Any other tool is refused the flag at registration (review W3 M4).
+    assert!(matches!(
+        registry.register_tool(
+            read_tool("SN-List-Incidents", CredentialNeed::None, &calls)
+                .handler_validates_input(true)
+        ),
+        Err(RegistrationError::HandlerValidationNotAllowed(
+            "SN-List-Incidents"
+        ))
+    ));
+    registry
+        .register_tool(read_tool(READ_TOOL, CredentialNeed::None, &calls))
+        .expect("register");
+    registry
+        .register_tool(
+            read_tool(SELF_CHECKING, CredentialNeed::None, &calls)
+                .output(OutputClass::Opaque)
+                .handler_validates_input(true),
+        )
+        .expect("register");
+    let services = Services {
+        validator: Arc::new(RequiredPropertiesValidator),
+        classification: Arc::new(KnownIncident),
+        policy: Arc::new(AllowAll),
+        protector: Arc::new(PassThrough),
+        credentials: Arc::new(LocalOnlyCredentials),
+        audit: Arc::new(Recorder::default()),
+        script_guard: ScriptOperandGuard {
+            shared_account: false,
+        },
+        usage: None,
+    };
+    let d = Dispatcher::new(registry, services, key());
+    let bad = serde_json::json!({"secret": "x"});
+    // Unflagged: generic -32602 and the handler never runs.
+    let strict = d.call_tool(&ctx(), READ_TOOL, bad.clone()).await;
+    assert!(
+        matches!(strict, Err(ToolError::InvalidParams(_))),
+        "{strict:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // Flagged: the handler receives the unchanged bad input (Echo renders it).
+    let out = d
+        .call_tool(&ctx(), SELF_CHECKING, bad.clone())
+        .await
+        .expect("handler runs");
+    assert_eq!(
+        out,
+        DispatchOutcome::Rendered(Rendered {
+            text: bad.to_string(),
+            is_error: None
+        })
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -439,6 +519,62 @@ async fn remote_tool_fails_closed_without_credential_provider() {
         Err(ToolError::Credential(CredentialError::Backend(_)))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[derive(Default)]
+struct Usage(Mutex<Vec<&'static str>>);
+impl UsageSink for Usage {
+    fn record(&self, tool: &'static str) {
+        self.0.lock().expect("usage").push(tool);
+    }
+}
+
+#[tokio::test]
+async fn usage_sink_counts_registered_tools_only() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let usage = Arc::new(Usage::default());
+    let d = dispatcher_full(
+        &calls,
+        Arc::new(PassThrough),
+        Arc::new(Recorder::default()),
+        Some(usage.clone()),
+    );
+    let _ = d
+        .call_tool(&ctx(), READ_TOOL, serde_json::json!({"query": "x"}))
+        .await;
+    let _ = d.call_tool(&ctx(), "Nope", serde_json::json!({})).await;
+    // Recorded after lookup, before validation.
+    let _ = d.call_tool(&ctx(), READ_TOOL, serde_json::json!({})).await;
+    assert_eq!(*usage.0.lock().expect("usage"), vec![READ_TOOL, READ_TOOL]);
+}
+
+#[tokio::test]
+async fn unknown_per_call_instance_is_a_tool_error() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let d = dispatcher(&calls);
+    let out = d
+        .call_tool(
+            &ctx_with_miss(Some("Instance 'ghost' not found".into())),
+            READ_TOOL,
+            serde_json::json!({"query": "x", "instance": "ghost"}),
+        )
+        .await;
+    assert!(
+        matches!(&out, Err(ToolError::Message(m)) if m == "Instance 'ghost' not found"),
+        "{out:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unknown_resource_uses_6_2_0_text() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let d = dispatcher(&calls);
+    let out = d.read_resource(&ctx(), "servicenow://unknown").await;
+    assert!(
+        matches!(&out, Err(ToolError::Message(m)) if m == "Unknown resource: servicenow://unknown"),
+        "{out:?}"
+    );
 }
 
 #[test]

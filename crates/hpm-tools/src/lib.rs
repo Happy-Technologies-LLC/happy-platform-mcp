@@ -5,10 +5,16 @@
 //!   by the lead.
 //! - [`registration`]: how tool lanes add descriptors.
 //! - [`single_user`]: the single-user service implementations wired by default.
+//! - [`families`]: one tool family per W3 lane.
+//! - [`tool_order`]: the 6.2.0 `tools/list` order.
+//! - [`table_metadata`]: the bundled 6.2.0 table definitions.
 //! - [`logic`]: pure-logic ports with no I/O (lane C).
 
 pub mod dispatcher;
+pub mod families;
 pub mod logic;
 pub mod registration;
 pub mod schema;
 pub mod single_user;
+pub mod table_metadata;
+pub mod tool_order;

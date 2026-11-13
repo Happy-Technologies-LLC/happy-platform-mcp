@@ -2,19 +2,29 @@
 //! it mints the `TrustedRoot` for the protocol adapter and the `AdmissionKey` for the
 //! dispatcher, chooses the service implementations and registers the tools.
 //!
-//! Baseline: single-user stdio (`src/stdio-server.js`) and HTTP (`src/server.js`),
-//! zero tools. In stdio mode diagnostics go to stderr; stdout carries only JSON-RPC (C10).
+//! Single-user stdio (`src/stdio-server.js`) and HTTP (`src/server.js`). Tools come
+//! from `hpm_tools::families`; ServiceNow access goes through one client per
+//! registry instance (`InstanceClients`). In stdio mode diagnostics go to stderr;
+//! stdout carries only JSON-RPC (C10).
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use hpm_core::client::ClientDeps;
+use hpm_core::config::ConfigManager;
+use hpm_core::credential::provider::{InstanceClients, SingleUserCredentialProvider};
+use hpm_core::keychain::LazySecretStore;
+use hpm_protocol::McpHandler;
 use hpm_tools::dispatcher::{Dispatcher, Services};
+use hpm_tools::families::docs::telemetry::UsageTracker;
+use hpm_tools::families::{self, FamilyDeps};
 use hpm_tools::registration::{RegistrationError, ToolRegistry};
 use hpm_tools::schema::{CompiledSchemaValidator, SchemaCompileError};
-use hpm_tools::single_user::{
-    AllowAll, LocalOnlyCredentials, PassThrough, StderrAudit, UnloadedClassification,
-};
+use hpm_tools::single_user::{AllowAll, PassThrough, StderrAudit, UnloadedClassification};
 use hpm_types::context::{AdmissionKey, TrustedRoot};
+use hpm_types::credential::CredentialProvider;
+use hpm_types::dispatch::UsageSink;
 use hpm_types::operation::ScriptOperandGuard;
 
 pub mod cli;
@@ -31,36 +41,157 @@ pub fn updates_hint() -> String {
     format!("Release notes and security advisories: {UPDATES_URL}")
 }
 
-/// Every tool lane's `register`, in 6.2.0 `tools/list` order (C5).
-fn register_tools(_registry: &mut ToolRegistry) -> Result<(), RegistrationError> {
-    Ok(())
-}
-
-fn single_user_services(registry: &ToolRegistry) -> Result<Services, SchemaCompileError> {
+fn single_user_services(
+    registry: &ToolRegistry,
+    credentials: Arc<dyn CredentialProvider>,
+    usage: Option<UsageTracker>,
+) -> Result<Services, SchemaCompileError> {
     Ok(Services {
         validator: Arc::new(CompiledSchemaValidator::new(registry.tools())?),
         classification: Arc::new(UnloadedClassification),
         policy: Arc::new(AllowAll),
         protector: Arc::new(PassThrough),
-        credentials: Arc::new(LocalOnlyCredentials),
+        credentials,
         audit: Arc::new(StderrAudit),
         // Single-user: the operator's own ServiceNow account.
         script_guard: ScriptOperandGuard {
             shared_account: false,
         },
+        // 6.2.0 usage telemetry: opt-in, counts registered tool names only.
+        usage: usage.map(|tracker| Arc::new(tracker) as Arc<dyn UsageSink>),
     })
 }
 
-/// Registers the tools, mints the process's one `AdmissionKey` and builds the
-/// shared dispatcher. Errors are ready to print after the `NAME: ` prefix.
-fn single_user_dispatcher() -> Result<Arc<Dispatcher>, String> {
-    let registry = ToolRegistry::new()
-        .and_then(|mut r| register_tools(&mut r).map(|()| r))
-        .map_err(|e| format!("tool registration failed: {e}"))?;
+/// An extra registration hook for [`SingleUser::extra_tools`].
+pub type ExtraTools = fn(&mut ToolRegistry, &FamilyDeps) -> Result<(), RegistrationError>;
+
+/// Explicit settings for the single-user composition, so tests and embedders can
+/// point it at loopback stubs. [`SingleUser::from_process`] is what the binaries use.
+pub struct SingleUser {
+    config: Arc<ConfigManager>,
+    client_deps: ClientDeps,
+    docs_base_url: Option<String>,
+    working_dir: Option<PathBuf>,
+    docs_cache_dir: Option<PathBuf>,
+    docs_only: bool,
+    usage: Option<UsageTracker>,
+    extra: Vec<ExtraTools>,
+}
+
+impl SingleUser {
+    /// Process environment, default registry paths, OS keychain, reqwest.
+    pub fn from_process(config: Arc<ConfigManager>) -> Result<Self, String> {
+        Ok(Self::new(
+            config,
+            ClientDeps::production(Arc::new(LazySecretStore::os()))
+                .map_err(|e| format!("ServiceNow client setup failed: {e}"))?,
+        ))
+    }
+
+    /// `config` fixes the instances file and env map
+    /// (`ConfigManager::new(Arc::new(InstanceRegistry::at_paths(..)), Env::from_pairs(..))`);
+    /// `client_deps` the transport, clock, secret store and sign-in seams.
+    pub fn new(config: Arc<ConfigManager>, client_deps: ClientDeps) -> Self {
+        Self {
+            config,
+            client_deps,
+            docs_base_url: None,
+            working_dir: None,
+            docs_cache_dir: None,
+            docs_only: false,
+            usage: None,
+            extra: Vec::new(),
+        }
+    }
+
+    /// Raw docs base URL (6.2.0 docs tools; lane E). Default: the public one.
+    pub fn docs_base_url(mut self, url: impl Into<String>) -> Self {
+        self.docs_base_url = Some(url.into());
+        self
+    }
+
+    /// Working directory for files the tools write (fix scripts). Default: cwd.
+    pub fn working_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(dir.into());
+        self
+    }
+
+    /// Docs cache directory (lane E). Default: the 6.2.0 location.
+    pub fn docs_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.docs_cache_dir = Some(dir.into());
+        self
+    }
+
+    /// `--docs-only`: list and serve only the 6.2.0 `docsOnlyList` tools.
+    pub fn docs_only(mut self, on: bool) -> Self {
+        self.docs_only = on;
+        self
+    }
+
+    /// Counts each `tools/call` in `tracker` (6.2.0 `usageTracker.record`). Default:
+    /// no tracker, nothing counted. The caller keeps a clone to flush on shutdown.
+    pub fn usage(mut self, tracker: UsageTracker) -> Self {
+        self.usage = Some(tracker);
+        self
+    }
+
+    /// Test-only extra registrations, run after every family (e.g. the golden
+    /// harness's stub tools), so harnesses reuse these exact `Services`.
+    pub fn extra_tools(mut self, register: ExtraTools) -> Self {
+        self.extra.push(register);
+        self
+    }
+
+    pub fn config(&self) -> &Arc<ConfigManager> {
+        &self.config
+    }
+
+    /// Registers every family and builds the dispatcher with `key` (the process
+    /// mints exactly one).
+    pub fn dispatcher(self, key: AdmissionKey) -> Result<Arc<Dispatcher>, String> {
+        let credential_store = self.client_deps.credential_store.clone();
+        let clients = Arc::new(InstanceClients::from_config(
+            self.config.clone(),
+            self.client_deps,
+        ));
+        let mut family_deps = FamilyDeps::new(clients.clone(), self.config, credential_store);
+        family_deps.docs_base_url = self.docs_base_url;
+        family_deps.working_dir = self.working_dir;
+        family_deps.docs_cache_dir = self.docs_cache_dir;
+        family_deps.docs_only = self.docs_only;
+        let mut registry = ToolRegistry::new()
+            .and_then(|mut r| families::register_all(&mut r, &family_deps).map(|()| r))
+            .and_then(|mut r| {
+                for register in &self.extra {
+                    register(&mut r, &family_deps)?;
+                }
+                Ok(r)
+            })
+            .map_err(|e| format!("tool registration failed: {e}"))?;
+        if self.docs_only {
+            registry.retain_docs_only();
+        }
+        // Read by resources at request time; set only after docs-only filtering.
+        let _ = family_deps.tool_count.set(registry.tools().len());
+        let credentials = Arc::new(SingleUserCredentialProvider::new(clients));
+        let services =
+            single_user_services(&registry, credentials, self.usage).map_err(|e| e.to_string())?;
+        Ok(Arc::new(Dispatcher::new(registry, services, key)))
+    }
+}
+
+/// Mints the process's one `AdmissionKey` and builds the shared dispatcher over the
+/// OS keychain and the instance registry of `config`. Errors are ready to print
+/// after the `NAME: ` prefix. `usage` counts the calls (6.2.0 `defaultUsageTracker()`).
+fn single_user_dispatcher(
+    config: Arc<ConfigManager>,
+    usage: &UsageTracker,
+) -> Result<Arc<Dispatcher>, String> {
     let key = AdmissionKey::mint()
         .ok_or_else(|| "admission key already minted in this process".to_string())?;
-    let services = single_user_services(&registry).map_err(|e| e.to_string())?;
-    Ok(Arc::new(Dispatcher::new(registry, services, key)))
+    SingleUser::from_process(config)?
+        .usage(usage.clone())
+        .dispatcher(key)
 }
 
 fn multi_thread_runtime() -> Result<tokio::runtime::Runtime, String> {
@@ -86,17 +217,32 @@ pub fn serve_stdio() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let dispatcher = match single_user_dispatcher() {
+    let config = Arc::new(ConfigManager::from_process_env());
+    let usage = UsageTracker::from_env(config.env());
+    usage.set_transport("stdio");
+    let dispatcher = match single_user_dispatcher(config.clone(), &usage) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("{NAME}: {e}");
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(hpm_protocol::stdio::serve(
-        TrustedRoot::single_user_stdio(),
-        dispatcher,
-    )) {
+    let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
+        .registry(config)
+        .build();
+    // 6.2.0 `stdio-server.js` prints the notice to stderr (stdout carries the protocol).
+    if usage.enabled() {
+        eprintln!("{}", usage.describe());
+    }
+    let served = runtime.block_on(async {
+        let served = hpm_protocol::stdio::serve_handler(handler).await;
+        usage.stop();
+        usage.flush().await;
+        served
+    });
+    // Never wait unboundedly for `spawn_blocking` work (e.g. a resolver or keychain call).
+    runtime.shutdown_timeout(http::SHUTDOWN_GRACE);
+    match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{NAME}: {e}");

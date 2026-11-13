@@ -1,0 +1,1 @@
+{"properties":{"instance_name":{"description":"Name of the instance to switch to (e.g., \"dev\", \"prod\", \"test\"). Leave empty to list available instances.","type":"string"}},"type":"object"}

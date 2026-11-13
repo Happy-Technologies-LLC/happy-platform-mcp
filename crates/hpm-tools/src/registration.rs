@@ -1,12 +1,19 @@
-//! Tool and resource registration. Each tool lane exposes
-//! `pub fn register(registry: &mut ToolRegistry) -> Result<(), RegistrationError>`;
-//! the composition root calls every lane's `register` in 6.2.0 `tools/list` order (C5)
-//! and hands the registry to [`crate::dispatcher::Dispatcher::new`]. Listing order
-//! is registration order.
+//! Tool and resource registration. Each family module
+//! (`crate::families::{crud,itsm,update_sets,atf,instances,docs}`) exposes
+//! `pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), RegistrationError>`;
+//! the composition root calls them all and hands the registry to
+//! [`crate::dispatcher::Dispatcher::new`].
+//!
+//! Listing order (C5): 6.2.0 interleaves families in `tools/list`, so the registry
+//! keeps tools in 6.2.0 source order ([`crate::tool_order::TOOLS_LIST_ORDER`],
+//! compat-manifest `tools.items`) whatever order families register in.
+//! [`ToolRegistry::retain_docs_only`] narrows it to the `--docs-only` list.
+//! Resources list in registration order.
 //!
 //! Every tool must match its row in the bundled D-05 classification
 //! ([`ToolClassificationSet::bundled`]): declared access floor, output class, retry
-//! eligibility and side-effect class (review M3).
+//! eligibility and side-effect class (review M3). The registry attaches the row's
+//! `annotation_hints` as the descriptor's MCP annotations (D4, advisory only).
 
 use hpm_types::classification::{SideEffect, ToolClassification, ToolClassificationSet};
 use hpm_types::tool::{ResourceDescriptor, SideEffectClass, ToolDescriptor};
@@ -34,7 +41,15 @@ pub enum RegistrationError {
         tool: &'static str,
         field: &'static str,
     },
+    /// `handler_validates_input` bypasses the dispatcher's schema check, so it
+    /// is allowed only on tools whose handlers are tested to refuse bad input.
+    #[error("tool {0}: handler_validates_input is not allowed for this tool")]
+    HandlerValidationNotAllowed(&'static str),
 }
+
+/// Tools allowed to set `handler_validates_input` (review W3 M4). Each one
+/// has a dispatcher test proving its handler refuses schema-invalid input.
+pub const HANDLER_VALIDATED_TOOLS: [&str; 2] = ["SN-Register-Instance", "SN-Get-ATF-Results"];
 
 pub struct ToolRegistry {
     classification: ToolClassificationSet,
@@ -81,9 +96,12 @@ impl ToolRegistry {
         })
     }
 
-    pub fn register_tool(&mut self, tool: ToolDescriptor) -> Result<(), RegistrationError> {
+    pub fn register_tool(&mut self, mut tool: ToolDescriptor) -> Result<(), RegistrationError> {
         if self.tools.iter().any(|t| t.name == tool.name) {
             return Err(RegistrationError::DuplicateTool(tool.name));
+        }
+        if tool.handler_validates_input && !HANDLER_VALIDATED_TOOLS.contains(&tool.name) {
+            return Err(RegistrationError::HandlerValidationNotAllowed(tool.name));
         }
         let schema: Result<serde_json::Value, _> = serde_json::from_str(tool.input_schema_json);
         if !matches!(schema, Ok(serde_json::Value::Object(_))) {
@@ -99,7 +117,15 @@ impl ToolRegistry {
                 field,
             });
         }
-        self.tools.push(tool);
+        tool.annotations = row.annotation_hints;
+        let rank = crate::tool_order::rank;
+        let own = rank(tool.name);
+        let at = self
+            .tools
+            .iter()
+            .position(|t| rank(t.name) > own)
+            .unwrap_or(self.tools.len());
+        self.tools.insert(at, tool);
         Ok(())
     }
 
@@ -114,9 +140,16 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Registered tools in registration (`tools/list`) order; used to compile input schemas.
+    /// Registered tools in 6.2.0 `tools/list` (source) order; used to compile input schemas.
     pub fn tools(&self) -> &[ToolDescriptor] {
         &self.tools
+    }
+
+    /// `--docs-only` (`docsOnlyList`): drops every tool not on that list. Order is
+    /// unchanged, because the docs-only list keeps the full list's relative order.
+    pub fn retain_docs_only(&mut self) {
+        self.tools
+            .retain(|t| crate::tool_order::DOCS_ONLY_ORDER.contains(&t.name));
     }
 
     pub(crate) fn into_parts(self) -> (Vec<ToolDescriptor>, Vec<ResourceDescriptor>) {
@@ -178,6 +211,31 @@ mod tests {
             registry.register_tool(from_row(row)).expect(&row.name);
         }
         assert_eq!(registry.tools().len(), 60);
+    }
+
+    #[test]
+    fn listing_follows_6_2_0_source_order_and_carries_d05_hints() {
+        let mut registry = ToolRegistry::new().expect("registry");
+        let rows: Vec<_> = SET.iter().collect();
+        for row in &rows {
+            let mut tool = from_row(row);
+            tool.annotations = None;
+            registry.register_tool(tool).expect(&row.name);
+        }
+        let listed: Vec<_> = registry.tools().iter().map(|t| t.name).collect();
+        assert_eq!(listed, crate::tool_order::TOOLS_LIST_ORDER);
+        for tool in registry.tools() {
+            assert_eq!(
+                tool.annotations,
+                row(tool.name).annotation_hints,
+                "{}",
+                tool.name
+            );
+        }
+        assert!(registry.tools().iter().any(|t| t.annotations.is_some()));
+        registry.retain_docs_only();
+        let docs: Vec<_> = registry.tools().iter().map(|t| t.name).collect();
+        assert_eq!(docs, crate::tool_order::DOCS_ONLY_ORDER);
     }
 
     #[test]

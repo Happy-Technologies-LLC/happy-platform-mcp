@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use zeroize::Zeroize;
 
-use crate::credential::{InstanceCredentialStore, parse_credential_ref};
+use crate::credential::{CredentialStoreError, InstanceCredentialStore, parse_credential_ref};
 use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError};
 
 pub mod cicd_atf;
@@ -30,6 +30,7 @@ pub mod http;
 pub mod oauth_code;
 pub mod oauth_policy;
 mod pickers;
+mod pinned;
 pub mod script_processor;
 mod scripts;
 #[cfg(test)]
@@ -43,10 +44,15 @@ use oauth_policy::{
     MAX_URL_LENGTH, TRUSTED_OAUTH_ORIGINS_ENV, assert_approved_oauth_endpoint,
     resolve_oauth_endpoints, trim_trailing_slashes,
 };
-pub use scripts::{ProcessorOptions, TriggerOptions};
+pub use pinned::PinnedClient;
+pub use scripts::{ProcessorOptions, ProcessorRun, TriggerOptions};
 
-/// Progress callback: `(message, current, total)`.
-pub type ProgressCallback = Arc<dyn Fn(&str, Option<u64>, Option<u64>) + Send + Sync>;
+/// One call's progress route (6.2.0 per-request `progressContext`): the call's
+/// sink plus its monotonically increasing counter. Never shared across calls.
+struct CallProgress {
+    sink: Arc<dyn hpm_types::context::ProgressSink>,
+    last: Mutex<f64>,
+}
 
 pub const REST_USER_AGENT: &str = "axios/1.20.0";
 pub const UI_USER_AGENT: &str = "ServiceNow-MCP-Client/2.0";
@@ -135,6 +141,24 @@ pub struct ClientDeps {
 impl ClientDeps {
     pub fn env_trusted_origins() -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
         Arc::new(|| std::env::var(TRUSTED_OAUTH_ORIGINS_ENV).ok())
+    }
+
+    /// Production seams: reqwest transport, system clock, the given secret store
+    /// for credential refs and OAuth refresh tokens, the loopback browser sign-in.
+    pub fn production(secrets: Arc<dyn SecretStore>) -> Result<Self, ClientError> {
+        let transport = http::ReqwestTransport::new().map_err(|e| ClientError::plain(e.message))?;
+        Ok(Self {
+            transport: Arc::new(transport),
+            clock: Arc::new(http::SystemClock),
+            credential_store: InstanceCredentialStore::new(secrets.clone()),
+            token_store: secrets,
+            auth_flow: Arc::new(oauth_code::LoopbackAuthCodeFlow::new(Arc::new(
+                oauth_code::SystemBrowserOpener,
+            ))),
+            token_poster: None,
+            os_user: crate::token_store::os_user().unwrap_or_default(),
+            trusted_origins: Self::env_trusted_origins(),
+        })
     }
 }
 
@@ -369,17 +393,18 @@ pub fn resolve_instance_request(instance_url: &str, request: &str) -> Option<Str
 }
 
 /// One Table API path segment: `table` / `sys_id` values are percent-encoded
-/// (everything but `A-Za-z0-9_-`), and dot segments are rejected, so they
-/// cannot add query parameters, a fragment, an authority or `..` traversal.
-fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
+/// like JS `encodeURIComponent` (everything but `A-Za-z0-9-_.!~*'()`), and dot
+/// segments are rejected, so they cannot add query parameters, a fragment, an
+/// authority or `..` traversal.
+pub fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
     if value.is_empty() || value == "." || value == ".." {
-        return Err(ClientError::plain(format!(
-            "{field} is not a valid path segment"
-        )));
+        return Err(ClientError::invalid_path_segment(field));
     }
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+        // encodeURIComponent's unreserved set (6.2.0 parity). `/ ? # %` and space
+        // stay encoded; whole dot segments were rejected above.
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
             out.push(char::from(b));
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -389,7 +414,7 @@ fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
 }
 
 /// `/api/now/table/{table}[/{sys_id}]` with both segments encoded.
-fn table_path(table: &str, sys_id: Option<&str>) -> Result<String, ClientError> {
+pub fn table_path(table: &str, sys_id: Option<&str>) -> Result<String, ClientError> {
     let mut path = format!("/api/now/table/{}", path_segment(table, "table")?);
     if let Some(id) = sys_id {
         path.push('/');
@@ -596,16 +621,72 @@ fn non_empty(v: Option<&String>) -> Option<&str> {
     v.map(String::as_str).filter(|s| !s.is_empty())
 }
 
+fn result_of(data: Value) -> Value {
+    match data {
+        Value::Object(mut m) => m.remove("result").unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+/// `getRecords` path: Table API query parameters in the 6.x order.
+fn records_path(table: &str, query: &RecordQuery) -> Result<String, ClientError> {
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for (name, value) in [
+        ("sysparm_query", &query.query),
+        ("sysparm_limit", &query.limit),
+        ("sysparm_fields", &query.fields),
+        ("sysparm_offset", &query.offset),
+        ("sysparm_order_by", &query.order_by),
+    ] {
+        if let Some(v) = non_empty(value.as_ref()) {
+            pairs.push((name, v));
+        }
+    }
+    Ok(format!(
+        "{}?{}",
+        table_path(table, None)?,
+        form_encode(&pairs)
+    ))
+}
+
+/// `getRecord` path.
+fn record_path(table: &str, sys_id: &str, params: &RecordParams) -> Result<String, ClientError> {
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for (name, value) in [
+        ("sysparm_fields", &params.fields),
+        ("sysparm_display_value", &params.display_value),
+        (
+            "sysparm_exclude_reference_link",
+            &params.exclude_reference_link,
+        ),
+    ] {
+        if let Some(v) = non_empty(value.as_ref()) {
+            pairs.push((name, v));
+        }
+    }
+    let qs = form_encode(&pairs);
+    let base = table_path(table, Some(sys_id))?;
+    Ok(if qs.is_empty() {
+        base
+    } else {
+        format!("{base}?{qs}")
+    })
+}
+
 pub(crate) struct Inner {
     deps: ClientDeps,
     current: RwLock<Arc<State>>,
-    progress: Mutex<Option<ProgressCallback>>,
 }
 
-/// Cheap to clone; clones share one instance state.
+/// Cheap to clone; clones share one instance state. A pinned clone
+/// ([`PinnedClient::client`]) reads only its pinned generation: every method
+/// runs on that instance and fails closed (stale) once the live generation moved.
 #[derive(Clone)]
 pub struct ServiceNowClient {
     inner: Arc<Inner>,
+    pin: Option<Arc<State>>,
+    /// Set only on a per-call clone ([`ServiceNowClient::with_progress`]).
+    progress: Option<Arc<CallProgress>>,
 }
 
 impl ServiceNowClient {
@@ -615,8 +696,9 @@ impl ServiceNowClient {
             inner: Arc::new(Inner {
                 deps,
                 current: RwLock::new(Arc::new(state)),
-                progress: Mutex::new(None),
             }),
+            pin: None,
+            progress: None,
         })
     }
 
@@ -654,8 +736,14 @@ impl ServiceNowClient {
         })
     }
 
-    /// `setInstance`: a new generation with fresh caches.
+    /// `setInstance`: a new generation with fresh caches. Refused on a pinned
+    /// clone: a pinned handle never re-points its instance.
     pub fn set_instance(&self, config: InstanceConfig) -> Result<(), ClientError> {
+        if self.pin.is_some() {
+            return Err(ClientError::plain(
+                "Cannot change the instance of a pinned client",
+            ));
+        }
         let mut current = self
             .inner
             .current
@@ -666,7 +754,8 @@ impl ServiceNowClient {
         Ok(())
     }
 
-    pub(crate) fn state(&self) -> Arc<State> {
+    /// The live (current) generation's state, ignoring any pin.
+    fn live(&self) -> Arc<State> {
         self.inner
             .current
             .read()
@@ -674,14 +763,54 @@ impl ServiceNowClient {
             .clone()
     }
 
+    /// The state every request uses: the pin, else the live state.
+    pub(crate) fn state(&self) -> Arc<State> {
+        match &self.pin {
+            Some(st) => st.clone(),
+            None => self.live(),
+        }
+    }
+
+    /// The live generation (also on a pinned clone).
     pub fn generation(&self) -> u64 {
-        self.state().generation
+        self.live().generation
+    }
+
+    /// A clone that runs every method on `st` only.
+    pub(crate) fn pinned_to(&self, st: Arc<State>) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pin: Some(st),
+            progress: self.progress.clone(),
+        }
+    }
+
+    /// A clone that reports progress to one call's sink. Other clones (other
+    /// calls) are unaffected.
+    pub fn with_progress(&self, sink: Arc<dyn hpm_types::context::ProgressSink>) -> Self {
+        Self {
+            progress: Some(Arc::new(CallProgress {
+                sink,
+                last: Mutex::new(0.0),
+            })),
+            ..self.clone()
+        }
+    }
+
+    /// A handle pinned to `generation` (`client.pinned(generation)`, W2-B L-C).
+    /// Stale when `generation` is not the current one.
+    pub fn pinned(&self, generation: u64) -> Result<PinnedClient, ClientError> {
+        let st = self.live();
+        if st.generation != generation {
+            return Err(ClientError::stale());
+        }
+        Ok(PinnedClient::new(self, st))
     }
 
     /// Drops the cached access token of `generation` (after a 401). Returns
     /// false when the generation has moved.
     pub fn invalidate_access_token(&self, generation: u64) -> bool {
-        let st = self.state();
+        let st = self.live();
         if st.generation != generation {
             return false;
         }
@@ -703,24 +832,24 @@ impl ServiceNowClient {
         &self.inner.deps
     }
 
-    pub fn set_progress_callback(&self, callback: Option<ProgressCallback>) {
-        *self
-            .inner
-            .progress
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = callback;
-    }
-
-    pub fn notify_progress(&self, message: &str, current: Option<u64>, total: Option<u64>) {
-        let cb = self
-            .inner
-            .progress
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if let Some(cb) = cb {
-            cb(message, current, total);
-        }
+    /// 6.2.0 `notifyProgress`: routed to this call's sink only (none: dropped).
+    /// `progress` is `current` when finite, else last + 1, and never decreases.
+    pub async fn notify_progress(&self, message: &str, current: Option<u64>, total: Option<u64>) {
+        let Some(p) = &self.progress else {
+            return;
+        };
+        let progress = {
+            let mut last = p.last.lock().unwrap_or_else(|e| e.into_inner());
+            let mut next = current.map_or(*last + 1.0, |c| c as f64);
+            if next <= *last {
+                next = *last + 1.0;
+            }
+            *last = next;
+            next
+        };
+        p.sink
+            .emit(progress, total.map(|t| t as f64), Some(message.to_owned()))
+            .await;
     }
 
     /// `getCurrentInstance`.
@@ -802,13 +931,31 @@ impl ServiceNowClient {
         let flight_key = format!("cred:{key}");
         st.flights
             .run(&flight_key, || async move {
-                let result = store.get_secret(&cref).await;
+                // Owner rule: a saved secret is only ever sent to the origin it
+                // was stored for. The binding is written with the secret by the
+                // CLI; the request path never binds, so an unbound secret is
+                // refused until `instance credential bind`. The binding is the
+                // instance origin for every secret, the OAuth `client_secret`
+                // included: that one is sent to `tokenUrl`, whose origin is
+                // governed separately by the operator's trusted-origins
+                // allow-list (`TRUSTED_OAUTH_ORIGINS_ENV`), not by this binding.
+                let origin = url::Url::parse(&st2.url)
+                    .map(|u| oauth_policy::origin_of(&u))
+                    .map_err(|_| ClientError::credential("KEYCHAIN_OPERATION_FAILED"))?;
+                let result = store.get_secret_for_origin(&cref, &origin).await;
                 self.assert_current(&st2)?;
-                let value = result.map_err(|e| ClientError::credential(e.code()))?;
+                let value = result.map_err(|e| match e {
+                    CredentialStoreError::OriginUnbound(_)
+                    | CredentialStoreError::OriginMismatch(_) => {
+                        ClientError::new("CredentialResolutionError", e.to_string(), Some(e.code()))
+                    }
+                    e => ClientError::credential(e.code()),
+                })?;
                 let value = value.expose().to_owned();
                 if value.is_empty() {
                     return Err(ClientError::credential("CREDENTIAL_NOT_FOUND"));
                 }
+                self.assert_current(&st2)?;
                 st2.secrets
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1215,7 +1362,21 @@ impl ServiceNowClient {
         path: &str,
         body: Option<&Value>,
     ) -> Result<(u16, Value), ClientError> {
-        let st = self.state();
+        self.rest_in(&self.state(), method, path, body).await
+    }
+
+    /// [`Self::rest_with_status`] against the generation `st`: fails closed
+    /// (stale) before any credential is built when `st` is no longer current,
+    /// and after every await point (see [`PinnedClient`]).
+    pub(crate) async fn rest_in(
+        &self,
+        st: &Arc<State>,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value), ClientError> {
+        let st = st.clone();
+        self.assert_current(&st)?;
         // `requestBelongsToInstance`: checked before any credential is built.
         let url = resolve_instance_request(&st.url, path).ok_or_else(ClientError::stale)?;
         let header = self.auth_header_for(&st).await?;
@@ -1256,7 +1417,11 @@ impl ServiceNowClient {
         request: HttpRequest,
     ) -> Result<HttpResponse, ClientError> {
         let result = self.inner.deps.transport.send(request).await;
-        self.assert_current(st)?;
+        // The request already left: a moved generation now means "outcome
+        // unknown", not "never sent".
+        if self.assert_current(st).is_err() {
+            return Err(ClientError::stale_after_send());
+        }
         result.map_err(|e| {
             self.sanitize(
                 st,
@@ -1269,33 +1434,14 @@ impl ServiceNowClient {
         })
     }
 
-    fn result_of(data: Value) -> Value {
-        match data {
-            Value::Object(mut m) => m.remove("result").unwrap_or(Value::Null),
-            _ => Value::Null,
-        }
-    }
-
     /// `getRecords`.
     pub async fn get_records(
         &self,
         table: &str,
         query: &RecordQuery,
     ) -> Result<Value, ClientError> {
-        let mut pairs: Vec<(&str, &str)> = Vec::new();
-        for (name, value) in [
-            ("sysparm_query", &query.query),
-            ("sysparm_limit", &query.limit),
-            ("sysparm_fields", &query.fields),
-            ("sysparm_offset", &query.offset),
-            ("sysparm_order_by", &query.order_by),
-        ] {
-            if let Some(v) = non_empty(value.as_ref()) {
-                pairs.push((name, v));
-            }
-        }
-        let path = format!("{}?{}", table_path(table, None)?, form_encode(&pairs));
-        Ok(Self::result_of(self.rest(Method::Get, &path, None).await?))
+        let path = records_path(table, query)?;
+        Ok(result_of(self.rest(Method::Get, &path, None).await?))
     }
 
     /// `getRecord`.
@@ -1305,31 +1451,12 @@ impl ServiceNowClient {
         sys_id: &str,
         params: &RecordParams,
     ) -> Result<Value, ClientError> {
-        let mut pairs: Vec<(&str, &str)> = Vec::new();
-        for (name, value) in [
-            ("sysparm_fields", &params.fields),
-            ("sysparm_display_value", &params.display_value),
-            (
-                "sysparm_exclude_reference_link",
-                &params.exclude_reference_link,
-            ),
-        ] {
-            if let Some(v) = non_empty(value.as_ref()) {
-                pairs.push((name, v));
-            }
-        }
-        let qs = form_encode(&pairs);
-        let base = table_path(table, Some(sys_id))?;
-        let path = if qs.is_empty() {
-            base
-        } else {
-            format!("{base}?{qs}")
-        };
-        Ok(Self::result_of(self.rest(Method::Get, &path, None).await?))
+        let path = record_path(table, sys_id, params)?;
+        Ok(result_of(self.rest(Method::Get, &path, None).await?))
     }
 
     pub async fn create_record(&self, table: &str, data: &Value) -> Result<Value, ClientError> {
-        Ok(Self::result_of(
+        Ok(result_of(
             self.rest(Method::Post, &table_path(table, None)?, Some(data))
                 .await?,
         ))
@@ -1341,7 +1468,7 @@ impl ServiceNowClient {
         sys_id: &str,
         data: &Value,
     ) -> Result<Value, ClientError> {
-        Ok(Self::result_of(
+        Ok(result_of(
             self.rest(Method::Put, &table_path(table, Some(sys_id))?, Some(data))
                 .await?,
         ))

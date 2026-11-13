@@ -852,6 +852,7 @@ dependencies = [
  "nix",
  "regex",
  "reqwest",
+ "ring",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
@@ -903,11 +904,20 @@ dependencies = [
 name = "hpm-tools"
 version = "7.0.0-alpha.0"
 dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "hpm-cli",
+ "hpm-core",
+ "hpm-docs",
+ "hpm-protocol",
  "hpm-types",
  "jsonschema",
+ "regex",
+ "reqwest",
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

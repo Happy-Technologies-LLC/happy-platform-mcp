@@ -20,6 +20,7 @@ pub mod operation;
 pub mod policy;
 pub mod protect;
 pub mod registry;
+pub mod servicenow;
 pub mod tool;
 
 use std::pin::Pin;

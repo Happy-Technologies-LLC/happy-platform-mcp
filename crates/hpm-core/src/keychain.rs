@@ -410,6 +410,57 @@ impl SecretStore for MemorySecretStore {
 
 pub const CREDENTIAL_PREFIX: &str = "keychain:instance/";
 
+/// Keychain account holding the origin a saved secret is bound to (owner
+/// rule: a secret is only sent to that origin). Same service as the secret.
+pub fn origin_binding_account(reference: &str) -> String {
+    format!(
+        "keychain:instance-origin/{}",
+        reference
+            .strip_prefix(CREDENTIAL_PREFIX)
+            .unwrap_or(reference)
+    )
+}
+
+/// Domain label of the origin-binding MAC (review M-B).
+const BINDING_MAC_LABEL: &[u8] = b"happy-platform-mcp/origin-binding/v1";
+
+fn binding_mac_input(reference: &str, origin: &str) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(BINDING_MAC_LABEL.len() + reference.len() + origin.len() + 2);
+    msg.extend_from_slice(BINDING_MAC_LABEL);
+    msg.push(0);
+    msg.extend_from_slice(reference.as_bytes());
+    msg.push(0);
+    msg.extend_from_slice(origin.as_bytes());
+    msg
+}
+
+/// The stored binding item: the origin in clear (for error text) plus
+/// HMAC-SHA256 keyed by the secret over label, reference and origin, so only
+/// a holder of the secret can create a binding that verifies.
+pub fn origin_binding_value(reference: &str, secret: &str, origin: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+    let tag = ring::hmac::sign(&key, &binding_mac_input(reference, origin));
+    let mac: String = tag.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    serde_json::json!({"origin": origin, "mac": mac}).to_string()
+}
+
+/// The origin of a stored binding item, only when its MAC verifies for
+/// `secret` (constant-time). A plain, forged, copied or stale item is `None`.
+pub fn verified_binding_origin(reference: &str, secret: &str, stored: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(stored).ok()?;
+    let origin = v.get("origin")?.as_str()?;
+    let hex = v.get("mac")?.as_str()?;
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mac = (0..32)
+        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+    ring::hmac::verify(&key, &binding_mac_input(reference, origin), &mac).ok()?;
+    Some(origin.to_owned())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialType {
     Password,
@@ -471,6 +522,72 @@ pub fn keychain_unavailable() -> CodedError {
 
 pub fn keychain_operation_failed() -> CodedError {
     CodedError::new("KEYCHAIN_OPERATION_FAILED", "Keychain operation failed")
+}
+
+/// The web origin (`scheme://host[:port]`) a secret is bound to.
+pub fn instance_origin(url: &str) -> Result<String, CodedError> {
+    let origin = url::Url::parse(url)
+        .map_err(|_| invalid_instance_origin())?
+        .origin()
+        .ascii_serialization();
+    if origin == "null" {
+        return Err(invalid_instance_origin());
+    }
+    Ok(origin)
+}
+
+fn invalid_instance_origin() -> CodedError {
+    CodedError::new(
+        "INVALID_INSTANCE_URL",
+        "The instance URL has no web origin to bind the credential to",
+    )
+}
+
+/// A saved secret bound to another origin than the instance now registered
+/// under its name. Only origins are named.
+pub fn credential_origin_mismatch(name: &str, bound: &str, current: &str) -> CodedError {
+    CodedError::new(
+        crate::client::error::CREDENTIAL_ORIGIN_MISMATCH_CODE,
+        format!(
+            "The saved credential for instance '{name}' was saved for {bound}, but the instance now points to {current}; it will not be sent there. Check the instance URL first: if {current} is not your instance, fix the URL. Only if the instance really moved, re-save the credential for {current} with: happy-platform-mcp instance credential set {name} (it asks you to confirm the new URL)"
+        ),
+    )
+}
+
+/// A saved secret with no origin binding (saved by 6.x, or a failed write).
+pub fn credential_origin_unbound(name: &str) -> CodedError {
+    CodedError::new(
+        crate::client::error::CREDENTIAL_ORIGIN_UNBOUND_CODE,
+        format!(
+            "The saved credential for instance '{name}' is not bound to an instance URL yet; it will not be sent. Bind it once to the registered URL with: happy-platform-mcp instance credential bind {name}"
+        ),
+    )
+}
+
+/// `instance credential bind`: the re-entered secret is not the saved one.
+fn credential_secret_mismatch(name: &str) -> CodedError {
+    CodedError::new(
+        "CREDENTIAL_SECRET_MISMATCH",
+        format!(
+            "The secret you entered does not match the saved credential for instance '{name}'. Nothing was bound."
+        ),
+    )
+}
+
+/// Constant-time equality of two secrets: an HMAC-SHA256 tag keyed by one,
+/// checked with ring's constant-time verify under the other.
+fn secrets_equal(a: &str, b: &str) -> bool {
+    const LABEL: &[u8] = b"happy-platform-mcp/credential-bind/v1";
+    let tag = ring::hmac::sign(
+        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, a.as_bytes()),
+        LABEL,
+    );
+    ring::hmac::verify(
+        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b.as_bytes()),
+        LABEL,
+        tag.as_ref(),
+    )
+    .is_ok()
 }
 
 fn store_error(e: SecretStoreError) -> CodedError {
@@ -573,13 +690,37 @@ impl InstanceCredentialStore {
         }
     }
 
-    pub async fn set_secret(&self, reference: &str, value: &str) -> Result<(), CodedError> {
+    /// Saves `value` bound to `origin` (owner rule: a saved secret is only ever
+    /// sent to the origin it was stored for). See [`Self::restore_secret`].
+    pub async fn set_secret(
+        &self,
+        reference: &str,
+        value: &str,
+        origin: &str,
+    ) -> Result<(), CodedError> {
+        self.restore_secret(reference, value, Some(origin)).await
+    }
+
+    /// Writes `value` with exactly `binding` (`None`: unbound, as a rollback of
+    /// an unbound 6.x secret). The old binding is cleared first and the new one
+    /// written last, so any partial failure leaves the secret unbound, which
+    /// is never sent (fail closed).
+    pub async fn restore_secret(
+        &self,
+        reference: &str,
+        value: &str,
+        binding: Option<&str>,
+    ) -> Result<(), CodedError> {
         let parsed = parse_credential_ref(reference)?;
         if value.is_empty() {
             return Err(CodedError::plain(
                 "Credential value must be a non-empty string",
             ));
         }
+        if binding.is_some_and(|o| o.is_empty() || o == "null") {
+            return Err(invalid_instance_origin());
+        }
+        self.clear_origin_binding(&parsed.reference).await?;
         self.store
             .set(
                 &self.service,
@@ -587,6 +728,124 @@ impl InstanceCredentialStore {
                 Secret::new(value.to_owned()),
             )
             .await
+            .map_err(store_error)?;
+        match binding {
+            Some(origin) => self.write_binding(&parsed.reference, value, origin).await,
+            None => Ok(()),
+        }
+    }
+
+    /// The origin `reference`'s secret is bound to (`None`: unbound, which
+    /// includes a binding item whose MAC does not verify for the saved secret).
+    pub async fn bound_origin(&self, reference: &str) -> Result<Option<String>, CodedError> {
+        let parsed = parse_credential_ref(reference)?;
+        let get = |account: String| async move {
+            self.store
+                .get(&self.service, &account)
+                .await
+                .map_err(store_error)
+        };
+        let Some(stored) = get(origin_binding_account(&parsed.reference)).await? else {
+            return Ok(None);
+        };
+        let Some(secret) = get(parsed.reference.clone()).await? else {
+            return Ok(None);
+        };
+        Ok(verified_binding_origin(
+            &parsed.reference,
+            secret.expose(),
+            stored.expose(),
+        ))
+    }
+
+    /// Binds `reference`'s existing secret to `origin`, a normalised web
+    /// origin (`instance credential bind`), only when `entered` (the secret the
+    /// operator typed again) equals the saved one; on a mismatch nothing is
+    /// written. Any existing binding item is deleted before the new one is
+    /// written, so a failed write leaves the secret unbound (fail closed).
+    pub async fn bind_origin(
+        &self,
+        reference: &str,
+        origin: &str,
+        entered: &str,
+    ) -> Result<(), CodedError> {
+        let parsed = parse_credential_ref(reference)?;
+        if instance_origin(origin).ok().as_deref() != Some(origin) {
+            return Err(invalid_instance_origin());
+        }
+        let secret = self.matching_secret(&parsed, entered).await?;
+        self.clear_origin_binding(&parsed.reference).await?;
+        self.write_binding(&parsed.reference, secret.expose(), origin)
+            .await
+    }
+
+    /// Checks that `entered` equals `reference`'s saved secret (constant
+    /// time); writes nothing.
+    pub async fn verify_secret(&self, reference: &str, entered: &str) -> Result<(), CodedError> {
+        let parsed = parse_credential_ref(reference)?;
+        self.matching_secret(&parsed, entered).await.map(drop)
+    }
+
+    async fn matching_secret(
+        &self,
+        parsed: &ParsedCredentialRef,
+        entered: &str,
+    ) -> Result<Secret, CodedError> {
+        let secret = self.get_secret(&parsed.reference).await?;
+        if secrets_equal(secret.expose(), entered) {
+            Ok(secret)
+        } else {
+            Err(credential_secret_mismatch(&parsed.instance_name))
+        }
+    }
+
+    async fn write_binding(
+        &self,
+        reference: &str,
+        secret: &str,
+        origin: &str,
+    ) -> Result<(), CodedError> {
+        self.store
+            .set(
+                &self.service,
+                &origin_binding_account(reference),
+                Secret::new(origin_binding_value(reference, secret, origin)),
+            )
+            .await
+            .map_err(store_error)
+    }
+
+    /// The secret, only when it is bound to `origin`; an unbound or
+    /// differently bound secret is refused without being returned. The MAC
+    /// is checked against the secret read here, so a value/binding pair from
+    /// two different writes never verifies.
+    pub async fn get_secret_for_origin(
+        &self,
+        reference: &str,
+        origin: &str,
+    ) -> Result<Secret, CodedError> {
+        let parsed = parse_credential_ref(reference)?;
+        let secret = self.get_secret(&parsed.reference).await?;
+        let stored = self
+            .store
+            .get(&self.service, &origin_binding_account(&parsed.reference))
+            .await
+            .map_err(store_error)?;
+        let name = parsed.instance_name;
+        match stored
+            .and_then(|s| verified_binding_origin(&parsed.reference, secret.expose(), s.expose()))
+        {
+            Some(bound) if bound == origin => Ok(secret),
+            Some(bound) => Err(credential_origin_mismatch(&name, &bound, origin)),
+            None => Err(credential_origin_unbound(&name)),
+        }
+    }
+
+    async fn clear_origin_binding(&self, reference: &str) -> Result<(), CodedError> {
+        self.store
+            .delete(&self.service, &origin_binding_account(reference))
+            .await
+            .map(|_| ())
             .map_err(store_error)
     }
 
@@ -627,6 +886,7 @@ impl InstanceCredentialStore {
         {
             return Err(keychain_operation_failed());
         }
+        self.clear_origin_binding(&parsed.reference).await?;
         Ok(true)
     }
 }

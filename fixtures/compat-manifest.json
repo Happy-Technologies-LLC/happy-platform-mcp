@@ -1801,5 +1801,21 @@
       ],
       "note": "verbatim constant that the manifest encodes"
     }
-  ]
+  ],
+  "tools70": {
+    "fixture": {
+      "path": "fixtures/tools-list-7.0.json",
+      "sha256": "02c785ec065e6207e15ffb497cfb5210edebb960de7e2e7e4d053e5c6eeb23f7",
+      "origin": "generated from the Rust registry: HPM_WRITE_TOOLS_LIST=1 cargo test -p hpm-tools --test tools_list (Q1 re-capture, plan W3 §6 item 1)"
+    },
+    "relation": "Registration order (tools.items); names, descriptions and inputSchemas equal to tools.fixture except deviations; plus D-05 annotation_hints (crates/hpm-types/data/tool-classification.json) as `annotations`. Enforced by crates/hpm-tools/tests/tools_list.rs.",
+    "deviations": [
+      {
+        "tool": "SN-Batch-Create",
+        "pointer": "/inputSchema/properties/transaction/description",
+        "decision": "owner decision 11",
+        "was": "All-or-nothing transaction (default: true)"
+      }
+    ]
+  }
 }

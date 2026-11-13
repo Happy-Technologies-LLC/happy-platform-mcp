@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use hpm_core::config::{CodedError, Env, Object, resolve_path};
 use hpm_core::keychain::{
-    CredentialType, InstanceCredentialStore, SecretStore, credential_ref_for,
+    CredentialType, InstanceCredentialStore, SecretStore, credential_ref_for, instance_origin,
 };
 use hpm_core::registry::{
     InstanceRegistry, RegisterOptions, is_secret_shaped_key, redact_secrets,
@@ -27,7 +27,11 @@ pub const SECRET_ARGUMENT_ERROR: &str =
     "Secret flags and values are not accepted in command arguments; use a masked prompt.";
 /// First line of `instance migrate` before its confirm prompt (not in 6.2.0).
 pub const MIGRATION_SOURCE_PREFIX: &str = "Migration source: ";
+/// First line of `instance credential set` before any prompt (not in 6.2.0).
+pub const CREDENTIAL_ORIGIN_PREFIX: &str = "Saving the credential for ";
 const NON_INTERACTIVE: &str = "Non-interactive use requires an interactive TTY for masked prompts; rerun in a terminal or inject the required prompt function.";
+/// 6.2.0 text, verbatim (CLI goldens). `instance credential bind <name>` is
+/// not listed; the unbound-secret errors print that command instead.
 pub const USAGE: &str = "Usage:
   happy-platform-mcp instance add
   happy-platform-mcp instance list
@@ -238,6 +242,9 @@ impl Probe for HttpProbe {
     ) -> BoxFut<'a, Result<(), ProbeError>> {
         Box::pin(async move {
             let base = str_of(instance, "url").unwrap_or("").to_owned();
+            // Owner rule, as in the server: only a secret bound to this
+            // origin is read; an unbound or moved one is refused unsent.
+            let origin = instance_origin(&base).map_err(credential_probe_error)?;
             let http = probe_client()?;
             let target = format!("{base}/api/now/table/sys_user?sysparm_limit=1");
             let username = str_of(instance, "username").unwrap_or("").to_owned();
@@ -251,7 +258,7 @@ impl Probe for HttpProbe {
                 let reference = credential_ref(instance, "clientSecret")
                     .ok_or_else(|| probe_error("Credential not found"))?;
                 let secret = credentials
-                    .get_secret(&reference)
+                    .get_secret_for_origin(&reference, &origin)
                     .await
                     .map_err(credential_probe_error)?;
                 let client_id = str_of(instance, "clientId").unwrap_or("").to_owned();
@@ -265,7 +272,7 @@ impl Probe for HttpProbe {
                     let reference = credential_ref(instance, "password")
                         .ok_or_else(|| probe_error("Credential not found"))?;
                     let password = credentials
-                        .get_secret(&reference)
+                        .get_secret_for_origin(&reference, &origin)
                         .await
                         .map_err(credential_probe_error)?;
                     pairs.push(("username", Zeroizing::new(username)));
@@ -312,7 +319,7 @@ impl Probe for HttpProbe {
                 let reference = credential_ref(instance, "password")
                     .ok_or_else(|| probe_error("Credential not found"))?;
                 let password = credentials
-                    .get_secret(&reference)
+                    .get_secret_for_origin(&reference, &origin)
                     .await
                     .map_err(credential_probe_error)?;
                 http.get(&target)
@@ -830,7 +837,9 @@ fn to_ref(kind: CredentialType, name: &str) -> Result<String, CodedError> {
 struct Snapshot {
     reference: String,
     existed: bool,
-    value: Option<String>,
+    value: Option<Zeroizing<String>>,
+    /// The origin the secret was bound to; restored with it.
+    binding: Option<String>,
 }
 
 async fn has_secret(store: &InstanceCredentialStore, reference: &str) -> Result<bool, CodedError> {
@@ -849,13 +858,16 @@ async fn snapshot_secret(
             reference: reference.into(),
             existed: false,
             value: None,
+            binding: None,
         });
     }
-    let value = store.get_secret(reference).await?.expose().to_owned();
+    let value = Zeroizing::new(store.get_secret(reference).await?.expose().to_owned());
+    let binding = store.bound_origin(reference).await?;
     Ok(Snapshot {
         reference: reference.into(),
         existed: true,
         value: Some(value),
+        binding,
     })
 }
 
@@ -863,12 +875,19 @@ async fn set_with_snapshot(
     store: &InstanceCredentialStore,
     reference: &str,
     value: &str,
+    origin: &str,
     snapshots: &mut Vec<Snapshot>,
 ) -> Result<(), CodedError> {
     if !snapshots.iter().any(|s| s.reference == reference) {
         snapshots.push(snapshot_secret(store, reference).await?);
     }
-    store.set_secret(reference, value).await
+    store.set_secret(reference, value, origin).await
+}
+
+/// Origin of the instance URL registered (or being registered) under a name:
+/// every saved secret is bound to it at write time.
+fn origin_of_instance(instance: &Object) -> Result<String, CodedError> {
+    instance_origin(str_of(instance, "url").unwrap_or(""))
 }
 
 async fn restore_snapshots(
@@ -880,7 +899,11 @@ async fn restore_snapshots(
     for snapshot in snapshots.iter().rev() {
         let ok = if snapshot.existed {
             ctx.credentials
-                .set_secret(&snapshot.reference, snapshot.value.as_deref().unwrap_or(""))
+                .restore_secret(
+                    &snapshot.reference,
+                    snapshot.value.as_ref().map_or("", |v| v.as_str()),
+                    snapshot.binding.as_deref(),
+                )
                 .await
                 .is_ok()
         } else {
@@ -1154,23 +1177,24 @@ async fn add_command(args: &[String], ctx: &mut CliContext<'_>) -> Result<i32, C
         ));
     }
     ctx.registry.validate(&Value::Object(candidate))?;
+    let origin = origin_of_instance(&instance)?;
     let mut snapshots = Vec::new();
     let result: Result<Object, CodedError> = async {
         if auth == "basic" {
             let secret = prompt_secret(ctx, "password", "Password:")?;
             let r = password_ref.clone().unwrap_or_default();
-            set_with_snapshot(&ctx.credentials, &r, &secret, &mut snapshots).await?;
+            set_with_snapshot(&ctx.credentials, &r, &secret, &origin, &mut snapshots).await?;
         } else if grant == "client_credentials" {
             let secret = prompt_secret(ctx, "clientSecret", "Client secret:")?;
             let r = secret_ref.clone().unwrap_or_default();
-            set_with_snapshot(&ctx.credentials, &r, &secret, &mut snapshots).await?;
+            set_with_snapshot(&ctx.credentials, &r, &secret, &origin, &mut snapshots).await?;
         } else if grant == "password" {
             let pw = prompt_secret(ctx, "password", "Password:")?;
             let cs = prompt_secret(ctx, "clientSecret", "Client secret:")?;
             let p = password_ref.clone().unwrap_or_default();
             let c = secret_ref.clone().unwrap_or_default();
-            set_with_snapshot(&ctx.credentials, &p, &pw, &mut snapshots).await?;
-            set_with_snapshot(&ctx.credentials, &c, &cs, &mut snapshots).await?;
+            set_with_snapshot(&ctx.credentials, &p, &pw, &origin, &mut snapshots).await?;
+            set_with_snapshot(&ctx.credentials, &c, &cs, &origin, &mut snapshots).await?;
         }
         if let Some(r) = &credential_ref {
             instance.insert("credentialRef".into(), r.clone());
@@ -1375,6 +1399,29 @@ async fn credential_set_command(
     let patch = credential_ref_patch(&instance, kind, &reference);
     ctx.registry
         .validate(&Value::Object(merged(&instance, &patch)))?;
+    let origin = origin_of_instance(&instance)?;
+    // M-A: the operator sees the target before typing the secret, and a new
+    // or changed binding needs an explicit yes (default No), as `bind`.
+    ctx.out(&format!(
+        "{CREDENTIAL_ORIGIN_PREFIX}{origin}; it will only ever be sent there."
+    ));
+    let current = ctx.credentials.bound_origin(&reference).await?;
+    if current.as_deref() != Some(origin.as_str()) {
+        let question = match &current {
+            Some(bound) => format!(
+                "The saved credential for '{name}' is bound to {bound}. Check the instance URL: re-bind it to {origin}?"
+            ),
+            None => format!("Bind the credential for '{name}' to {origin}?"),
+        };
+        let confirmed = ctx.ask(
+            PromptKind::Confirm,
+            spec("confirmOrigin", &question, Some(json!(false))),
+        )?;
+        if !hpm_core::config::truthy(Some(&confirmed)) {
+            ctx.out("Cancelled.");
+            return Ok(0);
+        }
+    }
     let snapshots = vec![snapshot_secret(&ctx.credentials, &reference).await?];
     let label = if kind == CredentialType::Password {
         "Password"
@@ -1383,7 +1430,9 @@ async fn credential_set_command(
     };
     let secret = prompt_secret(ctx, "secret", &format!("{label}:"))?;
     let result = async {
-        ctx.credentials.set_secret(&reference, &secret).await?;
+        ctx.credentials
+            .set_secret(&reference, &secret, &origin)
+            .await?;
         ctx.registry.update(name, &patch)
     }
     .await;
@@ -1394,6 +1443,84 @@ async fn credential_set_command(
     ctx.out(&format!(
         "Credential '{}' updated for instance '{name}'.",
         kind.as_str()
+    ));
+    Ok(0)
+}
+
+/// `instance credential bind <name>`: binds secrets saved without an origin
+/// (6.x, or migrated before binding existed) to the origin of the URL now
+/// registered under `name`. The operator re-enters each secret (masked, as
+/// `credential set` asks for it) and confirms the origin; a secret that does
+/// not match the saved one binds nothing. A secret already bound elsewhere is
+/// refused (re-save it with `set`).
+async fn credential_bind_command(name: &str, ctx: &mut CliContext<'_>) -> Result<i32, CodedError> {
+    let instance = ctx.registry.get(name)?;
+    let origin = origin_of_instance(&instance)?;
+    let mut refs: Vec<String> = Vec::new();
+    for r in instance_credential_refs(&instance) {
+        if !refs.contains(&r) && has_secret(&ctx.credentials, &r).await? {
+            refs.push(r);
+        }
+    }
+    if refs.is_empty() {
+        return Err(CodedError::new(
+            "CREDENTIAL_NOT_FOUND",
+            format!("No saved credential to bind for instance '{name}'."),
+        ));
+    }
+    let mut unbound = Vec::new();
+    for r in refs {
+        match ctx.credentials.bound_origin(&r).await? {
+            Some(bound) if bound == origin => {}
+            Some(bound) => {
+                return Err(CodedError::new(
+                    "CREDENTIAL_ORIGIN_MISMATCH",
+                    format!(
+                        "The saved credential for instance '{name}' is already bound to {bound}, not {origin}. Re-save it with: happy-platform-mcp instance credential set {name}"
+                    ),
+                ));
+            }
+            None => unbound.push(r),
+        }
+    }
+    if unbound.is_empty() {
+        ctx.out(&format!(
+            "Credentials for instance '{name}' are already bound to {origin}."
+        ));
+        return Ok(0);
+    }
+    // Prove possession first: every re-entered secret must match before the
+    // origin confirm, and nothing is written on a mismatch.
+    let mut entered = Vec::with_capacity(unbound.len());
+    for r in &unbound {
+        let kind = r.rsplit('/').next().unwrap_or("secret");
+        let secret = prompt_secret(
+            ctx,
+            "secret",
+            &format!("Re-enter the saved {kind} for '{name}' to bind it:"),
+        )?;
+        ctx.credentials.verify_secret(r, &secret).await?;
+        entered.push(secret);
+    }
+    let confirmed = ctx.ask(
+        PromptKind::Confirm,
+        spec(
+            "confirm",
+            &format!(
+                "Bind the saved credentials for '{name}' to {origin}? They will only ever be sent there."
+            ),
+            Some(json!(false)),
+        ),
+    )?;
+    if !hpm_core::config::truthy(Some(&confirmed)) {
+        ctx.out("Cancelled.");
+        return Ok(0);
+    }
+    for (r, secret) in unbound.iter().zip(&entered) {
+        ctx.credentials.bind_origin(r, &origin, secret).await?;
+    }
+    ctx.out(&format!(
+        "Bound credentials for instance '{name}' to {origin}."
     ));
     Ok(0)
 }
@@ -1518,7 +1645,7 @@ const LEGACY_SECRET_KEYS: [&str; 7] = [
 struct LegacyEntry {
     index: usize,
     kind: String,
-    value: String,
+    value: Zeroizing<String>,
 }
 
 fn legacy_secret_entries(document: &Value) -> Result<Vec<LegacyEntry>, CodedError> {
@@ -1575,7 +1702,7 @@ fn legacy_secret_entries(document: &Value) -> Result<Vec<LegacyEntry>, CodedErro
                         out.push(LegacyEntry {
                             index: instance.unwrap_or(0),
                             kind: key.clone(),
-                            value: s.to_owned(),
+                            value: Zeroizing::new(s.to_owned()),
                         });
                         continue;
                     }
@@ -1598,7 +1725,9 @@ fn legacy_secret_entries(document: &Value) -> Result<Vec<LegacyEntry>, CodedErro
 
 struct MigrationWrite {
     reference: String,
-    value: String,
+    value: Zeroizing<String>,
+    /// Origin of the entry's URL (validated before any write).
+    origin: String,
 }
 
 fn label_of(instance: &Object, index: usize) -> String {
@@ -1714,6 +1843,11 @@ fn build_migrated_document(
             ));
         }
         let mut candidate = instance.clone();
+        // Bound with the secret at write time; an invalid URL fails
+        // `validate` below before any write.
+        let origin = str_of(instance, "url")
+            .and_then(|u| instance_origin(u).ok())
+            .unwrap_or_default();
         candidate.remove("password");
         candidate.remove("clientSecret");
         if auth == "oauth"
@@ -1744,6 +1878,7 @@ fn build_migrated_document(
             writes.push(MigrationWrite {
                 reference: r,
                 value: p.value.clone(),
+                origin: origin.clone(),
             });
         } else if let (true, Some(c)) = (
             auth == "oauth" && grant == "client_credentials",
@@ -1754,6 +1889,7 @@ fn build_migrated_document(
             writes.push(MigrationWrite {
                 reference: r,
                 value: c.value.clone(),
+                origin: origin.clone(),
             });
         } else if let (true, Some(p), Some(c)) = (
             auth == "oauth" && grant == "password",
@@ -1769,10 +1905,12 @@ fn build_migrated_document(
             writes.push(MigrationWrite {
                 reference: pr,
                 value: p.value.clone(),
+                origin: origin.clone(),
             });
             writes.push(MigrationWrite {
                 reference: cr,
                 value: c.value.clone(),
+                origin: origin.clone(),
             });
         }
         registry.validate(&Value::Object(candidate.clone()))?;
@@ -1863,7 +2001,14 @@ async fn migrate_command(ctx: &mut CliContext<'_>) -> Result<i32, CodedError> {
     let mut snapshots = Vec::new();
     let result: Result<(), CodedError> = async {
         for w in &writes {
-            set_with_snapshot(&ctx.credentials, &w.reference, &w.value, &mut snapshots).await?;
+            set_with_snapshot(
+                &ctx.credentials,
+                &w.reference,
+                &w.value,
+                &w.origin,
+                &mut snapshots,
+            )
+            .await?;
         }
         ctx.registry.write_migrated_document(&migrated)
     }
@@ -1911,6 +2056,12 @@ pub async fn run_instance_cli(argv: &[String], ctx: &mut CliContext<'_>) -> i32 
             "instance remove requires exactly one instance name.",
         )),
         "remove" => remove_command(&args[1], ctx).await,
+        "credential" if args.get(1).map(String::as_str) == Some("bind") && args.len() != 3 => Err(
+            usage_error("instance credential bind requires exactly one instance name."),
+        ),
+        "credential" if args.get(1).map(String::as_str) == Some("bind") => {
+            credential_bind_command(&args[2], ctx).await
+        }
         "credential" if args.get(1).map(String::as_str) != Some("set") || args.len() < 3 => Err(
             usage_error("instance credential set requires an instance name."),
         ),

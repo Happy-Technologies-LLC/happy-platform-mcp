@@ -17,7 +17,7 @@ use hpm_types::context::{AdmissionKey, ProgressSink, RequestContext};
 use hpm_types::credential::{CredentialError, CredentialNeed, CredentialProvider};
 use hpm_types::dispatch::{
     DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered, SchemaValidator,
-    UNCLASSIFIED_TABLE,
+    UNCLASSIFIED_TABLE, UsageSink,
 };
 use hpm_types::operation::{
     Action, ClassificationSource, Operation, OperationSet, ScriptOperandGuard, Subject,
@@ -28,7 +28,7 @@ use hpm_types::protect::{
     DataProtector, InputVerdict, OnUnanalyzable, ProtectedProgress, ProtectionContext,
 };
 use hpm_types::tool::{
-    HandlerCompletion, MutationOutcome, NormalizeInput, OutputClass, ResourceDescriptor,
+    HandlerCompletion, MutationOutcome, NormalizeInput, OutputClass, Renderer, ResourceDescriptor,
     ResultBody, ToolDescriptor, ToolError,
 };
 
@@ -36,7 +36,8 @@ use crate::registration::ToolRegistry;
 
 const WITHHELD_COMMITTED: &str = "The operation completed on ServiceNow, but its result was withheld by data protection policy. Do not retry.";
 const PARTIAL_TEXT: &str = "Some changes were committed on ServiceNow and others were not. Do not re-run the whole call; check the affected records first.";
-const UNKNOWN_TEXT: &str = "The request reached ServiceNow but its result could not be confirmed. Do not retry; check the affected records first.";
+/// Shown for every `Unknown` outcome; handler text for one leads with it.
+pub const UNKNOWN_TEXT: &str = "The request reached ServiceNow but its result could not be confirmed. Do not retry; check the affected records first.";
 const COMMITTED_FOLLOWUP_FAILED: &str =
     "The operation completed on ServiceNow, but a follow-up step failed. Do not retry.";
 const AUDIT_COMPLETE_RETRIES: usize = 3;
@@ -51,6 +52,9 @@ pub struct Services {
     pub credentials: Arc<dyn CredentialProvider>,
     pub audit: Arc<dyn AuditSink>,
     pub script_guard: ScriptOperandGuard,
+    /// 6.2.0 per-call usage count (G7). Called once per `tools/call`, after lookup,
+    /// with the registered tool name only. `None`: no telemetry.
+    pub usage: Option<Arc<dyn UsageSink>>,
 }
 
 pub struct Dispatcher {
@@ -290,10 +294,26 @@ impl Dispatcher {
             .get_tool(name)
             .ok_or_else(|| ToolError::InvalidParams(format!("Unknown tool: {name}")))?;
         let subject = Subject::Tool(tool.name);
+        if let Some(usage) = &s.usage {
+            usage.record(tool.name);
+        }
 
-        if let Err(msg) = s.validator.validate(tool, &args) {
+        // A tool flagged `handler_validates_input` refuses bad input itself with
+        // 6.2.0's text, so a schema failure does not pre-empt it.
+        if let Err(msg) = s.validator.validate(tool, &args)
+            && !tool.handler_validates_input
+        {
             self.exceptional(ctx, &subject, "invalid_params").await;
             return Err(ToolError::InvalidParams(msg));
+        }
+        // 6.2.0 `resolveClient`: a per-call `instance` the registry does not know is
+        // a tool error with the `getInstance` text, never a fallback to the
+        // default. The adapter interpreted the argument once, at admission.
+        if tool.needs_instance
+            && let Some(miss) = ctx.instance_miss()
+        {
+            self.exceptional(ctx, &subject, "unknown_instance").await;
+            return Err(ToolError::Message(miss.to_owned()));
         }
         let classification = s.classification.snapshot(ctx.instance());
         let input = NormalizeInput::new(ctx.instance(), &classification);
@@ -405,7 +425,7 @@ impl Dispatcher {
             None => {}
         }
 
-        render(tool, outcome, visible)
+        render(tool.render, outcome, visible)
     }
 
     /// `resources/read` through the same admission path (edit 9).
@@ -419,7 +439,7 @@ impl Dispatcher {
             .resources
             .iter()
             .find(|r| r.uri == uri)
-            .ok_or_else(|| ToolError::InvalidParams("Unknown resource".into()))?;
+            .ok_or_else(|| ToolError::Message(format!("Unknown resource: {uri}")))?;
         let subject = Subject::Resource(res.uri.to_owned());
         let ops = Arc::new(OperationSet(vec![
             Operation::new(subject.clone(), Action::Read)
@@ -446,6 +466,11 @@ impl Dispatcher {
             Err(Err(e)) => return Err(e),
         };
         let actx = &admitted.ctx;
+        if !actx.is_live() {
+            self.exceptional(actx, &subject, "cancelled_before_send")
+                .await;
+            return Err(ToolError::Cancelled);
+        }
         let (body, withheld) = match (res.handler.read(actx).await, &admitted.pinned) {
             (Ok(b), None) => (b, 0),
             (Ok(b), Some(p)) => match s.protector.protect_resource(p, b).await {
@@ -479,26 +504,39 @@ impl Dispatcher {
     }
 }
 
-/// Safe render. Ordinary failures keep 6.2.0 parity (`Err` → isError text);
-/// committed/partial/unknown outcomes use fixed text, never a tool renderer over
-/// synthetic data.
+/// Safe render. Ordinary failures keep 6.2.0 parity (`Err` → isError text).
+/// Handler-supplied verbatim text (`ToolError::Text`, `ResultBody::ToolResult`),
+/// already through protection, always wins; otherwise committed/partial/unknown
+/// outcomes use fixed text, never a tool renderer over synthetic data. The
+/// outcome itself is audited unchanged by the caller.
 fn render(
-    tool: &ToolDescriptor,
+    renderer: Renderer,
     outcome: MutationOutcome,
     visible: Result<Option<ResultBody>, ToolError>,
 ) -> Result<DispatchOutcome, ToolError> {
     let fixed = |text: &str, is_error: bool| {
         Ok(DispatchOutcome::Rendered(Rendered {
             text: text.into(),
-            is_error,
+            is_error: is_error.then_some(true),
         }))
     };
     match (visible, outcome) {
+        (Err(ToolError::Text(t)), _) => Err(ToolError::Text(t)),
+        (
+            Ok(Some(ResultBody::ToolResult {
+                text,
+                explicit_is_error_false,
+            })),
+            _,
+        ) => Ok(DispatchOutcome::Rendered(Rendered {
+            text,
+            is_error: explicit_is_error_false.then_some(false),
+        })),
         (_, MutationOutcome::PartiallyCommitted) => fixed(PARTIAL_TEXT, true),
         (_, MutationOutcome::Unknown) => fixed(UNKNOWN_TEXT, true),
         (Ok(Some(body)), _) => Ok(DispatchOutcome::Rendered(Rendered {
-            text: (tool.render)(&body),
-            is_error: false,
+            text: renderer(&body),
+            is_error: None,
         })),
         (Ok(None), MutationOutcome::Committed) => fixed(WITHHELD_COMMITTED, false),
         (Ok(None), _) => Err(ToolError::Unavailable("data protection")),
@@ -531,5 +569,89 @@ impl SchemaValidator for RequiredPropertiesValidator {
             }
         }
         Ok(())
+    }
+}
+#[cfg(test)]
+mod render_tests {
+    use hpm_types::tool::{MutationOutcome, ResultBody, ToolError};
+
+    use super::*;
+
+    fn r(_: &ResultBody) -> String {
+        "rendered".into()
+    }
+
+    fn text(t: &str) -> Result<Option<ResultBody>, ToolError> {
+        Err(ToolError::Text(t.into()))
+    }
+
+    #[test]
+    fn tool_result_maps_explicit_false_or_omits() {
+        for (flag, want) in [(true, Some(false)), (false, None)] {
+            let out = render(
+                r,
+                MutationOutcome::NotAMutation,
+                Ok(Some(ResultBody::ToolResult {
+                    text: "raw".into(),
+                    explicit_is_error_false: flag,
+                })),
+            );
+            assert_eq!(
+                out.ok(),
+                Some(DispatchOutcome::Rendered(Rendered {
+                    text: "raw".into(),
+                    is_error: want
+                }))
+            );
+        }
+    }
+
+    #[test]
+    fn batch_update_stop_on_error_keeps_verbatim_text() {
+        let t = "Batch update completed with errors:\n{\"failed\":1}";
+        let out = render(r, MutationOutcome::PartiallyCommitted, text(t));
+        assert!(matches!(out, Err(ToolError::Text(s)) if s == t));
+    }
+
+    #[test]
+    fn batch_create_rollback_keeps_verbatim_text() {
+        let t = "Error: Batch create failed at operation 1: 403 Forbidden";
+        let out = render(r, MutationOutcome::PartiallyCommitted, text(t));
+        assert!(matches!(out, Err(ToolError::Text(s)) if s == t));
+    }
+
+    #[test]
+    fn committed_script_errors_keep_verbatim_text() {
+        let t = "❌ Script reported errors";
+        let out = render(r, MutationOutcome::Committed, text(t));
+        assert!(matches!(out, Err(ToolError::Text(s)) if s == t));
+    }
+
+    #[test]
+    fn generic_texts_remain_without_handler_text() {
+        let partial = render(
+            r,
+            MutationOutcome::PartiallyCommitted,
+            Err(ToolError::Cancelled),
+        );
+        assert_eq!(
+            partial.ok(),
+            Some(DispatchOutcome::Rendered(Rendered {
+                text: PARTIAL_TEXT.into(),
+                is_error: Some(true)
+            }))
+        );
+        let committed = render(
+            r,
+            MutationOutcome::Committed,
+            Err(ToolError::Message("x".into())),
+        );
+        assert_eq!(
+            committed.ok(),
+            Some(DispatchOutcome::Rendered(Rendered {
+                text: COMMITTED_FOLLOWUP_FAILED.into(),
+                is_error: None
+            }))
+        );
     }
 }

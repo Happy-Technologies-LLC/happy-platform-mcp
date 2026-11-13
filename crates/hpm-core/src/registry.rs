@@ -1397,20 +1397,26 @@ impl InstanceRegistry {
         let (read, write, _) = self.paths();
         let lock = path_lock(&write);
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut state = self.lock();
-        let source = if write.exists() {
-            write.clone()
-        } else {
-            read.clone()
+        // The per-path write lock serializes mutations; the registry state lock
+        // is held only to read the current document and to commit, so slow
+        // hooks (credential checks, keychain probes) never stall readers.
+        let current = {
+            let mut state = self.lock();
+            let source = if write.exists() {
+                write.clone()
+            } else {
+                read.clone()
+            };
+            let current = self.read_document(&mut state, &source)?;
+            if state.legacy_plaintext {
+                return Err(CodedError::new(
+                    "LEGACY_MIGRATION_REQUIRED",
+                    "This registry contains plaintext credentials; migrate it before changing instances",
+                )
+                .with("path", read.to_string_lossy().into_owned()));
+            }
+            current
         };
-        let current = self.read_document(&mut state, &source)?;
-        if state.legacy_plaintext {
-            return Err(CodedError::new(
-                "LEGACY_MIGRATION_REQUIRED",
-                "This registry contains plaintext credentials; migrate it before changing instances",
-            )
-            .with("path", read.to_string_lossy().into_owned()));
-        }
         let next = operation(&current)?;
         validate_document(&next, &self.env)?;
         if let Some(capture) = capture {
@@ -1425,7 +1431,7 @@ impl InstanceRegistry {
             precommit(&next)?;
         }
         write_atomic(&write, &next)?;
-        self.commit(&mut state, next.clone(), &write);
+        self.commit(&mut self.lock(), next.clone(), &write);
         Ok(select(&next))
     }
 

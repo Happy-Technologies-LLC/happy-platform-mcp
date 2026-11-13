@@ -378,6 +378,151 @@ fn ref_config(auth: AuthType, reference: Value) -> InstanceConfig {
     }
 }
 
+/// A secret saved by the CLI for the instance at [`URL`]: bound to its origin.
+fn put_bound(creds: &MemStore, reference: &str, value: &str) {
+    creds.put(reference, value);
+    creds.put(
+        &crate::keychain::origin_binding_account(reference),
+        &crate::keychain::origin_binding_value(reference, value, URL.trim_end_matches('/')),
+    );
+}
+
+/// M-B: a binding item an attacker can write without the secret (plain
+/// origin, wrong MAC, missing MAC, or one copied from another secret) is
+/// unbound: refused, nothing sent.
+#[tokio::test]
+async fn forged_or_copied_binding_is_refused_and_nothing_is_sent() {
+    const REF: &str = "keychain:instance/dev/password";
+    let origin = URL.trim_end_matches('/');
+    let other = crate::keychain::origin_binding_value(
+        "keychain:instance/other/password",
+        "other-pass",
+        origin,
+    );
+    let wrong_key = crate::keychain::origin_binding_value(REF, "not-the-secret", origin);
+    for planted in [
+        origin.to_owned(),
+        format!(r#"{{"origin":"{origin}"}}"#),
+        format!(r#"{{"origin":"{origin}","mac":"{}"}}"#, "0".repeat(64)),
+        wrong_key,
+        other,
+    ] {
+        let h = harness(
+            ref_config(AuthType::Basic, json!(REF)),
+            FakeTransport::new(ok_result(json!([]))),
+            FakePoster::new(vec![]),
+            Value::Null,
+        );
+        h.creds.put(REF, "kc-pass");
+        h.creds
+            .put(&crate::keychain::origin_binding_account(REF), &planted);
+        let err = h
+            .client
+            .get_records("x", &RecordQuery::default())
+            .await
+            .expect_err("forged binding");
+        assert_eq!(
+            err.code(),
+            Some(error::CREDENTIAL_ORIGIN_UNBOUND_CODE),
+            "{planted}"
+        );
+        assert!(h.transport.requests().is_empty(), "{planted}");
+    }
+}
+
+#[tokio::test]
+async fn unbound_secret_is_never_sent_and_never_bound_lazily() {
+    const REF: &str = "keychain:instance/dev/password";
+    let attacker = "https://attacker.example";
+    let h = harness(
+        InstanceConfig {
+            url: attacker.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        },
+        FakeTransport::new(ok_result(json!([]))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    // A 6.x (or orphaned) secret with no binding, its name now registered
+    // at an agent-chosen URL.
+    h.creds.put(REF, "kc-pass");
+    let q = RecordQuery::default();
+    for _ in 0..2 {
+        let err = h.client.get_records("x", &q).await.expect_err("unbound");
+        assert_eq!(err.code(), Some(error::CREDENTIAL_ORIGIN_UNBOUND_CODE));
+        assert!(
+            err.message.contains("instance credential bind dev"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("kc-pass"));
+    }
+    assert!(h.transport.requests().is_empty());
+    let store = InstanceCredentialStore::new(h.creds.clone());
+    assert_eq!(store.bound_origin(REF).await.ok().flatten(), None);
+}
+
+#[tokio::test]
+async fn saved_secret_is_never_sent_to_a_new_origin() {
+    const REF: &str = "keychain:instance/dev/password";
+    let h = harness(
+        ref_config(AuthType::Basic, json!(REF)),
+        FakeTransport::new(ok_result(json!([]))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    // Bound at write time (or by `instance credential bind`): used.
+    put_bound(&h.creds, REF, "kc-pass");
+    let q = RecordQuery::default();
+    assert!(h.client.get_records("x", &q).await.is_ok());
+
+    // Re-registering the name with a new URL keeps the reference: refused
+    // before any request reaches the new host.
+    let moved = "https://elsewhere.example.com";
+    h.client
+        .set_instance(InstanceConfig {
+            url: moved.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    let err = h.client.get_records("x", &q).await.expect_err("mismatch");
+    assert_eq!(err.code(), Some(error::CREDENTIAL_ORIGIN_MISMATCH_CODE));
+    assert!(
+        err.message.contains("instance credential set dev"),
+        "{}",
+        err.message
+    );
+    assert!(!err.message.contains("kc-pass"));
+    assert!(
+        h.transport
+            .requests()
+            .iter()
+            .all(|r| !r.url.starts_with(moved))
+    );
+
+    // Re-saving the credential for the new URL binds it there.
+    let store = InstanceCredentialStore::new(h.creds.clone());
+    store
+        .set_secret(
+            REF,
+            hpm_types::credential::Secret::new("new-pass".into()),
+            moved,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    h.client
+        .set_instance(InstanceConfig {
+            url: moved.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(h.client.get_records("x", &q).await.is_ok());
+    assert_eq!(
+        store.bound_origin(REF).await.ok().flatten().as_deref(),
+        Some(moved)
+    );
+}
+
 #[tokio::test]
 async fn basic_password_resolved_from_keychain_once() {
     let h = harness(
@@ -386,7 +531,7 @@ async fn basic_password_resolved_from_keychain_once() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    h.creds.put("keychain:instance/dev/password", "kc-pass");
+    put_bound(&h.creds, "keychain:instance/dev/password", "kc-pass");
     let q = RecordQuery::default();
     let (a, b) = tokio::join!(h.client.get_records("x", &q), h.client.get_records("y", &q));
     assert!(a.is_ok() && b.is_ok());
@@ -467,9 +612,8 @@ async fn oauth_password_grant_needs_object_reference() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    h.creds.put("keychain:instance/dev/password", "kc-pass");
-    h.creds
-        .put("keychain:instance/dev/client-secret", "kc-secret");
+    put_bound(&h.creds, "keychain:instance/dev/password", "kc-pass");
+    put_bound(&h.creds, "keychain:instance/dev/client-secret", "kc-secret");
     assert!(
         h.client
             .get_records("x", &RecordQuery::default())
@@ -486,6 +630,35 @@ async fn oauth_password_grant_needs_object_reference() {
 }
 
 #[tokio::test]
+async fn instance_switch_while_in_flight_is_stale_after_send() {
+    let slot: Arc<std::sync::OnceLock<ServiceNowClient>> = Arc::default();
+    let in_handler = slot.clone();
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(move |_| {
+            // The request has left; the operator switches instance meanwhile.
+            if let Some(c) = in_handler.get() {
+                c.set_instance(basic(Some("other")))
+                    .unwrap_or_else(|e| panic!("{e}"));
+            }
+            Ok(HttpResponse::json(200, &json!({"result": {}})))
+        }),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let _ = slot.set(h.client.clone());
+    let e = h
+        .client
+        .create_record("incident", &json!({}))
+        .await
+        .expect_err("stale");
+    assert!(e.is_stale_after_send());
+    assert_eq!(e.code(), Some(error::STALE_AFTER_SEND_CODE));
+    assert_eq!(e.message, "Instance changed during credential resolution");
+    assert_eq!(h.transport.requests().len(), 1);
+}
+
+#[tokio::test]
 async fn set_instance_during_resolution_is_stale() {
     let h = harness(
         ref_config(AuthType::Basic, json!("keychain:instance/dev/password")),
@@ -493,7 +666,7 @@ async fn set_instance_during_resolution_is_stale() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    h.creds.put("keychain:instance/dev/password", "kc-pass");
+    put_bound(&h.creds, "keychain:instance/dev/password", "kc-pass");
     let client = h.client.clone();
     let call = tokio::spawn(async move { client.get_records("x", &RecordQuery::default()).await });
     // Switch before the spawned call gets a chance to finish its awaits.
@@ -502,7 +675,8 @@ async fn set_instance_during_resolution_is_stale() {
         .unwrap_or_else(|e| panic!("{e}"));
     let result = call.await.unwrap_or_else(|e| panic!("{e}"));
     if let Err(e) = result {
-        assert_eq!(e.code(), Some(error::STALE_INSTANCE_CODE));
+        // Before or after the send, depending on scheduling.
+        assert!(e.is_stale(), "{e:?}");
         assert_eq!(e.message, "Instance changed during credential resolution");
     }
     assert!(h.transport.requests().iter().all(|r| auth_of(r)
@@ -913,6 +1087,78 @@ async fn current_update_set_reads_picker() {
     );
 }
 
+/// L-3: on the app picker's error path the UI session is still ended in
+/// line: exactly one `/logout.do`, with the cookie, as the last request.
+#[tokio::test]
+async fn set_application_failure_ends_session_last() {
+    let transport = FakeTransport::new(|r| {
+        let path = r
+            .url
+            .trim_start_matches(URL)
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        let j = |s: u16, v: Value| Ok(HttpResponse::json(s, &v));
+        match (r.method, path.as_str()) {
+            (Method::Get, "/") => Ok(HttpResponse::new(200, "<html></html>")
+                .with_header("set-cookie", "JSESSIONID=s1; Path=/")),
+            (Method::Get, "/api/now/table/sys_scope/global") => j(
+                200,
+                json!({"result": {"sys_id": "global", "name": "Global"}}),
+            ),
+            (Method::Get, "/api/now/ui/concoursepicker/application") => {
+                j(200, json!({"result": {"current": "x", "list": []}}))
+            }
+            (Method::Put, "/api/now/ui/concoursepicker/application") => {
+                j(500, json!({"error": {"message": "boom"}}))
+            }
+            _ => j(200, json!({})),
+        }
+    });
+    let h = harness(
+        basic(Some("inert")),
+        transport,
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    assert!(h.client.set_current_application("global").await.is_err());
+    let requests = h.transport.requests();
+    assert!(requests.iter().any(|r| r.method == Method::Put));
+    let logouts = requests
+        .iter()
+        .filter(|r| r.url.ends_with("/logout.do"))
+        .count();
+    let last = requests.last().unwrap();
+    assert_eq!(logouts, 1);
+    assert_eq!(last.url, format!("{URL}/logout.do"));
+    assert!(last.header("Cookie").is_some());
+}
+
+/// Review L-9 R6 (L-2): a landing page that answers non-2xx with Set-Cookie
+/// opened a UI session; its cookie must reach the logout that ends it.
+#[tokio::test]
+async fn non_2xx_landing_cookie_reaches_the_logout() {
+    let transport = FakeTransport::new(|r| {
+        if r.method == Method::Get && r.url.trim_start_matches(URL) == "/" {
+            return Ok(HttpResponse::new(503, "<html>busy</html>")
+                .with_header("set-cookie", "JSESSIONID=landing1; Path=/; HttpOnly"));
+        }
+        Ok(HttpResponse::json(200, &json!({})))
+    });
+    let h = harness(
+        basic(Some("inert")),
+        transport,
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    assert!(h.client.set_current_application("global").await.is_err());
+    let requests = h.transport.requests();
+    let last = requests.last().unwrap();
+    assert_eq!(last.url, format!("{URL}/logout.do"));
+    assert_eq!(last.header("Cookie"), Some("JSESSIONID=landing1"));
+}
+
 #[tokio::test]
 async fn set_update_set_verifies_in_one_session() {
     let h = harness(
@@ -1106,6 +1352,38 @@ async fn processor_posts_once_with_session_and_parses() {
         p.body_text(),
         "script=gs.print%28%27hi%27%29%0A%2F%2F+happy-platform-mcp%3A+why+not&sysparm_ck=ck-token&runscript=Run+script&quota_managed_transaction=on&record_for_rollback=on"
     );
+}
+
+#[tokio::test]
+async fn processor_not_run_fallback_runs_before_the_single_logout() {
+    let h = harness(
+        basic(Some("pw")),
+        processor_fake("not authorized"),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let transport = h.transport.clone();
+    let run = h
+        .client
+        .execute_script_via_processor_or("x", &ProcessorOptions::default(), |e| async move {
+            // Stands in for the sys_trigger fallback: no logout has been sent yet.
+            let logouts = transport
+                .requests()
+                .iter()
+                .filter(|r| r.url.ends_with("/logout.do"))
+                .count();
+            (e.code, logouts)
+        })
+        .await
+        .expect("not-run is not an error here");
+    let ProcessorRun::NotRun((code, logouts_during)) = run else {
+        panic!("expected NotRun");
+    };
+    assert_eq!(code, Some(script_processor::NOT_RUN.into()));
+    assert_eq!(logouts_during, 0);
+    let urls: Vec<_> = h.transport.requests().into_iter().map(|r| r.url).collect();
+    assert_eq!(urls.iter().filter(|u| u.ends_with("/logout.do")).count(), 1);
+    assert!(urls.last().is_some_and(|u| u.ends_with("/logout.do")));
 }
 
 #[tokio::test]
@@ -1333,6 +1611,80 @@ async fn trigger_errors_are_wrapped() {
     );
 }
 
+#[tokio::test]
+async fn trigger_errors_after_insert_are_tagged_result_unknown() {
+    // Insert refused: never inserted, no tag.
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(|_| Ok(HttpResponse::json(403, &json!({})))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let e = h
+        .client
+        .execute_script_via_trigger("x", "", true, &TriggerOptions::default())
+        .await
+        .expect_err("insert refused");
+    assert_ne!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+    assert!(
+        e.reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("name MCP_Script_"))
+    );
+
+    // Insert timed out: outcome unknown (no status), the trigger is named.
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(|_| Err(TransportError::new("ETIMEDOUT", "ETIMEDOUT: timed out"))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let e = h
+        .client
+        .execute_script_via_trigger("x", "", true, &TriggerOptions::default())
+        .await
+        .expect_err("insert timed out");
+    assert_eq!(e.status, None);
+    assert!(
+        e.reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("name MCP_Script_"))
+    );
+
+    // Inserted, then the wrap (auto_delete) or the syslog poll fails.
+    for (auto_delete, failing) in [(true, Method::Put), (false, Method::Get)] {
+        let h = harness(
+            basic(Some("pw")),
+            FakeTransport::new(move |r| {
+                if r.method == Method::Post {
+                    Ok(HttpResponse::json(
+                        201,
+                        &json!({"result": {"sys_id": "tid"}}),
+                    ))
+                } else if r.method == failing {
+                    Ok(HttpResponse::json(
+                        403,
+                        &json!({"error": {"message": "ACL"}}),
+                    ))
+                } else {
+                    Ok(HttpResponse::json(200, &json!({"result": {}})))
+                }
+            }),
+            FakePoster::new(vec![]),
+            Value::Null,
+        );
+        let e = h
+            .client
+            .execute_script_via_trigger("x", "", auto_delete, &TriggerOptions::default())
+            .await
+            .expect_err("post-insert failure");
+        assert_eq!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+        assert_eq!(e.status, Some(403));
+        assert_eq!(e.message, "Failed to create script trigger: 403 ACL");
+        assert_eq!(e.reason.as_deref(), Some("sys_id tid"));
+    }
+}
+
 // ---- url-bounds (tests/url-bounds.test.js:198-219) ----------------------------
 
 #[tokio::test]
@@ -1406,7 +1758,7 @@ async fn table_and_sys_id_segments_cannot_retarget() {
         (
             "incident",
             "../../x",
-            "/tenant/api/now/table/incident/%2E%2E%2F%2E%2E%2Fx",
+            "/tenant/api/now/table/incident/..%2F..%2Fx",
         ),
         (
             "incident",
@@ -1421,8 +1773,14 @@ async fn table_and_sys_id_segments_cannot_retarget() {
         (
             "@evil.example",
             "a",
-            "/tenant/api/now/table/%40evil%2Eexample/a",
+            "/tenant/api/now/table/%40evil.example/a",
         ),
+        // 6.2.0 encodeURIComponent keeps `!~*'().` unescaped.
+        ("bad table!", "a", "/tenant/api/now/table/bad%20table!/a"),
+        ("x", "~*'()", "/tenant/api/now/table/x/~*'()"),
+        // An already-encoded dot segment is re-encoded, never decoded.
+        ("x", "%2e%2e", "/tenant/api/now/table/x/%252e%252e"),
+        ("x", "100%", "/tenant/api/now/table/x/100%25"),
     ] {
         h.client
             .get_record(table, id, &params)
@@ -1435,7 +1793,7 @@ async fn table_and_sys_id_segments_cannot_retarget() {
         assert!(h.client.get_record("incident", id, &params).await.is_err());
     }
     assert!(h.client.delete_record("..", "a").await.is_err());
-    assert_eq!(h.transport.requests().len(), 4);
+    assert_eq!(h.transport.requests().len(), 8);
 }
 
 #[test]
@@ -1513,6 +1871,42 @@ fn redaction_never_forgets_a_value_from_the_live_generation() {
     let out = st.redactor().redact("leak token-000-zz and token-099-zz");
     assert!(!out.contains("token-000-zz"), "{out}");
     assert!(!out.contains("token-099-zz"), "{out}");
+}
+
+#[derive(Default)]
+struct Sink(Mutex<Vec<(f64, Option<String>)>>);
+impl hpm_types::context::ProgressSink for Sink {
+    fn emit(&self, progress: f64, _: Option<f64>, message: Option<String>) -> BoxFut<'_, ()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((progress, message));
+        Box::pin(async {})
+    }
+}
+
+#[tokio::test]
+async fn progress_is_per_call_and_monotonic() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let (a, b) = (Arc::new(Sink::default()), Arc::new(Sink::default()));
+    let call_a = h.client.with_progress(a.clone());
+    let call_b = h.client.with_progress(b.clone());
+    call_a.notify_progress("a1", Some(3), None).await;
+    call_b.notify_progress("b1", None, None).await;
+    call_a.notify_progress("a2", Some(2), None).await;
+    // The shared client and other clones have no route: dropped.
+    h.client.notify_progress("none", None, None).await;
+    let got = |s: &Sink| s.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        got(&a),
+        vec![(3.0, Some("a1".into())), (4.0, Some("a2".into()))]
+    );
+    assert_eq!(got(&b), vec![(1.0, Some("b1".into()))]);
 }
 
 mod atf;

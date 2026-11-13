@@ -453,7 +453,7 @@ async fn credential_set_uses_a_masked_prompt_and_deterministic_reference() {
     let mut inst = basic();
     inst.remove("credentialRef");
     let registry = FakeRegistry::with(vec![inst]);
-    let (p, calls) = prompts(json!({"secret": "fixture-secret-value"}));
+    let (p, calls) = prompts(json!({"secret": "fixture-secret-value", "confirmOrigin": true}));
     let h = Harness::new(registry.clone(), p);
     let secrets = h.secrets.clone();
     let (code, out, _) = h
@@ -477,6 +477,279 @@ async fn credential_set_uses_a_masked_prompt_and_deterministic_reference() {
         json!("keychain:instance/dev/password")
     );
     assert!(!out.contains("fixture-secret-value"));
+}
+
+const DEV_ORIGIN: &str = "https://dev.service-now.com";
+const DEV_REF: &str = "keychain:instance/dev/password";
+
+/// Seeds `dev`'s password, bound to `origin` when given (as the CLI writes it).
+async fn seed_dev(secrets: &Arc<TestSecrets>, value: &str, origin: Option<&str>) {
+    let store = InstanceCredentialStore::new(secrets.clone());
+    store.restore_secret(DEV_REF, value, origin).await.unwrap();
+}
+
+async fn bound(secrets: &Arc<TestSecrets>) -> Option<String> {
+    InstanceCredentialStore::new(secrets.clone())
+        .bound_origin(DEV_REF)
+        .await
+        .unwrap()
+}
+
+/// M-A: `credential set` names the target origin before the secret prompt;
+/// re-binding to a different origin needs a confirm that defaults to No.
+#[tokio::test]
+async fn credential_set_shows_origin_and_declined_rebind_changes_nothing() {
+    let h = Harness::new(FakeRegistry::with(vec![basic()]), prompts(json!({})).0);
+    let secrets = h.secrets.clone();
+    seed_dev(&secrets, "old-secret", Some("https://old.service-now.com")).await;
+    let (code, out, _) = h
+        .run(&["instance", "credential", "set", "dev", "--type", "password"])
+        .await;
+    assert_eq!(code, 0);
+    assert!(
+        out.starts_with(&format!("{CREDENTIAL_ORIGIN_PREFIX}{DEV_ORIGIN}")),
+        "{out}"
+    );
+    assert!(out.contains("Cancelled."));
+    assert_eq!(secrets.value(DEV_REF).as_deref(), Some("old-secret"));
+    assert_eq!(
+        bound(&secrets).await.as_deref(),
+        Some("https://old.service-now.com")
+    );
+}
+
+#[tokio::test]
+async fn credential_set_confirmed_rebind_and_same_origin_needs_no_confirm() {
+    let (p, calls) = prompts(json!({"secret": "new-secret", "confirmOrigin": true}));
+    let h = Harness::new(FakeRegistry::with(vec![basic()]), p);
+    let secrets = h.secrets.clone();
+    seed_dev(&secrets, "old-secret", Some("https://old.service-now.com")).await;
+    let (code, _, _) = h
+        .run(&["instance", "credential", "set", "dev", "--type", "password"])
+        .await;
+    assert_eq!(code, 0);
+    let confirm = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| *k == PromptKind::Confirm)
+        .cloned()
+        .unwrap();
+    assert!(confirm.1.message.contains("https://old.service-now.com"));
+    assert!(confirm.1.message.contains(DEV_ORIGIN));
+    assert_eq!(bound(&secrets).await.as_deref(), Some(DEV_ORIGIN));
+
+    // Already bound to the registered origin: no confirm.
+    let (p, calls) = prompts(json!({"secret": "newer"}));
+    let mut h = Harness::new(FakeRegistry::with(vec![basic()]), p);
+    h.secrets = secrets.clone();
+    let (code, _, _) = h
+        .run(&["instance", "credential", "set", "dev", "--type", "password"])
+        .await;
+    assert_eq!(code, 0);
+    assert_eq!(count(&calls, PromptKind::Confirm), 0);
+    assert_eq!(secrets.value(DEV_REF).as_deref(), Some("newer"));
+}
+
+#[tokio::test]
+async fn credential_set_non_tty_refuses_without_writing() {
+    let h = Harness::new(
+        FakeRegistry::with(vec![basic()]),
+        prompts_of(json!({}), &[]).0,
+    );
+    let secrets = h.secrets.clone();
+    let (code, _, err) = h
+        .run(&["instance", "credential", "set", "dev", "--type", "password"])
+        .await;
+    assert_ne!(code, 0);
+    assert!(err.contains("Non-interactive use requires"), "{err}");
+    assert!(secrets.value(DEV_REF).is_none());
+}
+
+/// M-C/M-D: `credential bind` binds an unbound secret to the registered origin
+/// after the secret is re-entered (masked) and the origin confirmed.
+#[tokio::test]
+async fn credential_bind_confirmed_binds_to_registered_origin() {
+    let (p, calls) = prompts(json!({"confirm": true, "secret": "legacy"}));
+    let h = Harness::new(FakeRegistry::with(vec![basic()]), p);
+    let secrets = h.secrets.clone();
+    seed_dev(&secrets, "legacy", None).await;
+    let (code, out, _) = h.run(&["instance", "credential", "bind", "dev"]).await;
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(count(&calls, PromptKind::Confirm), 1);
+    assert_eq!(count(&calls, PromptKind::Password), 1);
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(k, s)| *k == PromptKind::Password && s.mask)
+    );
+    let store = InstanceCredentialStore::new(secrets.clone());
+    assert_eq!(
+        store
+            .get_secret_for_origin(DEV_REF, DEV_ORIGIN)
+            .await
+            .unwrap()
+            .expose(),
+        "legacy"
+    );
+    assert_eq!(secrets.value(DEV_REF).as_deref(), Some("legacy"));
+}
+
+#[tokio::test]
+async fn credential_bind_declined_or_bound_elsewhere_writes_nothing() {
+    let h = Harness::new(
+        FakeRegistry::with(vec![basic()]),
+        prompts(json!({"secret": "legacy"})).0,
+    );
+    let secrets = h.secrets.clone();
+    seed_dev(&secrets, "legacy", None).await;
+    let (code, out, _) = h.run(&["instance", "credential", "bind", "dev"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("Cancelled."));
+    assert_eq!(bound(&secrets).await, None);
+
+    let mut h = Harness::new(
+        FakeRegistry::with(vec![basic()]),
+        prompts(json!({"confirm": true})).0,
+    );
+    h.secrets = secrets.clone();
+    seed_dev(&secrets, "legacy", Some("https://old.service-now.com")).await;
+    let (code, _, err) = h.run(&["instance", "credential", "bind", "dev"]).await;
+    assert_ne!(code, 0);
+    assert!(
+        err.contains("already bound to https://old.service-now.com"),
+        "{err}"
+    );
+    assert_eq!(
+        bound(&secrets).await.as_deref(),
+        Some("https://old.service-now.com")
+    );
+}
+
+#[tokio::test]
+async fn credential_bind_refuses_unknown_instance_missing_secret_and_non_tty() {
+    let (code, _, err) = Harness::new(FakeRegistry::with(vec![]), no_prompts())
+        .run(&["instance", "credential", "bind", "dev"])
+        .await;
+    assert_ne!(code, 0);
+    assert!(err.contains("dev"), "{err}");
+    let (code, _, err) = Harness::new(FakeRegistry::with(vec![basic()]), no_prompts())
+        .run(&["instance", "credential", "bind", "dev"])
+        .await;
+    assert_ne!(code, 0);
+    assert!(err.contains("No saved credential to bind"), "{err}");
+    let h = Harness::new(
+        FakeRegistry::with(vec![basic()]),
+        prompts_of(json!({}), &[]).0,
+    );
+    let secrets = h.secrets.clone();
+    seed_dev(&secrets, "legacy", None).await;
+    let (code, _, err) = h.run(&["instance", "credential", "bind", "dev"]).await;
+    assert_ne!(code, 0);
+    assert!(err.contains("Non-interactive use requires"), "{err}");
+    assert_eq!(bound(&secrets).await, None);
+}
+
+/// M-D: a wrong re-entered secret is refused before the confirm and writes
+/// nothing, even with the confirm answered yes.
+#[tokio::test]
+async fn credential_bind_wrong_secret_refused_without_write() {
+    let (p, calls) = prompts(json!({"confirm": true, "secret": "not-the-secret"}));
+    let h = Harness::new(FakeRegistry::with(vec![basic()]), p);
+    let secrets = h.secrets.clone();
+    seed_dev(&secrets, "legacy", None).await;
+    let (code, _, err) = h.run(&["instance", "credential", "bind", "dev"]).await;
+    assert_ne!(code, 0);
+    assert!(err.contains("does not match the saved credential"), "{err}");
+    assert_eq!(count(&calls, PromptKind::Confirm), 0);
+    assert_eq!(bound(&secrets).await, None);
+    assert_eq!(secrets.value(DEV_REF).as_deref(), Some("legacy"));
+}
+
+/// M-D: a non-TTY caller that can only answer the confirm (pty-style `yes`)
+/// cannot bind: the masked secret prompt is required.
+#[tokio::test]
+async fn credential_bind_confirm_alone_cannot_bind() {
+    let (p, calls) = prompts_of(json!({"confirm": true}), &[PromptKind::Confirm]);
+    let h = Harness::new(FakeRegistry::with(vec![basic()]), p);
+    let secrets = h.secrets.clone();
+    seed_dev(&secrets, "legacy", None).await;
+    let (code, _, err) = h.run(&["instance", "credential", "bind", "dev"]).await;
+    assert_ne!(code, 0);
+    assert!(err.contains("Non-interactive use requires"), "{err}");
+    assert_eq!(count(&calls, PromptKind::Confirm), 0);
+    assert_eq!(bound(&secrets).await, None);
+}
+
+/// M-C: the Basic-auth probe reads only a secret bound to the instance
+/// origin; unbound and mismatched secrets are refused and nothing connects.
+#[tokio::test]
+async fn basic_probe_refuses_unbound_and_mismatched_secrets_unsent() {
+    use std::net::TcpListener;
+    for binding in [None, Some("https://elsewhere.example")] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let memory = Arc::new(MemorySecretStore::new());
+        let credentials = InstanceCredentialStore::new(memory);
+        credentials
+            .restore_secret(DEV_REF, "pw", binding)
+            .await
+            .unwrap();
+        let instance = obj(json!({
+            "name": "dev", "url": url, "authType": "basic", "username": "u",
+            "credentialRef": DEV_REF
+        }));
+        let err = HttpProbe.probe(&instance, &credentials).await.unwrap_err();
+        let want = if binding.is_none() {
+            "not bound"
+        } else {
+            "elsewhere.example"
+        };
+        assert!(err.message.contains(want), "{}", err.message);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(
+            listener.accept().map(|_| ()).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "nothing may connect"
+        );
+    }
+}
+
+/// Review L-9 R3: the probe checks the binding MAC, not just the stored
+/// origin. A planted plain or forged binding naming the right origin is
+/// treated as unbound and nothing connects.
+#[tokio::test]
+async fn basic_probe_refuses_planted_binding_for_the_right_origin() {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let forged = json!({"origin": url, "mac": "00".repeat(32)}).to_string();
+    for planted in [url.clone(), forged] {
+        let memory = Arc::new(MemorySecretStore::new());
+        memory.insert(SERVICE_NAME, DEV_REF, "pw");
+        memory.insert(
+            SERVICE_NAME,
+            &hpm_core::keychain::origin_binding_account(DEV_REF),
+            &planted,
+        );
+        let credentials = InstanceCredentialStore::new(memory);
+        let instance = obj(json!({
+            "name": "dev", "url": url, "authType": "basic", "username": "u",
+            "credentialRef": DEV_REF
+        }));
+        let err = HttpProbe.probe(&instance, &credentials).await.unwrap_err();
+        assert!(err.message.contains("not bound"), "{}", err.message);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(
+            listener.accept().map(|_| ()).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "nothing may connect"
+        );
+    }
 }
 
 fn add_answers(name: &str) -> Value {
@@ -785,7 +1058,7 @@ async fn uses_the_inferred_password_grant_and_preserves_the_canonical_object() {
     let registry = FakeRegistry::with(vec![inst]);
     let (code, _, _) = Harness::new(
         registry.clone(),
-        prompts(json!({"secret": "new-password"})).0,
+        prompts(json!({"secret": "new-password", "confirmOrigin": true})).0,
     )
     .run(&[
         "instance",
@@ -798,7 +1071,7 @@ async fn uses_the_inferred_password_grant_and_preserves_the_canonical_object() {
     .await;
     assert_eq!(code, 0);
     assert_eq!(registry.calls("update")[0], json!(["inferred", expected]));
-    let (mut p, _) = prompts(json!({}));
+    let (mut p, _) = prompts(json!({"confirmOrigin": true}));
     p.passwords.push_back("new-client-secret".into());
     let (code, _, _) = Harness::new(registry.clone(), p)
         .run(&[
@@ -949,7 +1222,21 @@ async fn migrate_stores_plaintext_credentials_as_refs_and_preserves_document_pro
         written["instances"][1]["credentialRef"],
         json!({"password": "keychain:instance/oauth/password", "clientSecret": "keychain:instance/oauth/client-secret"})
     );
-    assert_eq!(secrets.count(), 3);
+    // Three secrets, each with its origin binding written alongside.
+    assert_eq!(secrets.count(), 6);
+    // Migrate binds each secret to its own entry's origin with a valid MAC.
+    let item = secrets
+        .value("keychain:instance-origin/dev/password")
+        .unwrap();
+    assert_eq!(
+        hpm_core::keychain::verified_binding_origin(
+            "keychain:instance/dev/password",
+            &secrets.value("keychain:instance/dev/password").unwrap(),
+            &item,
+        )
+        .as_deref(),
+        Some("https://dev.service-now.com")
+    );
     assert!(!out.contains("fixture-password"));
     assert!(!out.contains("fixture-client-secret"));
 }
@@ -1598,7 +1885,24 @@ async fn probe_never_follows_a_token_endpoint_redirect() {
     let token = TcpListener::bind("127.0.0.1:0").unwrap();
     let token_port = token.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut conn, _) = token.accept().unwrap();
+        // Bounded accept: a probe that refuses before sending fails the test
+        // instead of hanging it.
+        token.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut conn = loop {
+            match token.accept() {
+                Ok((conn, _)) => break conn,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the probe never reached the token endpoint"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        };
+        conn.set_nonblocking(false).unwrap();
         let mut buf = [0u8; 4096];
         let _ = conn.read(&mut buf).unwrap();
         let response = format!(
@@ -1614,6 +1918,15 @@ async fn probe_never_follows_a_token_endpoint_redirect() {
         "planted-client-secret",
     );
     let credentials = InstanceCredentialStore::new(memory);
+    // Saved for this instance, so bound to its origin (CLI rule).
+    credentials
+        .bind_origin(
+            "keychain:instance/dev/client-secret",
+            &format!("http://127.0.0.1:{token_port}"),
+            "planted-client-secret",
+        )
+        .await
+        .unwrap();
     let instance = obj(json!({
         "name": "dev", "url": format!("http://127.0.0.1:{token_port}"), "authType": "oauth",
         "grantType": "client_credentials", "clientId": "client",

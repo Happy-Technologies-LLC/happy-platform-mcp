@@ -379,6 +379,11 @@ impl ConfigManager {
         self.state().using_env_fallback
     }
 
+    /// Current `RegistryStore` version (the CAS token `apply` expects).
+    pub fn registry_version(&self) -> u64 {
+        self.state().version
+    }
+
     pub fn load_instances(&self) -> Result<Arc<Vec<Object>>, CodedError> {
         if let Some(instances) = self.state().instances.clone() {
             return Ok(instances);
@@ -666,6 +671,7 @@ impl ConfigManager {
             instances: entries,
             selected_default,
             default_source,
+            env_fallback: self.using_env_fallback(),
         }
     }
 

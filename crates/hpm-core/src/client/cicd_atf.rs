@@ -629,10 +629,31 @@ pub fn validate_log_pattern(pattern: Option<&Value>) -> Result<Option<String>, C
         .build()
     {
         return Err(input_error(format!(
-            "pattern is not a valid regular expression: {e}"
+            "pattern is not a valid regular expression: Invalid regular expression: /{pattern}/i: {}",
+            js_regex_reason(&e)
         )));
     }
     Ok(Some(pattern.clone()))
+}
+
+/// The V8 `SyntaxError` reason for a pattern the `regex` crate rejects, so the
+/// text matches 6.2.0 (`new RegExp(pattern, 'i')`). Unmapped errors keep the
+/// crate's own description.
+fn js_regex_reason(e: &regex::Error) -> String {
+    let text = e.to_string();
+    const MAP: [(&str, &str); 5] = [
+        ("unclosed group", "Unterminated group"),
+        ("unopened group", "Unmatched ')'"),
+        ("unclosed character class", "Unterminated character class"),
+        (
+            "repetition operator missing expression",
+            "Nothing to repeat",
+        ),
+        ("incomplete escape sequence", "\\ at end of pattern"),
+    ];
+    MAP.iter()
+        .find(|(rust, _)| text.contains(rust))
+        .map_or(text.clone(), |(_, js)| (*js).to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +710,9 @@ pub fn cicd_detail(error: &ClientError) -> Option<&str> {
 
 /// `toCicdError`.
 fn to_cicd_error(error: ClientError, path: &str) -> ClientError {
-    if error.name == "CicdApiError" {
+    // Stale errors keep their code: callers tell "never sent" from "sent,
+    // outcome unknown" by it.
+    if error.name == "CicdApiError" || error.is_stale() {
         return error;
     }
     let status = error.status;
@@ -916,8 +939,10 @@ async fn poll_progress(
     let mut attempt: u64 = 0;
     let mut last = snapshot_of(progress_id, &json!({}));
     loop {
+        // The run was already dispatched: a moved generation leaves its
+        // outcome unknown, never "not sent".
         if client.generation() != generation {
-            return Err(ClientError::stale());
+            return Err(ClientError::stale_after_send());
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let budget = Duration::from_millis((deadline - now()).max(0.0).round() as u64);
@@ -927,7 +952,7 @@ async fn poll_progress(
         };
         let snapshot = fetched?;
         if client.generation() != generation {
-            return Err(ClientError::stale());
+            return Err(ClientError::stale_after_send());
         }
         last = snapshot.clone();
         attempt += 1;
@@ -938,14 +963,16 @@ async fn poll_progress(
             .get("status_message")
             .filter(|m| crate::client::pickers::truthy(m))
             .map_or(String::new(), |m| format!(" {}", js_string(Some(m))));
-        client.notify_progress(
-            &format!(
-                "sn_cicd {progress_id}: {}{percent}{message}",
-                snapshot_state(&snapshot)
-            ),
-            Some(attempt),
-            None,
-        );
+        client
+            .notify_progress(
+                &format!(
+                    "sn_cicd {progress_id}: {}{percent}{message}",
+                    snapshot_state(&snapshot)
+                ),
+                Some(attempt),
+                None,
+            )
+            .await;
         if snapshot.get("finished") == Some(&Value::Bool(true)) {
             return Ok((snapshot, false));
         }
@@ -1200,7 +1227,22 @@ async fn dispatch_and_maybe_wait(
     d: Dispatch,
     options: WaitOptions,
 ) -> Result<Value, ClientError> {
-    let dispatch_result = cicd_request(client, Method::Post, d.path, &d.query).await?;
+    let dispatch_result = match cicd_request(client, Method::Post, d.path, &d.query).await {
+        Ok(result) => result,
+        // The POST left before the instance moved: the run may have started.
+        Err(e) if e.is_stale_after_send() => {
+            return Ok(json_response(
+                &json!({
+                    "status": "unknown",
+                    "target": d.target,
+                    "message": format!("The {} request was sent but the instance changed before its response was read: {}", d.label, e.message),
+                    "next_step": format!("Check the {} on the original instance before re-running it.", d.label)
+                }),
+                true,
+            ));
+        }
+        Err(e) => return Err(e),
+    };
     let raw_progress_id = link_of(dispatch_result.get("links"), "progress")
         .and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_owned));
     // Server-returned ids go into URL paths: only well-formed sys_ids.
