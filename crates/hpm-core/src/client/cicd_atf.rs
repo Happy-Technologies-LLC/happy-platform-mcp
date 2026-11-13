@@ -1067,7 +1067,7 @@ async fn get_failing_steps(
             (
                 "sysparm_query",
                 Some(format!(
-                    "test_result={result_id}^status!=success^ORDERBYstart_time"
+                    "test_result={result_id}^status!=success^ORDERBYstart_time^ORDERBYsys_id"
                 )),
             ),
             (
@@ -1100,11 +1100,24 @@ async fn get_failing_steps(
                         .build()
                 })
                 .collect();
-            let message = rows.iter().find_map(|row| {
+            // F2: the message comes from a failure/error step; a skipped
+            // step (same second, any order) is only a fallback.
+            let text_of = |row: &Value| {
                 ["summary", "output"]
                     .iter()
                     .find_map(|k| non_empty_string(display_value(row.get(*k))))
-            });
+            };
+            let failing = |row: &&Value| {
+                display_value(row.get("status"))
+                    .and_then(Value::as_str)
+                    .map(str::to_ascii_lowercase)
+                    .is_some_and(|s| s.starts_with("fail") || s.starts_with("error"))
+            };
+            let message = rows
+                .iter()
+                .filter(failing)
+                .find_map(text_of)
+                .or_else(|| rows.iter().find_map(text_of));
             let mut out = vec![("failing_steps", Value::Array(steps))];
             if let Some(m) = message {
                 out.push((

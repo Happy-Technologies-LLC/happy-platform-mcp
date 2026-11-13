@@ -125,10 +125,10 @@ fn array_method<'a>(v: &'a Value, name: &str, method: &str) -> Result<&'a [Value
     }
 }
 
-/// `v.length > 0` then `v.map(...)`: `undefined` (see [`array_method`])
-/// throws on `.length`; a value
-/// without a positive `length` skips the branch; a non-empty string reaches
-/// `.map` and throws there.
+/// The `if (v.length > 0) { ... v.map(...) ... }` branch: `undefined` throws
+/// on `.length`; a non-empty string reaches `.map` and throws there; any other
+/// non-array has no positive `length` and skips the branch (`Ok(&[])`). The
+/// later unconditional `v.map` is checked separately with [`array_method`].
 fn non_empty_then_map<'a>(v: &'a Value, name: &str) -> Result<&'a [Value], Fail> {
     match v {
         Value::Array(a) => Ok(a),
@@ -241,7 +241,8 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
         ]));
     }
 
-    let policies = non_empty_then_map(&policies, "uiPolicies")?;
+    let policies_value = policies;
+    let policies = non_empty_then_map(&policies_value, "uiPolicies")?;
     let actions = if policies.is_empty() {
         Value::Array(Vec::new())
     } else {
@@ -323,6 +324,9 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
     } else {
         array_method(&actions, "policyActions", "filter")?
     };
+    // F1: the return literal's `uiPolicies.map` runs after `variable_sets`
+    // and throws for any non-array.
+    let policies = array_method(&policies_value, "uiPolicies", "map")?;
     let ui_policies: Vec<Value> = policies
         .iter()
         .map(|p| {
@@ -1053,6 +1057,20 @@ mod tests {
             .ok(json!([]));
         let done = run_tool(Kind::CatalogGetItem, &sn, &id).await;
         assert!(shown(&done).contains("Cannot read properties of undefined (reading 'length')"));
+        // F1: a non-array without `length` skips the branch, then the return
+        // literal's `uiPolicies.map` throws.
+        let sn = Fake::new()
+            .ok(json!({"sys_id": "i"}))
+            .ok(json!([]))
+            .ok(json!([]))
+            .ok(json!({"a": 1}))
+            .ok(json!([]));
+        let done = run_tool(Kind::CatalogGetItem, &sn, &id).await;
+        assert!(
+            shown(&done).contains("uiPolicies.map is not a function"),
+            "{}",
+            shown(&done)
+        );
     }
 
     #[tokio::test]

@@ -49,31 +49,48 @@ impl InstanceInfo {
     }
 }
 
-/// TF-7: the instance URL without any `user:password@` part. A URL without
-/// userinfo is echoed verbatim (6.2.0 text); one with userinfo is re-serialized
-/// by `url::Url` with the userinfo removed. A value that does not parse as a URL
-/// (or parses without a host, like `user:pass@host`) loses everything up to
-/// the last `@` of its authority.
+/// TF-7: the instance URL without any `user:password@` part, parsed with
+/// `url::Url` (a scheme-less value is parsed as `https://` and shown without
+/// it). A value without `@` cannot carry userinfo and is echoed verbatim (6.2.0
+/// text). A value whose userinfo the parser finds is re-serialized without it.
+/// Anything else that contains `@` is ambiguous (an unencoded `/`, `?`, `#` or
+/// `\` in a password breaks or shifts the authority), so everything through the
+/// last `@` is dropped and the rest is re-parsed; if that fails, nothing is
+/// shown.
 fn without_userinfo(raw: String) -> String {
-    if let Ok(mut url) = reqwest::Url::parse(&raw)
-        && url.has_host()
+    let Some(last_at) = raw.rfind('@') else {
+        return raw;
+    };
+    let scheme = raw.split_once("://").map(|(s, _)| s);
+    let parse = |s: &str| {
+        let full = match scheme {
+            Some(_) => s.to_owned(),
+            None => format!("https://{s}"),
+        };
+        reqwest::Url::parse(&full)
+            .ok()
+            .filter(reqwest::Url::has_host)
+    };
+    let render = |url: reqwest::Url| {
+        let text: String = url.into();
+        match scheme {
+            Some(_) => text,
+            None => text.trim_start_matches("https://").to_owned(),
+        }
+    };
+    if let Some(mut url) = parse(&raw)
+        && (!url.username().is_empty() || url.password().is_some())
+        && url.set_username("").is_ok()
+        && url.set_password(None).is_ok()
     {
-        if url.username().is_empty() && url.password().is_none() {
-            return raw;
-        }
-        if url.set_username("").is_ok() && url.set_password(None).is_ok() {
-            return url.into();
+        let text = render(url);
+        if !text.contains('@') {
+            return text;
         }
     }
-    let (scheme, rest) = raw
-        .split_once("://")
-        .map_or(("", raw.as_str()), |(s, r)| (s, r));
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    match rest[..end].rfind('@') {
-        Some(at) if scheme.is_empty() => rest[at + 1..].to_owned(),
-        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
-        None => raw,
-    }
+    let tail = &raw[last_at + 1..];
+    let candidate = scheme.map_or_else(|| tail.to_owned(), |s| format!("{s}://{tail}"));
+    parse(&candidate).map(render).unwrap_or_default()
 }
 
 impl ResourceHandler for InstanceInfo {
@@ -175,7 +192,22 @@ mod tests {
             "https://dev.example:8443/"
         );
         assert_eq!(url("admin:s3cret@dev.example/path"), "dev.example/path");
-        assert_eq!(url("dev.example/a@b"), "dev.example/a@b");
+        // F4: unencoded reserved characters in the password.
+        for raw in [
+            "https://admin:pa/ss@dev.example",
+            "https://admin:pa#ss@dev.example",
+            "https://admin:pa?ss@dev.example",
+            "https://admin:pa\\ss@dev.example",
+            "https://admin:1234/x@dev.example",
+        ] {
+            let shown = url(raw);
+            assert_eq!(shown, "https://dev.example/", "{raw}");
+        }
+        assert_eq!(url("admin:1234/x@dev.example"), "dev.example/");
+        // `@` that is not userinfo is still dropped through: ambiguity is
+        // resolved towards never echoing a secret.
+        assert_eq!(url("https://dev.example/a@b"), "https://b/");
+        assert_eq!(url("https://x:y@"), "");
     }
 
     #[test]
