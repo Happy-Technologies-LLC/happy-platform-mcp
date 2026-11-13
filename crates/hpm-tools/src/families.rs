@@ -18,6 +18,7 @@ use hpm_types::servicenow::ServiceNowAccess;
 use crate::registration::{RegistrationError, ToolRegistry};
 
 pub mod atf;
+pub mod common;
 pub mod crud;
 pub mod docs;
 pub mod instances;
