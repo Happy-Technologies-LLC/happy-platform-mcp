@@ -20,12 +20,13 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use hpm_types::context::VerifiedHttpIdentity;
+use hpm_types::context::{Principal, VerifiedHttpIdentity};
 use rmcp::ServiceExt;
+use rmcp::model::ClientJsonRpcMessage;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, WriteHalf};
 use tokio::sync::{Notify, Semaphore, mpsc};
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use super::json_error;
 use super::limits::HttpLimits;
@@ -33,7 +34,10 @@ use crate::handler::McpHandler;
 
 /// 6.2.0 `keepaliveIntervalMs` default.
 pub const DEFAULT_KEEPALIVE: Duration = Duration::from_millis(15_000);
-const SESSION_REFUSED: &str = "Invalid or missing session ID";
+pub(crate) const SESSION_REFUSED: &str = "Invalid or missing session ID";
+/// rmcp's stream transport drops longer lines silently, which would strand the
+/// request's outstanding slot.
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// FIFO admission with a bounded wait queue (6.2.0 `createSlotQueue`).
 pub(crate) struct SlotQueue {
@@ -123,15 +127,55 @@ pub(crate) fn cancelled_request_key(m: &Value) -> Option<String> {
     is_json_rpc_id(id).then(|| request_id_key(id))
 }
 
+#[derive(Default)]
+struct Outstanding {
+    keys: HashSet<String>,
+    /// Set by `close` under the same lock: no key is reserved after the session's
+    /// accounting was released.
+    closed: bool,
+}
+
 struct Session {
     id: String,
+    /// Plan §5.3 rule 5: every POST must come from the opening principal.
+    principal: Principal,
     writer: tokio::sync::Mutex<WriteHalf<tokio::io::DuplexStream>>,
     posts: SlotQueue,
-    outstanding: Mutex<HashSet<String>>,
+    outstanding: Mutex<Outstanding>,
     cancelled: Mutex<HashSet<String>>,
     initialized: AtomicBool,
     closed: CancellationToken,
     activity: Notify,
+}
+
+/// Process-wide request accounting shared by the SSE and Streamable paths.
+pub(crate) struct GlobalLimits {
+    pub(crate) post_slots: SlotQueue,
+    outstanding: AtomicUsize,
+    max_outstanding: usize,
+}
+
+impl GlobalLimits {
+    pub(crate) fn new(limits: &HttpLimits) -> Self {
+        Self {
+            post_slots: SlotQueue::new(limits.max_concurrent_posts, limits.max_active_sessions),
+            outstanding: AtomicUsize::new(0),
+            max_outstanding: limits.max_outstanding_requests,
+        }
+    }
+
+    /// Atomically reserves one outstanding request; `false` at the cap.
+    pub(crate) fn reserve(&self) -> bool {
+        self.outstanding
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.max_outstanding).then_some(n + 1)
+            })
+            .is_ok()
+    }
+
+    pub(crate) fn release(&self, n: usize) {
+        self.outstanding.fetch_sub(n, Ordering::AcqRel);
+    }
 }
 
 /// All legacy SSE sessions of one listener.
@@ -140,20 +184,27 @@ pub struct SseSessions {
     limits: HttpLimits,
     keepalive: Duration,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
-    post_slots: SlotQueue,
-    outstanding: AtomicUsize,
+    global: Arc<GlobalLimits>,
+    /// Live Streamable HTTP sessions, counted against the same session cap.
+    other_sessions: Arc<AtomicUsize>,
     shutting_down: AtomicBool,
 }
 
 impl SseSessions {
-    pub fn new(handler: McpHandler, limits: HttpLimits, keepalive: Duration) -> Arc<Self> {
+    pub(crate) fn new(
+        handler: McpHandler,
+        limits: HttpLimits,
+        keepalive: Duration,
+        global: Arc<GlobalLimits>,
+        other_sessions: Arc<AtomicUsize>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             handler,
-            post_slots: SlotQueue::new(limits.max_concurrent_posts, limits.max_active_sessions),
             limits,
             keepalive,
             sessions: Mutex::new(HashMap::new()),
-            outstanding: AtomicUsize::new(0),
+            global,
+            other_sessions,
             shutting_down: AtomicBool::new(false),
         })
     }
@@ -162,49 +213,57 @@ impl SseSessions {
         self.sessions.lock().map_or(0, |s| s.len())
     }
 
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
     fn get(&self, id: &str) -> Option<Arc<Session>> {
         let s = self.sessions.lock().ok()?.get(id).cloned()?;
         (!s.closed.is_cancelled()).then_some(s)
     }
 
-    /// Closes one session exactly once and releases its accounting.
+    /// Closes one session and releases its accounting; idempotent.
     fn close(&self, session: &Session) {
-        let removed = self
-            .sessions
-            .lock()
-            .ok()
-            .and_then(|mut s| s.remove(&session.id))
-            .is_some();
+        if let Ok(mut s) = self.sessions.lock() {
+            s.remove(&session.id);
+        }
         session.closed.cancel();
         session.posts.close();
-        if removed {
-            let n = session.outstanding.lock().map_or(0, |mut o| {
-                let n = o.len();
-                o.clear();
-                n
-            });
-            self.outstanding.fetch_sub(n, Ordering::AcqRel);
-            if let Ok(mut c) = session.cancelled.lock() {
-                c.clear();
-            }
+        let n = session.outstanding.lock().map_or(0, |mut o| {
+            o.closed = true;
+            let n = o.keys.len();
+            o.keys.clear();
+            n
+        });
+        self.global.release(n);
+        if let Ok(mut c) = session.cancelled.lock() {
+            c.clear();
         }
     }
 
     fn release_outstanding(&self, session: &Session, key: &str) {
-        if session.outstanding.lock().is_ok_and(|mut o| o.remove(key)) {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
+        if session
+            .outstanding
+            .lock()
+            .is_ok_and(|mut o| o.keys.remove(key))
+        {
+            self.global.release(1);
         }
     }
 
     /// Stops admitting sessions and closes every live one (6.2.0 `closeAllSessions`).
     pub fn close_all(&self) {
-        self.shutting_down.store(true, Ordering::Release);
-        self.post_slots.close();
+        // Set under the map lock so a concurrent `open` either sees it or is closed here.
         let all: Vec<Arc<Session>> = self
             .sessions
             .lock()
-            .map(|s| s.values().cloned().collect())
+            .map(|s| {
+                self.shutting_down.store(true, Ordering::Release);
+                s.values().cloned().collect()
+            })
             .unwrap_or_default();
+        self.shutting_down.store(true, Ordering::Release);
+        self.global.post_slots.close();
         for s in all {
             self.close(&s);
         }
@@ -212,7 +271,7 @@ impl SseSessions {
 
     /// `GET /mcp` with `Accept: text/event-stream`.
     pub fn open(self: &Arc<Self>, identity: VerifiedHttpIdentity) -> Response {
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.is_shutting_down() {
             return json_error(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down");
         }
         let id = uuid::Uuid::new_v4().to_string();
@@ -220,9 +279,10 @@ impl SseSessions {
         let (adapter_r, adapter_w) = tokio::io::split(adapter_end);
         let session = Arc::new(Session {
             id: id.clone(),
+            principal: identity.principal.clone(),
             writer: tokio::sync::Mutex::new(adapter_w),
             posts: SlotQueue::new(1, self.limits.max_queued_posts_per_session),
-            outstanding: Mutex::new(HashSet::new()),
+            outstanding: Mutex::new(Outstanding::default()),
             cancelled: Mutex::new(HashSet::new()),
             initialized: AtomicBool::new(false),
             closed: CancellationToken::new(),
@@ -232,12 +292,16 @@ impl SseSessions {
             let Ok(mut map) = self.sessions.lock() else {
                 return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
             };
+            if self.is_shutting_down() {
+                return json_error(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down");
+            }
             let pending = map
                 .values()
                 .filter(|s| !s.initialized.load(Ordering::Acquire))
                 .count();
+            let live = map.len() + self.other_sessions.load(Ordering::Acquire);
             if pending >= self.limits.max_pending_sessions
-                || map.len() >= self.limits.max_active_sessions
+                || live >= self.limits.max_active_sessions
             {
                 let mut r = json_error(StatusCode::TOO_MANY_REQUESTS, "Too many SSE sessions");
                 r.headers_mut()
@@ -302,12 +366,11 @@ impl SseSessions {
                         continue;
                     }
                 }
-                if tx
-                    .send(Event::default().event("message").data(line))
-                    .await
-                    .is_err()
-                {
-                    break;
+                // A client that stops reading must not keep the session alive.
+                let event = Event::default().event("message").data(line);
+                tokio::select! {
+                    r = tx.send(event) => if r.is_err() { break },
+                    () = s.closed.cancelled() => break,
                 }
             }
             sessions.close(&s);
@@ -315,6 +378,7 @@ impl SseSessions {
 
         let stream = EventStream {
             rx,
+            closed: Box::pin(session.closed.clone().cancelled_owned()),
             _guard: CloseOnDrop {
                 sessions: self.clone(),
                 session,
@@ -332,12 +396,23 @@ impl SseSessions {
         r
     }
 
-    /// `POST /mcp?sessionId=<id>`. `body` is the raw request body.
-    pub async fn post(&self, session_id: &str, headers: &HeaderMap, body: Bytes) -> Response {
+    /// `POST /mcp?sessionId=<id>`. `body` is the raw request body; `identity` is
+    /// the verified identity of this request.
+    pub async fn post(
+        &self,
+        session_id: &str,
+        identity: &VerifiedHttpIdentity,
+        headers: &HeaderMap,
+        body: Bytes,
+    ) -> Response {
         let Some(session) = self.get(session_id) else {
             // Recorded deviation (plan §5.3 rule 7): 404, 6.2.0 answered 400.
             return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED);
         };
+        // Rule 5: indistinguishable from an unknown session for another principal.
+        if session.principal != identity.principal {
+            return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED);
+        }
         let is_json = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -359,7 +434,7 @@ impl SseSessions {
             }
             Acquire::Closed => return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED),
         };
-        let _global = match self.post_slots.acquire().await {
+        let _global = match self.global.post_slots.acquire().await {
             Acquire::Granted(p) => p,
             Acquire::Full => {
                 return json_error(
@@ -380,8 +455,21 @@ impl SseSessions {
     }
 
     async fn dispatch(&self, session: &Session, message: &Value) -> Response {
+        // Only messages rmcp will accept may reserve a slot: rmcp answers malformed
+        // ones without their id, which would never release it (review M3).
+        if serde_json::from_value::<ClientJsonRpcMessage>(message.clone()).is_err() {
+            return json_error(StatusCode::BAD_REQUEST, "Invalid message");
+        }
+        let mut line = message.to_string().into_bytes();
+        if line.len() >= MAX_LINE_BYTES {
+            return json_error(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
+        }
+        line.push(b'\n');
         if let Some(key) = cancelled_request_key(message)
-            && session.outstanding.lock().is_ok_and(|o| o.contains(&key))
+            && session
+                .outstanding
+                .lock()
+                .is_ok_and(|o| o.keys.contains(&key))
         {
             if let Ok(mut c) = session.cancelled.lock() {
                 c.insert(key);
@@ -396,23 +484,22 @@ impl SseSessions {
                     "Failed to process message",
                 );
             };
-            if o.contains(key) {
+            if o.closed {
+                return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED);
+            }
+            if o.keys.contains(key) {
                 return json_error(StatusCode::BAD_REQUEST, "Duplicate request id");
             }
-            let global = self.outstanding.load(Ordering::Acquire);
-            if o.len() >= self.limits.max_outstanding_requests_per_session
-                || global >= self.limits.max_outstanding_requests
+            if o.keys.len() >= self.limits.max_outstanding_requests_per_session
+                || !self.global.reserve()
             {
                 return json_error(
                     StatusCode::TOO_MANY_REQUESTS,
                     "Too many outstanding requests",
                 );
             }
-            o.insert(key.clone());
-            self.outstanding.fetch_add(1, Ordering::AcqRel);
+            o.keys.insert(key.clone());
         }
-        let mut line = message.to_string().into_bytes();
-        line.push(b'\n');
         if session.writer.lock().await.write_all(&line).await.is_err() {
             if let Some(key) = &request_key {
                 self.release_outstanding(session, key);
@@ -437,6 +524,8 @@ impl Drop for CloseOnDrop {
 
 struct EventStream {
     rx: mpsc::Receiver<Event>,
+    /// Ends the response when the session closes, even with events still queued.
+    closed: Pin<Box<WaitForCancellationFutureOwned>>,
     _guard: CloseOnDrop,
 }
 
@@ -444,6 +533,9 @@ impl futures_core::Stream for EventStream {
     type Item = Result<Event, Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.closed.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
         self.rx.poll_recv(cx).map(|e| e.map(Ok))
     }
 }

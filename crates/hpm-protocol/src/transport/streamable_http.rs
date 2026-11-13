@@ -6,11 +6,15 @@
 //! - The front guard (rate limit → Host → Origin → bearer) runs before any body
 //!   read or session allocation and inserts the verified identity.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use axum::body::Body;
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::connect_info::Connected;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -19,24 +23,37 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::serve::IncomingStream;
 use axum::{Json, Router};
-use hpm_types::context::VerifiedHttpIdentity;
+use hpm_types::context::{Principal, VerifiedHttpIdentity};
+use hyper::body::{Frame, Incoming, SizeHint};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::server::graceful::GracefulShutdown;
 use rmcp::model::ProtocolVersion;
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::session::SessionManager;
+use rmcp::transport::streamable_http_server::session::local::{LocalSessionManager, SessionConfig};
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tower::Service;
 
 use super::auth::{AuthFailureLimiter, operator_identity};
 use super::json_error;
 use super::limits::{HttpLimits, HttpSecurity, host_allowed, origin_allowed};
-use super::sse::{DEFAULT_KEEPALIVE, SseSessions};
+use super::sse::{
+    Acquire, DEFAULT_KEEPALIVE, GlobalLimits, SESSION_REFUSED, SseSessions, json_rpc_request_key,
+};
 use crate::handler::McpHandler;
 
 const SESSION_HEADER: &str = "mcp-session-id";
 const VERSION_HEADER: &str = "mcp-protocol-version";
 const META_VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 const MODERN: &str = "2026-07-28";
+/// How often a Streamable session's watcher checks that rmcp still holds it.
+const SESSION_POLL: Duration = Duration::from_secs(1);
 
 /// Body builders for the 6.2.0 `/health` and `/instances` routes.
 pub type JsonFn = Arc<dyn Fn() -> Value + Send + Sync>;
@@ -45,6 +62,8 @@ pub struct HttpConfig {
     pub security: HttpSecurity,
     pub limits: HttpLimits,
     pub keepalive: Duration,
+    /// After shutdown, how long open connections may finish before being dropped.
+    pub shutdown_grace: Duration,
     /// `/health` body (`status`, `servicenow_instance`, `instance_name`, `timestamp`).
     pub health: JsonFn,
     /// `/instances` list; wrapped as `{"instances": …}`.
@@ -57,6 +76,7 @@ impl HttpConfig {
             security,
             limits: HttpLimits::default(),
             keepalive: DEFAULT_KEEPALIVE,
+            shutdown_grace: Duration::from_secs(10),
             health,
             instances,
         }
@@ -83,9 +103,20 @@ impl Connected<IncomingStream<'_, TcpListener>> for PeerAddrs {
 
 struct AppState {
     security: HttpSecurity,
-    max_json_bytes: usize,
+    limits: HttpLimits,
+    shutdown_grace: Duration,
+    /// Cancelled by `close_all_sessions`.
+    stopping: CancellationToken,
     auth_failures: AuthFailureLimiter,
     rmcp: StreamableHttpService<McpHandler, LocalSessionManager>,
+    rmcp_sessions: Arc<LocalSessionManager>,
+    /// Streamable session id → the principal that initialized it (rule 5).
+    bindings: Mutex<HashMap<String, Principal>>,
+    /// `bindings.len()`, read synchronously by the SSE session cap.
+    streamable_count: Arc<AtomicUsize>,
+    /// Serializes session admission so the shared cap cannot be overshot.
+    admit_lock: tokio::sync::Mutex<()>,
+    global: Arc<GlobalLimits>,
     sse: Arc<SseSessions>,
     health: JsonFn,
     instances: JsonFn,
@@ -106,6 +137,7 @@ impl HttpApp {
             security,
             limits,
             keepalive,
+            shutdown_grace,
             health,
             instances,
         } = config;
@@ -119,21 +151,43 @@ impl HttpApp {
             .with_max_request_body_bytes(limits.max_json_bytes)
             .with_sse_keep_alive(Some(keepalive))
             .with_cancellation_token(shutdown.child_token());
+        // 6.2.0 session timers apply to Streamable sessions too (review M2).
+        let mut session_config = SessionConfig::default();
+        session_config.keep_alive = Some(limits.session_idle_timeout);
+        session_config.init_timeout = Some(limits.session_setup_timeout);
+        let mut manager = LocalSessionManager::default();
+        manager.session_config = session_config;
+        let rmcp_sessions = Arc::new(manager);
         let rmcp = StreamableHttpService::new(
             move || Ok(streamable.clone()),
-            Arc::new(LocalSessionManager::default()),
+            rmcp_sessions.clone(),
             rmcp_config,
         );
+        let global = Arc::new(GlobalLimits::new(&limits));
+        let streamable_count = Arc::new(AtomicUsize::new(0));
         let state = Arc::new(AppState {
             auth_failures: AuthFailureLimiter::new(
                 limits.auth_failure_limit,
                 limits.auth_failure_window,
                 limits.max_tracked_auth_peers,
             ),
-            max_json_bytes: limits.max_json_bytes,
-            sse: SseSessions::new(sse, limits, keepalive),
+            sse: SseSessions::new(
+                sse,
+                limits.clone(),
+                keepalive,
+                global.clone(),
+                streamable_count.clone(),
+            ),
+            limits,
+            shutdown_grace,
+            stopping: shutdown.clone(),
             security,
             rmcp,
+            rmcp_sessions,
+            bindings: Mutex::new(HashMap::new()),
+            streamable_count,
+            admit_lock: tokio::sync::Mutex::new(()),
+            global,
             health,
             instances,
         });
@@ -149,7 +203,7 @@ impl HttpApp {
             .with_state(self.state.clone())
     }
 
-    /// Refuses new SSE sessions and closes live ones and rmcp sessions with 503 semantics.
+    /// Refuses new sessions and requests, and closes every SSE and Streamable session.
     pub fn close_all_sessions(&self) {
         self.state.sse.close_all();
         self.shutdown.cancel();
@@ -159,23 +213,66 @@ impl HttpApp {
         self.state.sse.session_count()
     }
 
-    /// Serves until `shutdown` resolves, then closes every session.
+    /// Live Streamable HTTP sessions known to the session cap.
+    pub fn streamable_session_count(&self) -> usize {
+        self.state.streamable_count.load(Ordering::Acquire)
+    }
+
+    /// Serves until `shutdown` resolves, then closes every session and waits up to
+    /// `shutdown_grace` for connections before dropping them.
+    ///
+    /// Each connection gets a header read deadline (`headers_timeout`) before any
+    /// authentication runs, and open connections are capped (`max_connections`).
     pub async fn serve(
         self,
         listener: TcpListener,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::io::Result<()> {
         let router = self.router();
-        let service = router.into_make_service_with_connect_info::<PeerAddrs>();
-        let token = self.shutdown.clone();
-        let sse = self.state.sse.clone();
-        axum::serve(listener, service)
-            .with_graceful_shutdown(async move {
-                shutdown.await;
-                sse.close_all();
-                token.cancel();
-            })
-            .await
+        let limits = &self.state.limits;
+        let slots = Arc::new(Semaphore::new(limits.max_connections));
+        let graceful = GracefulShutdown::new();
+        let mut builder = http1::Builder::new();
+        builder
+            .timer(TokioTimer::new())
+            .header_read_timeout(limits.headers_timeout);
+        let mut tasks = JoinSet::new();
+        tokio::pin!(shutdown);
+        loop {
+            let (stream, remote) = tokio::select! {
+                r = listener.accept() => match r {
+                    Ok(v) => v,
+                    // Per-connection failures (e.g. reset before accept) are not fatal.
+                    Err(_) => continue,
+                },
+                () = &mut shutdown => break,
+            };
+            while tasks.try_join_next().is_some() {}
+            let Ok(permit) = slots.clone().try_acquire_owned() else {
+                drop(stream);
+                continue;
+            };
+            let Ok(local) = stream.local_addr() else {
+                continue;
+            };
+            let addrs = PeerAddrs { local, remote };
+            let router = router.clone();
+            let service = service_fn(move |mut req: hyper::Request<Incoming>| {
+                req.extensions_mut().insert(ConnectInfo(addrs));
+                let mut router = router.clone();
+                async move { router.call(req).await }
+            });
+            let conn = graceful.watch(builder.serve_connection(TokioIo::new(stream), service));
+            tasks.spawn(async move {
+                // Connection errors (timeouts, resets) end only that connection.
+                let _ = conn.await;
+                drop(permit);
+            });
+        }
+        self.close_all_sessions();
+        let _ = tokio::time::timeout(self.state.shutdown_grace, graceful.shutdown()).await;
+        tasks.abort_all();
+        Ok(())
     }
 }
 
@@ -301,6 +398,213 @@ async fn forward(st: &AppState, parts: axum::http::request::Parts, body: Body) -
     r
 }
 
+/// Holds a Streamable request's global POST slot and outstanding reservation until
+/// its response body ends or is dropped (review M2).
+struct RequestGuard {
+    _permit: OwnedSemaphorePermit,
+    reserved: Option<Arc<GlobalLimits>>,
+}
+
+impl Drop for RequestGuard {
+    fn drop(&mut self) {
+        if let Some(g) = self.reserved.take() {
+            g.release(1);
+        }
+    }
+}
+
+struct GuardedBody {
+    inner: Body,
+    _guard: RequestGuard,
+}
+
+impl HttpBody for GuardedBody {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+fn session_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(SESSION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Rule 5: a session bound to another principal is indistinguishable from an
+/// unknown one. Ids we never bound are left to rmcp, which refuses them.
+fn bound_elsewhere(st: &AppState, sid: &str, principal: &Principal) -> bool {
+    st.bindings
+        .lock()
+        .map_or(true, |b| b.get(sid).is_some_and(|p| p != principal))
+}
+
+fn live_sessions(st: &AppState) -> usize {
+    st.sse.session_count() + st.streamable_count.load(Ordering::Acquire)
+}
+
+/// Records the initializing principal and enforces the 6.2.0 lifetime cap; the
+/// binding is dropped once rmcp no longer holds the session (idle, DELETE, close).
+fn bind_session(st: &Arc<AppState>, sid: String, principal: Principal) {
+    let Ok(mut b) = st.bindings.lock() else {
+        return;
+    };
+    if b.insert(sid.clone(), principal).is_none() {
+        st.streamable_count.fetch_add(1, Ordering::AcqRel);
+    }
+    drop(b);
+    let st = st.clone();
+    tokio::spawn(async move {
+        let id: Arc<str> = sid.as_str().into();
+        let lifetime = tokio::time::sleep(st.limits.session_max_lifetime);
+        tokio::pin!(lifetime);
+        loop {
+            tokio::select! {
+                () = &mut lifetime => break,
+                () = st.stopping.cancelled() => break,
+                () = tokio::time::sleep(SESSION_POLL) => {
+                    if !st.rmcp_sessions.has_session(&id).await.unwrap_or(false) {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = st.rmcp_sessions.close_session(&id).await;
+        if st
+            .bindings
+            .lock()
+            .is_ok_and(|mut b| b.remove(&sid).is_some())
+        {
+            st.streamable_count.fetch_sub(1, Ordering::AcqRel);
+        }
+    });
+}
+
+fn too_many_sessions() -> Response {
+    let mut r = json_error(StatusCode::TOO_MANY_REQUESTS, "Too many sessions");
+    r.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    r
+}
+
+async fn post(
+    st: &Arc<AppState>,
+    parts: axum::http::request::Parts,
+    body: Body,
+    query_sid: Option<String>,
+    identity: VerifiedHttpIdentity,
+) -> Response {
+    // Node `requestTimeout`: the whole body within the deadline (review M1).
+    let bytes = match tokio::time::timeout(
+        st.limits.request_timeout,
+        axum::body::to_bytes(body, st.limits.max_json_bytes),
+    )
+    .await
+    {
+        Err(_) => return json_error(StatusCode::REQUEST_TIMEOUT, "Request timeout"),
+        Ok(Err(_)) => return json_error(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large"),
+        Ok(Ok(b)) => b,
+    };
+    let parsed = serde_json::from_slice::<Value>(&bytes);
+    // Rule 7: legacy HTTP+SSE POST keeps 6.2.0 body errors.
+    if let Some(sid) = &query_sid
+        && !parsed.as_ref().is_ok_and(has_modern_meta)
+    {
+        return st.sse.post(sid, &identity, &parts.headers, bytes).await;
+    }
+    // Rule 8: malformed JSON-RPC → 400 / -32700 before any routing.
+    let Ok(value) = parsed else {
+        return jsonrpc_error(Value::Null, -32700, "Parse error");
+    };
+    let id = value.get("id").cloned().unwrap_or(Value::Null);
+    if let Some(v) = parts.headers.get(VERSION_HEADER)
+        && !v.to_str().is_ok_and(is_supported_version)
+    {
+        return jsonrpc_error(id, -32022, "Unsupported protocol version");
+    }
+    if st.stopping.is_cancelled() {
+        return json_error(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down");
+    }
+    // Rule 3: modern `_meta` → stateless; a stale session id never downgrades.
+    let mut parts = parts;
+    let modern = has_modern_meta(&value);
+    if modern {
+        parts.headers.remove(SESSION_HEADER);
+    }
+    let sid = session_header(&parts.headers);
+    if let Some(sid) = &sid
+        && bound_elsewhere(st, sid, &identity.principal)
+    {
+        return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED);
+    }
+    let creates_session = sid.is_none()
+        && !modern
+        && value.get("method").and_then(Value::as_str) == Some("initialize");
+    // Serialized so concurrent initializes cannot overshoot the shared cap.
+    let _admit = if creates_session {
+        let lock = st.admit_lock.lock().await;
+        if live_sessions(st) >= st.limits.max_active_sessions {
+            return too_many_sessions();
+        }
+        Some(lock)
+    } else {
+        None
+    };
+    let permit = match st.global.post_slots.acquire().await {
+        Acquire::Granted(p) => p,
+        Acquire::Full => {
+            return json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many concurrent requests",
+            );
+        }
+        Acquire::Closed => {
+            return json_error(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down");
+        }
+    };
+    let reserved = if json_rpc_request_key(&value).is_some() {
+        if !st.global.reserve() {
+            return json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many outstanding requests",
+            );
+        }
+        Some(st.global.clone())
+    } else {
+        None
+    };
+    let guard = RequestGuard {
+        _permit: permit,
+        reserved,
+    };
+    let resp = forward(st, parts, Body::from(bytes)).await;
+    if creates_session && let Some(new_sid) = session_header(resp.headers()) {
+        bind_session(st, new_sid, identity.principal.clone());
+    }
+    let (parts, body) = resp.into_parts();
+    Response::from_parts(
+        parts,
+        Body::new(GuardedBody {
+            inner: body,
+            _guard: guard,
+        }),
+    )
+}
+
 async fn mcp(State(st): State<Arc<AppState>>, req: Request) -> Response {
     let query_sid = query_session_id(&req);
     let header_sid = req.headers().contains_key(SESSION_HEADER);
@@ -312,45 +616,26 @@ async fn mcp(State(st): State<Arc<AppState>>, req: Request) -> Response {
         );
     }
     let (parts, body) = req.into_parts();
+    // The guard always inserts the identity; absence is a bug, so fail closed.
+    let Some(identity) = parts.extensions.get::<VerifiedHttpIdentity>().cloned() else {
+        return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
+    };
+    let sid = session_header(&parts.headers);
     match parts.method {
-        Method::POST => {
-            let Ok(bytes) = axum::body::to_bytes(body, st.max_json_bytes).await else {
-                return json_error(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
-            };
-            let parsed = serde_json::from_slice::<Value>(&bytes);
-            // Rule 7: legacy HTTP+SSE POST keeps 6.2.0 body errors.
-            if let Some(sid) = &query_sid
-                && !parsed.as_ref().is_ok_and(has_modern_meta)
-            {
-                return st.sse.post(sid, &parts.headers, bytes).await;
-            }
-            // Rule 8: malformed JSON-RPC → 400 / -32700 before any routing.
-            let Ok(value) = parsed else {
-                return jsonrpc_error(Value::Null, -32700, "Parse error");
-            };
-            let id = value.get("id").cloned().unwrap_or(Value::Null);
-            if let Some(v) = parts.headers.get(VERSION_HEADER)
-                && !v.to_str().is_ok_and(is_supported_version)
-            {
-                return jsonrpc_error(id, -32022, "Unsupported protocol version");
-            }
-            // Rule 3: modern `_meta` → stateless; a stale session id never downgrades.
-            let mut parts = parts;
-            if has_modern_meta(&value) {
-                parts.headers.remove(SESSION_HEADER);
-            }
-            forward(&st, parts, Body::from(bytes)).await
+        Method::POST => post(&st, parts, body, query_sid, identity).await,
+        Method::GET | Method::DELETE
+            if sid
+                .as_deref()
+                .is_some_and(|s| bound_elsewhere(&st, s, &identity.principal)) =>
+        {
+            json_error(StatusCode::NOT_FOUND, SESSION_REFUSED)
         }
         Method::GET => {
             if header_sid {
                 return forward(&st, parts, body).await; // Rule 5.
             }
             if accepts_sse(&parts.headers) {
-                // Rule 6. The guard always inserts the identity; absence is a bug.
-                let Some(identity) = parts.extensions.get::<VerifiedHttpIdentity>().cloned() else {
-                    return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
-                };
-                return st.sse.open(identity);
+                return st.sse.open(identity); // Rule 6.
             }
             json_error(
                 StatusCode::NOT_ACCEPTABLE,

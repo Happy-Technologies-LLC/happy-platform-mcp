@@ -109,6 +109,9 @@ pub fn redeem_error(e: &ContinuationError) -> ErrorData {
     ErrorData::invalid_params(format!("Invalid request state: {e}"), None)
 }
 
+/// Live handles a [`MemoryContinuationStore`] keeps before evicting the oldest.
+pub const MAX_CONTINUATIONS: usize = 1024;
+
 /// Single-process, single-use continuation store (single-user deployments).
 /// Enterprise replaces it with a replicated store in the composition root.
 #[derive(Default)]
@@ -139,6 +142,15 @@ impl ContinuationStore for MemoryContinuationStore {
                 .lock()
                 .map_err(|_| ContinuationError::Storage("continuation store poisoned".into()))?;
             entries.retain(|_, b| b.expires_at > now);
+            // Bounded: the oldest live handle makes room (its caller must retry).
+            if entries.len() >= MAX_CONTINUATIONS
+                && let Some(oldest) = entries
+                    .iter()
+                    .min_by_key(|(_, b)| b.expires_at)
+                    .map(|(k, _)| k.clone())
+            {
+                entries.remove(&oldest);
+            }
             entries.insert(id.clone(), binding);
             Ok(ContinuationHandle(id))
         })
@@ -228,6 +240,28 @@ mod tests {
         assert!(matches!(
             store.redeem(&h, &presented).await,
             Err(ContinuationError::Expired)
+        ));
+    }
+
+    // Review L3: the store is bounded; the oldest handle is evicted.
+    #[tokio::test]
+    async fn store_is_bounded() {
+        let store = MemoryContinuationStore::default();
+        let args = json!({});
+        let first = store
+            .issue(binding(&args, Duration::from_secs(1)))
+            .await
+            .expect("issue");
+        for _ in 0..MAX_CONTINUATIONS {
+            store
+                .issue(binding(&args, CONTINUATION_TTL))
+                .await
+                .expect("issue");
+        }
+        assert_eq!(store.entries.lock().expect("lock").len(), MAX_CONTINUATIONS);
+        assert!(matches!(
+            store.redeem(&first, &binding(&args, Duration::ZERO)).await,
+            Err(ContinuationError::AlreadyRedeemed)
         ));
     }
 

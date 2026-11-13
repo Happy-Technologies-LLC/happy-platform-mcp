@@ -15,11 +15,19 @@ on:
       - 'fixtures/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - '.github/workflows/rust-conformance.yml'
 
 permissions:
   contents: read
 
+# The toolchain (and rustfmt/clippy) comes from rust-toolchain.toml; rustup installs
+# it on first cargo use, so no separate install step.
+#
+# MCP protocol conformance runs hermetically as `crates/hpm-cli/tests/http_e2e.rs`
+# (initialize, tools/list and tools/call on 2025-11-25 sessions and 2026-07-28
+# stateless requests, over loopback). The external conformance suite is not run
+# here: it is downloaded from npm at run time and the CLI has no HTTP serve mode yet.
 jobs:
   rust:
     runs-on: ${{ matrix.os }}
@@ -30,11 +38,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+        with:
+          persist-credentials: false
 
       - name: Format
         run: cargo fmt --all --check
@@ -42,20 +47,26 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Tests
+      - name: Tests (includes the HTTP protocol e2e suite)
         run: cargo test --workspace --locked
 
-  # Each lane crate must build without the composition-root-only feature.
+      - name: Trusted-root gate
+        run: cargo run -p xtask --locked -- check-trusted-root
+
+  # Each lane crate must build on its own, without the composition-root-only
+  # `trusted-root` feature that only hpm-cli enables.
   feature-isolation:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Install Rust toolchain
+      - name: Build every non-cli crate alone
+        shell: bash
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - name: Build hpm-protocol alone
-        run: cargo test -p hpm-protocol --locked
+          set -euo pipefail
+          for crate in hpm-types hpm-core hpm-docs hpm-tools hpm-protocol; do
+            cargo check -p "$crate" --lib --locked
+          done

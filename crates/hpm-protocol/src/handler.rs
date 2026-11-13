@@ -53,35 +53,57 @@ pub struct McpHandler {
     session_identity: Option<VerifiedHttpIdentity>,
 }
 
-impl McpHandler {
-    pub fn new(root: TrustedRoot, dispatcher: Arc<Dispatcher>) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                root,
-                dispatcher,
-                continuations: Arc::new(MemoryContinuationStore::default()),
-                registry: None,
-            }),
-            session_identity: None,
-        }
-    }
+/// Builds an [`McpHandler`]. Optional services are set here, before the handler
+/// exists, so a setting can never be dropped on an already shared handler.
+pub struct McpHandlerBuilder {
+    root: TrustedRoot,
+    dispatcher: Arc<Dispatcher>,
+    continuations: Option<Arc<dyn ContinuationStore>>,
+    registry: Option<Arc<dyn RegistryStore>>,
+}
 
+impl McpHandlerBuilder {
     /// Replaces the single-process continuation store (enterprise: replicated).
-    /// Call before cloning the handler into transports.
-    pub fn with_continuations(mut self, store: Arc<dyn ContinuationStore>) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.continuations = store;
-        }
+    pub fn continuations(mut self, store: Arc<dyn ContinuationStore>) -> Self {
+        self.continuations = Some(store);
         self
     }
 
     /// Resolves the call's instance from the registry view of the admitted
     /// principal (`args.instance`, else the selected default).
-    pub fn with_registry(mut self, registry: Arc<dyn RegistryStore>) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.registry = Some(registry);
-        }
+    pub fn registry(mut self, registry: Arc<dyn RegistryStore>) -> Self {
+        self.registry = Some(registry);
         self
+    }
+
+    pub fn build(self) -> McpHandler {
+        McpHandler {
+            inner: Arc::new(Inner {
+                root: self.root,
+                dispatcher: self.dispatcher,
+                continuations: self
+                    .continuations
+                    .unwrap_or_else(|| Arc::new(MemoryContinuationStore::default())),
+                registry: self.registry,
+            }),
+            session_identity: None,
+        }
+    }
+}
+
+impl McpHandler {
+    pub fn builder(root: TrustedRoot, dispatcher: Arc<Dispatcher>) -> McpHandlerBuilder {
+        McpHandlerBuilder {
+            root,
+            dispatcher,
+            continuations: None,
+            registry: None,
+        }
+    }
+
+    /// A handler with the in-memory continuation store and no registry.
+    pub fn new(root: TrustedRoot, dispatcher: Arc<Dispatcher>) -> Self {
+        Self::builder(root, dispatcher).build()
     }
 
     pub(crate) fn for_session(&self, identity: VerifiedHttpIdentity) -> Self {

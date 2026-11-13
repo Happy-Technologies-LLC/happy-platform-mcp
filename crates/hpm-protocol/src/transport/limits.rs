@@ -31,6 +31,14 @@ pub struct HttpLimits {
     pub auth_failure_limit: u32,
     pub auth_failure_window: Duration,
     pub max_tracked_auth_peers: usize,
+    /// Node `server.headersTimeout` (6.2.0 ran on the default): complete request
+    /// headers must arrive within this, before any authentication.
+    pub headers_timeout: Duration,
+    /// Node `server.requestTimeout` default: the whole request body must arrive
+    /// within this.
+    pub request_timeout: Duration,
+    /// Open TCP connections; further accepts are closed at once.
+    pub max_connections: usize,
 }
 
 impl Default for HttpLimits {
@@ -49,6 +57,9 @@ impl Default for HttpLimits {
             auth_failure_limit: 10,
             auth_failure_window: Duration::from_millis(60_000),
             max_tracked_auth_peers: 1024,
+            headers_timeout: Duration::from_millis(60_000),
+            request_timeout: Duration::from_millis(300_000),
+            max_connections: 128,
         }
     }
 }
@@ -73,6 +84,9 @@ impl HttpLimits {
                 "authFailureLimit",
                 "authFailureWindowMs",
                 "maxTrackedAuthPeers",
+                "headersTimeoutMs",
+                "requestTimeoutMs",
+                "maxConnections",
             ];
             if !known.contains(&key.as_str()) {
                 return Err(ConfigError(format!("Unknown HTTP limit \"{key}\"")));
@@ -100,7 +114,10 @@ impl HttpLimits {
                 "maxOutstandingRequests" => l.max_outstanding_requests = count,
                 "authFailureLimit" => l.auth_failure_limit = u32::try_from(n).unwrap_or(u32::MAX),
                 "authFailureWindowMs" => l.auth_failure_window = ms,
-                _ => l.max_tracked_auth_peers = count,
+                "maxTrackedAuthPeers" => l.max_tracked_auth_peers = count,
+                "headersTimeoutMs" => l.headers_timeout = ms,
+                "requestTimeoutMs" => l.request_timeout = ms,
+                _ => l.max_connections = count,
             }
         }
         Ok(l)

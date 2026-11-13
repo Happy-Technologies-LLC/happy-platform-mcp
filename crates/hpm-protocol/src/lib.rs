@@ -8,4 +8,4 @@ mod handler;
 pub mod stdio;
 pub mod transport;
 
-pub use handler::{LIST_TTL_MS, McpHandler, SERVER_NAME};
+pub use handler::{LIST_TTL_MS, McpHandler, McpHandlerBuilder, SERVER_NAME};

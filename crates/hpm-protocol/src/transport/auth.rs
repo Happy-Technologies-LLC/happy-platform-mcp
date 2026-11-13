@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, header};
 use hpm_types::context::{ClientIdentity, Principal, VerifiedHttpIdentity};
 
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use super::limits::ConfigError;
 
@@ -32,14 +33,25 @@ fn well_formed(token: &str) -> bool {
     last & 0b11 == 0
 }
 
-/// The configured secret. `Debug` never prints it.
+/// The configured secret, held only as its SHA-256 digest (wiped on drop).
+/// `Debug` never prints it.
 #[derive(Clone)]
-pub struct ApiToken(Vec<u8>);
+pub struct ApiToken(Zeroizing<[u8; 32]>);
 
 impl fmt::Debug for ApiToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ApiToken(<redacted>)")
     }
+}
+
+/// Constant-time equality of two digests; `black_box` keeps the optimiser from
+/// turning the fold into an early-exit compare.
+fn digests_equal(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    let diff = a
+        .iter()
+        .zip(b)
+        .fold(0u8, |acc, (x, y)| acc | std::hint::black_box(x ^ y));
+    std::hint::black_box(diff) == 0
 }
 
 impl ApiToken {
@@ -54,10 +66,18 @@ impl ApiToken {
                 "HAPPY_MCP_API_TOKEN must be 32 random bytes encoded as 64 hex or 43 base64url characters; {TOKEN_GUIDANCE}"
             )));
         }
-        Ok(Self(token.as_bytes().to_vec()))
+        Ok(Self(Zeroizing::new(
+            Sha256::digest(token.as_bytes()).into(),
+        )))
     }
 
-    /// Exactly one `Authorization: Bearer <token>`, compared in constant time.
+    /// SHA-256 of the token: the session binding of the single-user principal.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        *self.0
+    }
+
+    /// Exactly one `Authorization: Bearer <token>`, compared in constant time
+    /// (digest against digest, so the length is fixed too).
     pub fn matches(&self, headers: &HeaderMap) -> bool {
         let mut values = headers.get_all(header::AUTHORIZATION).iter();
         let (Some(value), None) = (values.next(), values.next()) else {
@@ -72,8 +92,8 @@ impl ApiToken {
         if !scheme.eq_ignore_ascii_case("bearer") || !well_formed(presented) {
             return false;
         }
-        let (a, b) = (presented.as_bytes(), self.0.as_slice());
-        a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+        let presented: [u8; 32] = Sha256::digest(presented.as_bytes()).into();
+        digests_equal(&presented, &self.0)
     }
 }
 
@@ -83,7 +103,7 @@ impl ApiToken {
 pub fn operator_identity(token: &ApiToken) -> VerifiedHttpIdentity {
     VerifiedHttpIdentity::new(
         Principal::LocalBearer {
-            token_fingerprint: Sha256::digest(&token.0).into(),
+            token_fingerprint: token.fingerprint(),
         },
         ClientIdentity {
             client_id: API_TOKEN_CLIENT_ID.into(),

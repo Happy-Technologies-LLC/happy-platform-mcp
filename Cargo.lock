@@ -497,13 +497,17 @@ dependencies = [
  "futures-core",
  "hpm-tools",
  "hpm-types",
+ "hyper",
+ "hyper-util",
  "rmcp",
  "serde_json",
  "sha2",
  "thiserror",
  "tokio",
  "tokio-util",
+ "tower",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

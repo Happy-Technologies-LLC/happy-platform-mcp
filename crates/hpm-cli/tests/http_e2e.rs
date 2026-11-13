@@ -26,7 +26,7 @@ use hpm_types::tool::{
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const SLOW_TOOL: &str = "SN-Query-Table";
@@ -96,6 +96,9 @@ struct Server {
     addr: SocketAddr,
     app: HttpApp,
     gate: Arc<Semaphore>,
+    /// Resolves the `serve` shutdown future.
+    stop: Arc<Notify>,
+    serving: tokio::task::JoinHandle<()>,
 }
 
 async fn start(limits: HttpLimits) -> Server {
@@ -103,6 +106,10 @@ async fn start(limits: HttpLimits) -> Server {
 }
 
 async fn start_with(limits: HttpLimits, origins: &[&str]) -> Server {
+    start_full(limits, origins, Duration::from_secs(10)).await
+}
+
+async fn start_full(limits: HttpLimits, origins: &[&str], grace: Duration) -> Server {
     let gate = Arc::new(Semaphore::new(0));
     let d = dispatcher(gate.clone());
     let origins: Vec<String> = origins.iter().map(|s| s.to_string()).collect();
@@ -114,6 +121,7 @@ async fn start_with(limits: HttpLimits, origins: &[&str]) -> Server {
     );
     config.limits = limits;
     config.keepalive = Duration::from_millis(100);
+    config.shutdown_grace = grace;
     let app = HttpApp::new(
         McpHandler::new(
             TrustedRoot::streamable_http(DeploymentMode::SingleUser),
@@ -125,10 +133,18 @@ async fn start_with(limits: HttpLimits, origins: &[&str]) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let serving = app.clone();
-    tokio::spawn(async move {
-        let _ = serving.serve(listener, std::future::pending()).await;
+    let stop = Arc::new(Notify::new());
+    let stopped = stop.clone().notified_owned();
+    let serving = tokio::spawn(async move {
+        let _ = serving.serve(listener, stopped).await;
     });
-    Server { addr, app, gate }
+    Server {
+        addr,
+        app,
+        gate,
+        stop,
+        serving,
+    }
 }
 
 struct Reply {
@@ -719,24 +735,283 @@ async fn streamable_http_front_rules() {
     assert_eq!(r.status, 400);
 }
 
-// Streamable HTTP legacy-session initialize (`2025-06-18`) goes through rmcp.
-#[tokio::test]
-async fn streamable_http_initialize() {
-    let s = start(HttpLimits::default()).await;
+const ACCEPT_BOTH: (&str, &str) = ("Accept", "application/json, text/event-stream");
+const JSON_CT: (&str, &str) = ("Content-Type", "application/json");
+
+/// The JSON-RPC message with `id` from a JSON or SSE response body.
+fn rpc_reply(r: &Reply, id: u64) -> Value {
+    let needle = format!("\"id\":{id}");
+    r.body
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: ").or_else(|| l.strip_prefix("data:")))
+        .find(|l| l.contains(&needle))
+        .and_then(|l| serde_json::from_str(l.trim()).ok())
+        .unwrap_or_else(|| r.json())
+}
+
+fn assert_tool_round_trip(list: &Value, call: &Value) {
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(names, [SLOW_TOOL], "{list}");
+    assert_ne!(call["result"]["isError"], json!(true), "{call}");
+    assert!(call["result"]["content"].is_array(), "{call}");
+}
+
+async fn streamable_initialize(addr: SocketAddr, version: &str) -> Reply {
     let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name":"e2e","version":"1"}}});
+        "protocolVersion": version, "capabilities": {}, "clientInfo": {"name":"e2e","version":"1"}}});
+    authed(
+        addr,
+        "POST",
+        "/mcp",
+        &[JSON_CT, ACCEPT_BOTH],
+        init.to_string().as_bytes(),
+    )
+    .await
+}
+
+// Review H1: initialize + tools/list + tools/call over a `2025-11-25` session.
+#[tokio::test]
+async fn streamable_session_2025_11_25() {
+    const V: &str = "2025-11-25";
+    let s = start(HttpLimits::default()).await;
+    s.gate.add_permits(1);
+    let r = streamable_initialize(s.addr, V).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    let init = rpc_reply(&r, 1);
+    assert_eq!(init["result"]["serverInfo"]["name"], "happy-platform-mcp");
+    assert_eq!(init["result"]["protocolVersion"], V);
+    let sid = r.header("mcp-session-id").expect("session id");
+    let session = [
+        JSON_CT,
+        ACCEPT_BOTH,
+        ("Mcp-Session-Id", sid.as_str()),
+        ("MCP-Protocol-Version", V),
+    ];
+    let note = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
     let r = authed(
         s.addr,
         "POST",
         "/mcp",
-        &[
-            ("Content-Type", "application/json"),
-            ("Accept", "application/json, text/event-stream"),
-        ],
-        init.to_string().as_bytes(),
+        &session,
+        note.to_string().as_bytes(),
     )
     .await;
-    assert_eq!(r.status, 200, "{}", r.body);
-    assert!(r.header("mcp-session-id").is_some());
-    assert!(r.body.contains("happy-platform-mcp"), "{}", r.body);
+    assert_eq!(r.status, 202, "{}", r.body);
+    let list = json!({"jsonrpc":"2.0","id":2,"method":"tools/list"});
+    let r = authed(
+        s.addr,
+        "POST",
+        "/mcp",
+        &session,
+        list.to_string().as_bytes(),
+    )
+    .await;
+    let list = rpc_reply(&r, 2);
+    let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params":{"name":SLOW_TOOL,"arguments":{}}});
+    let r = authed(
+        s.addr,
+        "POST",
+        "/mcp",
+        &session,
+        call.to_string().as_bytes(),
+    )
+    .await;
+    assert_tool_round_trip(&list, &rpc_reply(&r, 3));
+    assert_eq!(s.app.streamable_session_count(), 1);
+}
+
+fn modern_meta() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "e2e", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
+}
+
+async fn modern(addr: SocketAddr, id: u64, method: &str, mut params: Value) -> Value {
+    params["_meta"] = modern_meta();
+    let body = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+    let name = params["name"].as_str().map(str::to_string);
+    let mut h = vec![
+        JSON_CT,
+        ACCEPT_BOTH,
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", method),
+    ];
+    if let Some(n) = &name {
+        h.push(("Mcp-Name", n.as_str()));
+    }
+    let r = authed(addr, "POST", "/mcp", &h, body.to_string().as_bytes()).await;
+    assert_eq!(r.status, 200, "{method}: {}", r.body);
+    assert!(r.header("mcp-session-id").is_none(), "stateless");
+    rpc_reply(&r, id)
+}
+
+// Review H1: the stateless `2026-07-28` path (server/discover, tools/list, tools/call).
+#[tokio::test]
+async fn streamable_stateless_2026_07_28() {
+    let s = start(HttpLimits::default()).await;
+    s.gate.add_permits(1);
+    let discover = modern(s.addr, 1, "server/discover", json!({})).await;
+    assert!(discover.get("result").is_some(), "{discover}");
+    assert!(
+        discover.to_string().contains("happy-platform-mcp"),
+        "{discover}"
+    );
+    let list = modern(s.addr, 2, "tools/list", json!({})).await;
+    let call = modern(
+        s.addr,
+        3,
+        "tools/call",
+        json!({"name": SLOW_TOOL, "arguments": {}}),
+    )
+    .await;
+    assert_tool_round_trip(&list, &call);
+    assert_eq!(s.app.streamable_session_count(), 0);
+}
+
+// Review M2: Streamable sessions count against the shared live-session cap.
+#[tokio::test]
+async fn streamable_sessions_share_the_session_cap() {
+    let limits = HttpLimits {
+        max_active_sessions: 1,
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    assert_eq!(
+        streamable_initialize(s.addr, "2025-11-25").await.status,
+        200
+    );
+    let r = streamable_initialize(s.addr, "2025-11-25").await;
+    assert_eq!(
+        (r.status, r.json()),
+        (429, json!({"error": "Too many sessions"}))
+    );
+    let Err(r) = SseStream::open(s.addr).await else {
+        panic!("SSE session admitted over the shared cap")
+    };
+    assert_eq!(r.status, 429);
+}
+
+// Review M3: messages rmcp would reject never reserve an outstanding slot.
+#[tokio::test]
+async fn invalid_messages_do_not_wedge_a_session() {
+    let s = start(HttpLimits::default()).await;
+    let (mut sse, sid) = initialized_session(s.addr).await;
+    for id in 100..164 {
+        let bad = json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":"bad"});
+        let r = post_message(s.addr, &sid, &bad).await;
+        assert_eq!(
+            (r.status, r.json()),
+            (400, json!({"error": "Invalid message"}))
+        );
+    }
+    let list = json!({"jsonrpc":"2.0","id":9,"method":"tools/list"});
+    assert_eq!(post_message(s.addr, &sid, &list).await.status, 202);
+    sse.response(&json!(9)).await;
+}
+
+// Review M4: a client that never reads its stream cannot hang shutdown.
+#[tokio::test]
+async fn shutdown_finishes_with_a_non_reading_client() {
+    let s = start_full(HttpLimits::default(), &[], Duration::from_secs(1)).await;
+    let (sse, sid) = initialized_session(s.addr).await;
+    s.gate.add_permits(10_000);
+    let pad = "x".repeat(256 * 1024);
+    for id in 1..200u64 {
+        let msg = json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+            "params":{"name":SLOW_TOOL,"arguments":{"pad":pad}}});
+        if post_message(s.addr, &sid, &msg).await.status == 429 {
+            break;
+        }
+    }
+    s.stop.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), s.serving)
+        .await
+        .expect("serve returned despite a stalled stream")
+        .expect("join");
+    assert_eq!(s.app.sse_session_count(), 0);
+    drop(sse);
+}
+
+// Review M1: incomplete headers are cut off before authentication runs.
+#[tokio::test]
+async fn slow_headers_are_timed_out() {
+    let limits = HttpLimits {
+        headers_timeout: Duration::from_millis(300),
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    let mut c = TcpStream::connect(s.addr).await.expect("connect");
+    c.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+        .await
+        .expect("write");
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), c.read_to_end(&mut raw))
+        .await
+        .expect("connection closed by the header timeout")
+        .expect("read");
+    let text = String::from_utf8_lossy(&raw);
+    assert!(raw.is_empty() || text.starts_with("HTTP/1.1 408"), "{text}");
+}
+
+// Review M1: a body that never arrives is answered 408.
+#[tokio::test]
+async fn slow_body_is_timed_out() {
+    let limits = HttpLimits {
+        request_timeout: Duration::from_millis(300),
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    let mut c = TcpStream::connect(s.addr).await.expect("connect");
+    let head = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: {}\r\n\
+         Content-Type: application/json\r\nConnection: close\r\nContent-Length: 100\r\n\r\n{{",
+        s.addr.port(),
+        bearer()
+    );
+    c.write_all(head.as_bytes()).await.expect("write");
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), c.read_to_end(&mut raw))
+        .await
+        .expect("reply in time")
+        .expect("read");
+    let r = parse(&raw);
+    assert_eq!(
+        (r.status, r.json()),
+        (408, json!({"error": "Request timeout"}))
+    );
+}
+
+// Review M1: connections beyond `max_connections` are closed at accept.
+#[tokio::test]
+async fn connection_cap_closes_excess_connections() {
+    let limits = HttpLimits {
+        max_connections: 2,
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    let _a = TcpStream::connect(s.addr).await.expect("a");
+    let _b = TcpStream::connect(s.addr).await.expect("b");
+    // Let the server accept both before the third arrives.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut c = TcpStream::connect(s.addr).await.expect("c");
+    let _ = c
+        .write_all(&request_bytes(s.addr, "GET", "/health", &[], b""))
+        .await;
+    let mut raw = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(5), c.read_to_end(&mut raw))
+        .await
+        .expect("closed in time");
+    assert!(
+        read.is_err() || raw.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&raw)
+    );
 }
