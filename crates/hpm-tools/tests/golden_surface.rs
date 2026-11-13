@@ -10,8 +10,9 @@
 //!   empty `prompts` capability (see [`DEVIATIONS`] for `prompts/*`);
 //! - `tools/list`: compared over the tools the composition registers (golden
 //!   order, name, description, schema); a golden tool no family registers yet is
-//!   lane-pending, and `annotations` are ignored until the Q1 re-capture (G5
-//!   hints ship in 7.0 `tools/list`);
+//!   lane-pending; each recorded tool is replaced by its entry in the 7.0 list
+//!   (`fixtures/tools-list-7.0.json`: D-05 annotation hints and owner text
+//!   corrections, checked against 6.2.0 by `tests/tools_list.rs`);
 //! - a `tools/call` of a golden tool no family registers: lane-pending, must be
 //!   `-32602 Unknown tool`;
 //! - resources while the composition serves none (lane E pending): `resources/list`
@@ -136,17 +137,30 @@ fn deviation(id: &str, i: usize, method: &str, params: &Value) -> Option<&'stati
     })
 }
 
-fn without_annotations(tools: &Value) -> Vec<Value> {
+/// The recorded `tools/list` entries swapped for their 7.0 versions (same order).
+fn as_7_0(tools: &Value) -> Vec<Value> {
+    let path: std::path::PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "..",
+        "fixtures",
+        "tools-list-7.0.json",
+    ]
+    .iter()
+    .collect();
+    let list: Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("tools-list-7.0.json"))
+            .expect("7.0 list");
+    let list = list["tools"].as_array().expect("7.0 tools");
     tools
         .as_array()
         .into_iter()
         .flatten()
         .map(|t| {
-            let mut t = t.clone();
-            if let Some(o) = t.as_object_mut() {
-                o.remove("annotations");
-            }
-            t
+            list.iter()
+                .find(|n| n["name"] == t["name"])
+                .unwrap_or_else(|| panic!("{} not in tools-list-7.0.json", t["name"]))
+                .clone()
         })
         .collect()
 }
@@ -232,7 +246,7 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
                 }
             }
             "tools/list" => {
-                let registered: Vec<Value> = without_annotations(&want_response["result"]["tools"])
+                let registered: Vec<Value> = as_7_0(&want_response["result"]["tools"])
                     .into_iter()
                     .filter(|t| {
                         t["name"]
@@ -243,7 +257,7 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
                 diff(
                     &mut problems,
                     format!("{at} tools"),
-                    &json!(without_annotations(&got["response"]["result"]["tools"])),
+                    &got["response"]["result"]["tools"],
                     &world.scrub(&json!(registered)),
                 );
                 continue;

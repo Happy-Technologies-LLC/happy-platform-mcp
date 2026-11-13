@@ -50,6 +50,7 @@ const TRUSTED_ROOT_PATTERNS: &[&str] = &[
 const FIXTURE_FILES_OUTSIDE_MANIFEST: &[&str] = &[
     "compat-manifest.json",
     "tools-list-6.2.0.json",
+    "tools-list-7.0.json",
     "golden/MANIFEST.json",
     "golden/NORMALIZATION.json",
 ];
@@ -255,6 +256,32 @@ fn fixtures_verify() -> Result<ExitCode, String> {
             .collect();
         if want_len != Some(bytes.len() as u64) || want_sha != Some(got_sha.as_str()) {
             problems.push(format!("hash/size mismatch: fixtures/golden/{rel}"));
+        }
+    }
+
+    // Tool-list fixtures are pinned by `fixtures/compat-manifest.json`.
+    let compat_text = fs::read_to_string(fixtures.join("compat-manifest.json"))
+        .map_err(|e| format!("fixtures/compat-manifest.json: {e}"))?;
+    let compat: serde_json::Value = serde_json::from_str(&compat_text)
+        .map_err(|e| format!("fixtures/compat-manifest.json: {e}"))?;
+    for (rel, key) in [
+        ("tools-list-6.2.0.json", "tools"),
+        ("tools-list-7.0.json", "tools70"),
+    ] {
+        let pin = &compat[key]["fixture"];
+        let Ok(bytes) = fs::read(fixtures.join(rel)) else {
+            continue; // reported as missing above
+        };
+        let got_sha: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if pin["path"].as_str() != Some(format!("fixtures/{rel}").as_str())
+            || pin["sha256"].as_str() != Some(got_sha.as_str())
+        {
+            problems.push(format!(
+                "compat-manifest {key}.fixture does not pin fixtures/{rel}"
+            ));
         }
     }
 
