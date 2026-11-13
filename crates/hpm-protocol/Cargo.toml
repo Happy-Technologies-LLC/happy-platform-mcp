@@ -12,9 +12,25 @@ authors.workspace = true
 # No `trusted-root`: adapters receive a built `TrustedRoot` from the composition root.
 hpm-types.workspace = true
 hpm-tools.workspace = true
-rmcp.workspace = true
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
+axum = { workspace = true, features = ["tokio", "http1", "json"] }
+tokio = { workspace = true, features = ["sync", "time", "io-util", "net", "macros"] }
+tokio-util.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+# Not in [workspace.dependencies]: the `Stream` trait axum's SSE body needs.
+futures-core = "=0.3.34"
+# Not in [workspace.dependencies]: own accept loop with header read timeout,
+# connection cap and graceful drain (review M1).
+hyper = { version = "=1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.21", features = ["tokio", "server", "server-graceful"] }
+tower = { version = "=0.5.3", features = ["util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
 workspace = true

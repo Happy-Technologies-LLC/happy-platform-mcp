@@ -7,3 +7,14 @@ pub mod auth;
 pub mod limits;
 pub mod sse;
 pub mod streamable_http;
+
+use axum::Json;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+
+pub use streamable_http::{HttpApp, HttpConfig, JsonFn, PeerAddrs};
+
+/// 6.2.0 `sendJson(res, status, { error })`.
+pub(crate) fn json_error(status: StatusCode, msg: &str) -> Response {
+    (status, Json(serde_json::json!({ "error": msg }))).into_response()
+}
