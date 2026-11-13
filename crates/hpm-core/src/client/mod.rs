@@ -828,6 +828,25 @@ impl ServiceNowClient {
         self.auth_header_for(&st).await
     }
 
+    /// The Authorization value for an already prepared generation, without
+    /// any token request, refresh or browser sign-in (RFC §4: `authorize`
+    /// never prompts). `Ok(None)` when the prepared OAuth token is gone or
+    /// the generation moved; the caller fails closed with `GenerationMoved`.
+    pub async fn prepared_auth_header(
+        &self,
+        generation: u64,
+    ) -> Result<Option<String>, ClientError> {
+        let st = self.state();
+        if st.generation != generation {
+            return Ok(None);
+        }
+        if st.cfg.auth_type == AuthType::OAuth {
+            return Ok(self.cached_token(&st).map(|t| format!("Bearer {t}")));
+        }
+        let header = self.auth_header_for(&st).await?;
+        Ok((self.generation() == generation).then_some(header))
+    }
+
     pub(crate) async fn auth_header_for(&self, st: &Arc<State>) -> Result<String, ClientError> {
         self.assert_current(st)?;
         if st.cfg.auth_type == AuthType::OAuth {

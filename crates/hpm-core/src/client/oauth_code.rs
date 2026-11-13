@@ -274,6 +274,11 @@ fn handle_request(
     )
 }
 
+/// Per-connection bound for reading the redirect request line and headers.
+const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Pause after a failed `accept` (e.g. EMFILE) instead of spinning.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+
 impl CallbackServer {
     /// `createCallbackServer`: binds before returning (`port` 0 = ephemeral).
     pub async fn bind(
@@ -290,26 +295,47 @@ impl CallbackServer {
             .port();
         let (tx, _) = watch::channel::<Settled>(None);
         let task_tx = tx.clone();
-        let path = callback_path.to_owned();
-        let expected = expected_state.to_owned();
+        let path: Arc<str> = Arc::from(callback_path);
+        let expected: Arc<str> = Arc::from(expected_state);
         let task = tokio::spawn(async move {
+            // Connections are served concurrently, each bounded by a read
+            // timeout, so an idle socket (e.g. a browser preconnect) cannot
+            // hold up the real redirect. Aborting this task drops the set and
+            // with it every connection task.
+            let mut connections = tokio::task::JoinSet::new();
             loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    continue;
-                };
-                let mut buf = Vec::with_capacity(1024);
-                let mut chunk = [0u8; 1024];
-                while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 16 * 1024 {
-                    match stream.read(&mut chunk).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                while connections.try_join_next().is_some() {}
+                let mut stream = match listener.accept().await {
+                    Ok((stream, _)) => stream,
+                    Err(_) => {
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                        continue;
                     }
-                }
-                let text = String::from_utf8_lossy(&buf);
-                let line = text.lines().next().unwrap_or("");
-                let response = handle_request(line, &path, &expected, &task_tx);
-                let _ = stream.write_all(&response).await;
-                let _ = stream.shutdown().await;
+                };
+                let (tx, path, expected) = (task_tx.clone(), path.clone(), expected.clone());
+                connections.spawn(async move {
+                    let mut buf = Vec::with_capacity(1024);
+                    let read = async {
+                        let mut chunk = [0u8; 1024];
+                        while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 16 * 1024 {
+                            match stream.read(&mut chunk).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                            }
+                        }
+                    };
+                    if tokio::time::timeout(CALLBACK_READ_TIMEOUT, read)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let text = String::from_utf8_lossy(&buf);
+                    let line = text.lines().next().unwrap_or("");
+                    let response = handle_request(line, &path, &expected, &tx);
+                    let _ = stream.write_all(&response).await;
+                    let _ = stream.shutdown().await;
+                });
             }
         });
         Ok(Self {
@@ -558,7 +584,16 @@ impl AuthCodeFlow for LoopbackAuthCodeFlow {
                     &pkce.code_verifier,
                     &redirect_uri,
                 );
-                post.post(&config.token_url, params).await
+                // The token endpoint can echo the authorization code (and
+                // the verifier) back in its error body: scrub both here.
+                let mut scrub = super::error::Redactor::new();
+                scrub.add(&code);
+                scrub.add(&pkce.code_verifier);
+                post.post(&config.token_url, params).await.map_err(|mut e| {
+                    e.message = scrub.redact(&e.message);
+                    e.data = e.data.map(|d| scrub.sanitize(&d));
+                    e
+                })
             }
             .await;
             server.close();

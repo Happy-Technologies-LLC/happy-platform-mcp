@@ -57,6 +57,13 @@ impl CredentialProvider for SingleUserCredentialProvider {
             }
             let current = self.client.current_instance();
             let name = current["name"].as_str().unwrap_or("default").to_owned();
+            // The binding must name the instance the client actually targets.
+            if let Some(resolved) = ctx.instance() {
+                let bound = self.client.instance_url();
+                if resolved.canonical_url.trim_end_matches('/') != bound.trim_end_matches('/') {
+                    return Err(CredentialError::GenerationMoved);
+                }
+            }
             let (instance_id, config_version) = ctx.instance().map_or_else(
                 || (name.clone(), 0),
                 |i| (i.instance_id.clone(), i.config_version),
@@ -78,7 +85,13 @@ impl CredentialProvider for SingleUserCredentialProvider {
     ) -> BoxFut<'a, Result<Credential, CredentialError>> {
         Box::pin(async move {
             self.check(binding)?;
-            let header = self.client.auth_header().await.map_err(backend)?;
+            // Never refreshes or prompts: `prepare` already did that.
+            let header = self
+                .client
+                .prepared_auth_header(binding.generation())
+                .await
+                .map_err(backend)?
+                .ok_or(CredentialError::GenerationMoved)?;
             self.check(binding)?;
             Ok(Credential {
                 kind: CredentialKind::Authorization(Secret::new(header)),
