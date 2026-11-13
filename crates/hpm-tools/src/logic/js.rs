@@ -115,9 +115,21 @@ fn push_json(out: &mut String, value: &Value) {
             out.push(']');
         }
         Value::Object(map) => {
+            // OrdinaryOwnPropertyKeys: array-index keys ascending, then the
+            // remaining string keys in insertion order.
+            let mut indexed: Vec<(u32, &String, &Value)> = map
+                .iter()
+                .filter_map(|(key, item)| array_index(key).map(|index| (index, key, item)))
+                .collect();
+            indexed.sort_unstable_by_key(|(index, _, _)| *index);
+            let named = map.iter().filter(|(key, _)| array_index(key).is_none());
+            let members = indexed
+                .iter()
+                .map(|(_, key, item)| (*key, *item))
+                .chain(named);
             out.push('{');
-            for (index, (key, item)) in map.iter().enumerate() {
-                if index > 0 {
+            for (position, (key, item)) in members.enumerate() {
+                if position > 0 {
                     out.push(',');
                 }
                 push_json_string(out, key);
@@ -129,8 +141,21 @@ fn push_json(out: &mut String, value: &Value) {
     }
 }
 
-/// `JSON.stringify(value)` without indentation. Object members are emitted in
-/// `serde_json::Map` iteration order.
+/// A canonical array index: `"0"` or digits without a leading zero, at most 2^32 - 2.
+fn array_index(key: &str) -> Option<u32> {
+    let bytes = key.as_bytes();
+    if bytes.is_empty() || bytes.len() > 10 || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    if bytes.len() > 1 && bytes[0] == b'0' {
+        return None;
+    }
+    key.parse::<u32>().ok().filter(|index| *index != u32::MAX)
+}
+
+/// `JSON.stringify(value)` without indentation. Object members follow JS
+/// property order: array-index keys ascending, then the other keys in
+/// `serde_json::Map` (insertion) order.
 pub fn json_stringify(value: &Value) -> String {
     let mut out = String::new();
     push_json(&mut out, value);
@@ -230,6 +255,24 @@ pub fn now_millis() -> i64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn json_stringify_orders_array_index_keys_first() {
+        // node: JSON.stringify({"b":1,"2":2,"a":3,"10":4,"01":5,"4294967294":6,"4294967295":7})
+        let value: Value = serde_json::from_str(
+            r#"{"b":1,"2":2,"a":3,"10":4,"01":5,"4294967294":6,"4294967295":7}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            json_stringify(&value),
+            r#"{"2":2,"10":4,"4294967294":6,"b":1,"a":3,"01":5,"4294967295":7}"#
+        );
+        let value: Value = serde_json::from_str(r#"{"b":1,"2":2,"a":3,"10":4,"01":5}"#).unwrap();
+        assert_eq!(
+            json_stringify(&value),
+            r#"{"2":2,"10":4,"b":1,"a":3,"01":5}"#
+        );
+    }
 
     #[test]
     fn number_to_string_matches_ecmascript() {

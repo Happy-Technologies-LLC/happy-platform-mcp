@@ -220,6 +220,9 @@ fn resolve(value: &Path) -> std::io::Result<PathBuf> {
 /// Rejects non-basename names, a scripts directory that is a symlink or not a
 /// directory, and any existing target (file or symlink) without following it.
 /// Returns the absolute path of the written file.
+///
+/// This does blocking `std::fs` I/O: async tool handlers must call it through
+/// `tokio::task::spawn_blocking`.
 pub fn write_fix_script_file(
     scripts_dir: &Path,
     file_name: &str,
@@ -253,7 +256,16 @@ pub fn write_fix_script_file(
         return Err(FixScriptError::NotDirectChild);
     }
 
-    // O_CREAT|O_EXCL never follows a symlink in the final component.
+    create_new_private_file(&file_path, |handle| handle.write_all(content.as_bytes()))?;
+    Ok(file_path)
+}
+
+/// Creates `file_path` with O_CREAT|O_EXCL (never following a final-component
+/// symlink) and mode 0600, then runs `write`. A failed write unlinks the file.
+fn create_new_private_file(
+    file_path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(), FixScriptError> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -261,18 +273,38 @@ pub fn write_fix_script_file(
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut handle = match options.open(&file_path) {
+    let mut handle = match options.open(file_path) {
         Ok(handle) => handle,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(FixScriptError::AlreadyExists(file_path));
+            return Err(FixScriptError::AlreadyExists(file_path.to_path_buf()));
         }
         Err(error) => return Err(error.into()),
     };
 
-    if let Err(error) = handle.write_all(content.as_bytes()) {
+    if let Err(error) = write(&mut handle) {
         drop(handle);
-        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_file(file_path);
         return Err(error.into());
     }
-    Ok(file_path)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_write_removes_the_partial_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("write_fails.js");
+        let error = create_new_private_file(&file_path, |handle| {
+            handle.write_all(b"gs.info('partial');")?;
+            Err(std::io::Error::other("simulated disk full"))
+        })
+        .expect_err("write failure must surface");
+        assert!(matches!(error, FixScriptError::Io(_)));
+        assert_eq!(error.to_string(), "simulated disk full");
+        assert!(!file_path.exists());
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
 }
