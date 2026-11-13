@@ -289,6 +289,29 @@ mod selftest {
     }
 
     #[test]
+    fn deviations_name_real_golden_steps_and_reject_the_620_result() {
+        use crate::support::deviations::{DEVIATIONS, Expected};
+        for dev in DEVIATIONS {
+            assert!(!dev.reason.trim().is_empty(), "{dev:?}");
+            let golden = harness::all_goldens()
+                .into_iter()
+                .map(|rel| {
+                    let text = std::fs::read_to_string(harness::tools_dir().join(rel)).unwrap();
+                    serde_json::from_str::<Value>(&text).unwrap()
+                })
+                .find(|g| g["id"] == dev.golden)
+                .unwrap_or_else(|| panic!("no golden {}", dev.golden));
+            let step = &golden["steps"][dev.step];
+            assert!(step.is_object(), "{dev:?}: no such step");
+            // The recorded 6.2.0 behavior must fail the 7.0 expectation.
+            let recorded = harness::outbound_of(step);
+            assert!(!dev.expected.check(step, &recorded).is_empty(), "{dev:?}");
+        }
+        let ok = json!({"response": {"error": {"code": -32602, "message": "m"}}});
+        assert!(Expected::InvalidParamsNoOutbound.check(&ok, &[]).is_empty());
+    }
+
+    #[test]
     fn only_a_final_cookie_logout_is_ignored() {
         let entry = |path: &str, cookie: bool| {
             json!({"target": "servicenow", "method": "GET", "path": path,
