@@ -286,6 +286,12 @@ pub struct ToolDescriptor {
     /// Set by the tool registry from the D-05 row; a value set by a lane is
     /// overwritten. Advisory only.
     pub annotations: Option<ToolAnnotations>,
+    /// The handler checks its own input and refuses junk with 6.2.0's specific
+    /// text (SN-Register-Instance INVALID_INSTANCE_CONFIG, SN-Get-ATF-Results bad
+    /// `result_type`). A central schema failure then does not stop the call; the
+    /// handler MUST refuse invalid input itself, and its normalizer must accept
+    /// schema-invalid arguments. Every other tool stays strictly checked.
+    pub handler_validates_input: bool,
 }
 
 impl ToolDescriptor {
@@ -312,6 +318,7 @@ impl ToolDescriptor {
             render,
             title: None,
             annotations: None,
+            handler_validates_input: false,
         }
     }
     pub fn access(mut self, access: AccessClass) -> Self {
@@ -340,6 +347,11 @@ impl ToolDescriptor {
     }
     pub fn title(mut self, title: &'static str) -> Self {
         self.title = Some(title);
+        self
+    }
+    /// See [`ToolDescriptor::handler_validates_input`].
+    pub fn handler_validates_input(mut self, yes: bool) -> Self {
+        self.handler_validates_input = yes;
         self
     }
 }

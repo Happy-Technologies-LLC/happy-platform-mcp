@@ -365,6 +365,44 @@ fn precommit_rejection_prevents_write() {
 }
 
 #[test]
+fn slow_precommit_does_not_block_registry_reads() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let t = tmp();
+    let r = reg(&t);
+    register(&r, public("dev", json!({}))).unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        let r = &r;
+        let writer = s.spawn(move || {
+            let mut pre = |_: &Value| {
+                entered_tx.send(()).unwrap();
+                // Stands in for a slow credential check / keychain probe.
+                release_rx.recv().unwrap();
+                Ok(())
+            };
+            r.register(
+                &public("prod", json!({})),
+                RegisterOptions {
+                    precommit: Some(&mut pre),
+                    ..Default::default()
+                },
+            )
+        });
+        entered_rx.recv().unwrap();
+        // Reads complete while the hook is still running.
+        let (read_tx, read_rx) = mpsc::channel();
+        s.spawn(move || read_tx.send(r.list().unwrap().len()).unwrap());
+        let during = read_rx.recv_timeout(Duration::from_secs(5));
+        release_tx.send(()).unwrap();
+        assert_eq!(during, Ok(1), "registry read blocked by a running hook");
+        writer.join().unwrap().unwrap();
+    });
+    assert_eq!(r.list().unwrap().len(), 2);
+}
+
+#[test]
 fn oauth_origin_policy() {
     let t = tmp();
     let r = reg(&t);
