@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use hpm_protocol::McpHandler;
 use hpm_protocol::transport::limits::{HttpLimits, HttpSecurity};
-use hpm_protocol::transport::{HttpApp, HttpConfig};
+use hpm_protocol::transport::{HttpApp, HttpConfig, InstancesFn};
 use hpm_tools::dispatcher::{Dispatcher, RequiredPropertiesValidator, Services};
 use hpm_tools::registration::ToolRegistry;
 use hpm_tools::single_user::{
@@ -109,7 +109,25 @@ async fn start_with(limits: HttpLimits, origins: &[&str]) -> Server {
     start_full(limits, origins, Duration::from_secs(10)).await
 }
 
+/// An `/instances` provider answering `result` on every request.
+fn listing(result: Result<Value, ()>) -> InstancesFn {
+    Arc::new(move || {
+        let result = result.clone();
+        Box::pin(async move { result })
+    })
+}
+
 async fn start_full(limits: HttpLimits, origins: &[&str], grace: Duration) -> Server {
+    let instances = listing(Ok(json!([{"name": "dev", "default": true}])));
+    start_app(limits, origins, grace, instances).await
+}
+
+async fn start_app(
+    limits: HttpLimits,
+    origins: &[&str],
+    grace: Duration,
+    instances: InstancesFn,
+) -> Server {
     let gate = Arc::new(Semaphore::new(0));
     let d = dispatcher(gate.clone());
     let origins: Vec<String> = origins.iter().map(|s| s.to_string()).collect();
@@ -117,7 +135,7 @@ async fn start_full(limits: HttpLimits, origins: &[&str], grace: Duration) -> Se
     let mut config = HttpConfig::new(
         security,
         Arc::new(|| json!({"status": "healthy", "instance_name": "dev"})),
-        Arc::new(|| json!([{"name": "dev", "default": true}])),
+        instances,
     );
     config.limits = limits;
     config.keepalive = Duration::from_millis(100);
@@ -474,6 +492,23 @@ async fn health_and_instances() {
     assert_eq!(
         r.json(),
         json!({"instances": [{"name": "dev", "default": true}]})
+    );
+}
+
+// 6.2.0 error boundary: a failed registry listing answers 500, never stale data.
+#[tokio::test]
+async fn instances_listing_failure_answers_500() {
+    let s = start_app(
+        HttpLimits::default(),
+        &[],
+        Duration::from_secs(10),
+        listing(Err(())),
+    )
+    .await;
+    let r = authed(s.addr, "GET", "/instances", &[], b"").await;
+    assert_eq!(
+        (r.status, r.json()),
+        (500, json!({"error": "Internal server error"}))
     );
 }
 

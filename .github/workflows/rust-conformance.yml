@@ -17,6 +17,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.github/workflows/rust-conformance.yml'
+      - '.github/conformance/**'
 
 permissions:
   contents: read
@@ -26,8 +27,9 @@ permissions:
 #
 # MCP protocol conformance runs hermetically as `crates/hpm-cli/tests/http_e2e.rs`
 # (initialize, tools/list and tools/call on 2025-11-25 sessions and 2026-07-28
-# stateless requests, over loopback). The external conformance suite is not run
-# here: it is downloaded from npm at run time and the CLI has no HTTP serve mode yet.
+# stateless requests, over loopback) and `crates/hpm-cli/tests/http_bin.rs` (the
+# real `happy-platform-mcp-http` binary). The `conformance` job additionally runs
+# the external MCP conformance suite (downloaded from npm) against that binary.
 jobs:
   rust:
     runs-on: ${{ matrix.os }}
@@ -70,3 +72,75 @@ jobs:
           for crate in hpm-types hpm-core hpm-docs hpm-tools hpm-protocol; do
             cargo check -p "$crate" --lib --locked
           done
+
+  # External MCP conformance suite against the Rust binary in HTTP mode
+  # (`happy-platform-mcp-http`, the `node src/server.js` port). Every 6.2.0 HTTP
+  # route requires the bearer token, so a loopback proxy adds it to each request.
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PORT: '3000'
+      PROXY_PORT: '3001'
+      # The proxy keeps the client's Host/Origin, so the suite's DNS-rebinding probe reaches
+      # the server unchanged; only the proxy's own authority is approved.
+      HAPPY_MCP_ALLOWED_HOSTS: 127.0.0.1:3001,localhost:3001
+      HAPPY_MCP_ALLOWED_ORIGINS: http://127.0.0.1:3001,http://localhost:3001
+      # Registry-less `.env` fallback; the suite never reaches ServiceNow.
+      SERVICENOW_INSTANCE_URL: https://conformance.example.invalid
+      SERVICENOW_USERNAME: conformance
+      SERVICENOW_PASSWORD: conformance
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Build the HTTP binary
+        run: cargo build -p hpm-cli --bin happy-platform-mcp-http --locked
+
+      - name: Run the conformance suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HAPPY_CONFIG_PATH="$RUNNER_TEMP/instances.json"
+          # The token goes only to the server and the proxy; it is never exported, so
+          # the third-party suite (and anything npx installs) cannot read it.
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          HAPPY_MCP_API_TOKEN="$token" ./target/debug/happy-platform-mcp-http > "$RUNNER_TEMP/server.log" 2>&1 &
+          server=$!
+          HAPPY_MCP_API_TOKEN="$token" node -e '
+            const http = require("node:http");
+            const upstream = Number(process.env.PORT);
+            http.createServer((req, res) => {
+              const headers = { ...req.headers,
+                authorization: `Bearer ${process.env.HAPPY_MCP_API_TOKEN}` };
+              const out = http.request({ host: "127.0.0.1", port: upstream, path: req.url,
+                method: req.method, headers }, (up) => {
+                res.writeHead(up.statusCode, up.headers);
+                up.pipe(res);
+              });
+              out.on("error", () => { res.statusCode = 502; res.end(); });
+              // A client abort (e.g. a closed GET SSE stream) closes the upstream too.
+              res.on("close", () => out.destroy());
+              req.pipe(out);
+            }).listen(Number(process.env.PROXY_PORT), "127.0.0.1");
+          ' &
+          proxy=$!
+          trap 'kill "$proxy" "$server" 2>/dev/null || true; cat "$RUNNER_TEMP/server.log"' EXIT
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null "http://127.0.0.1:$PROXY_PORT/health"; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$PROXY_PORT/health"
+          # Baseline: scenarios that need the suite's reference fixtures (test_* tools,
+          # resources/read, prompts/get, logging/setLevel). A new failure or a now-passing
+          # baseline entry fails the job, so remove entries as the tool lanes land.
+          env -u HAPPY_MCP_API_TOKEN npm_config_ignore_scripts=true \
+            npx -y @modelcontextprotocol/conformance@0.1.16 server \
+            --url "http://127.0.0.1:$PROXY_PORT/mcp" \
+            --expected-failures .github/conformance/server-baseline.yml
