@@ -45,13 +45,70 @@ fn deterministic_references() {
 async fn stores_retrieves_and_rejects_empty() {
     let (mem, s) = store();
     let r = credential_ref_for("dev", CredentialType::Password).unwrap();
-    s.set_secret(&r, "fixture-secret").await.unwrap();
+    s.set_secret(&r, "fixture-secret", ORIGIN).await.unwrap();
     assert_eq!(
         mem.value(SERVICE_NAME, &r).as_deref(),
         Some("fixture-secret")
     );
     assert_eq!(s.get_secret(&r).await.unwrap().expose(), "fixture-secret");
-    assert!(s.set_secret(&r, "").await.is_err());
+    assert!(s.set_secret(&r, "", ORIGIN).await.is_err());
+}
+
+const ORIGIN: &str = "https://dev.example.com";
+
+#[tokio::test]
+async fn secrets_are_bound_at_write_time_and_only_read_for_their_origin() {
+    let (mem, s) = store();
+    let r = "keychain:instance/dev/password";
+    s.set_secret(r, "fixture-secret", ORIGIN).await.unwrap();
+    assert_eq!(s.bound_origin(r).await.unwrap().as_deref(), Some(ORIGIN));
+    assert_eq!(
+        s.get_secret_for_origin(r, ORIGIN).await.unwrap().expose(),
+        "fixture-secret"
+    );
+    let moved = s
+        .get_secret_for_origin(r, "https://attacker.example")
+        .await
+        .unwrap_err();
+    assert_eq!(moved.code, "CREDENTIAL_ORIGIN_MISMATCH");
+    assert!(!moved.message.contains("fixture-secret"));
+
+    // A 6.x secret (no binding) is never returned; binding it makes it usable.
+    mem.insert(SERVICE_NAME, "keychain:instance/old/password", "legacy");
+    let unbound = s
+        .get_secret_for_origin("keychain:instance/old/password", ORIGIN)
+        .await
+        .unwrap_err();
+    assert_eq!(unbound.code, "CREDENTIAL_ORIGIN_UNBOUND");
+    assert!(
+        unbound
+            .message
+            .contains("happy-platform-mcp instance credential bind old")
+    );
+    s.bind_origin("keychain:instance/old/password", ORIGIN)
+        .await
+        .unwrap();
+    assert!(
+        s.get_secret_for_origin("keychain:instance/old/password", ORIGIN)
+            .await
+            .is_ok()
+    );
+
+    // Rollback restores exactly the prior binding, including none.
+    s.restore_secret(r, "prior", None).await.unwrap();
+    assert_eq!(s.bound_origin(r).await.unwrap(), None);
+    s.restore_secret(r, "prior", Some(ORIGIN)).await.unwrap();
+    assert_eq!(s.bound_origin(r).await.unwrap().as_deref(), Some(ORIGIN));
+
+    // A failed write leaves the secret unbound (never sent), not bound to
+    // the old origin.
+    mem.fail_next(MemoryOp::Set);
+    assert!(
+        s.set_secret(r, "new", "https://other.example")
+            .await
+            .is_err()
+    );
+    assert_eq!(s.bound_origin(r).await.unwrap(), None);
 }
 
 #[tokio::test]
@@ -70,7 +127,7 @@ async fn missing_vs_failure() {
         "KEYCHAIN_UNAVAILABLE"
     );
     mem.fail_next(MemoryOp::Set);
-    let err = s.set_secret(r, "fixture-secret").await.unwrap_err();
+    let err = s.set_secret(r, "fixture-secret", ORIGIN).await.unwrap_err();
     assert!(!format!("{err:?}").contains("fixture-secret"));
 }
 

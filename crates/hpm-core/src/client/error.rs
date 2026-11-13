@@ -18,6 +18,8 @@ pub const STALE_AFTER_SEND_CODE: &str = "INSTANCE_STALE_AFTER_SEND";
 pub const INVALID_PATH_SEGMENT_CODE: &str = "INVALID_PATH_SEGMENT";
 /// A saved secret is bound to another origin than the registered instance URL.
 pub const CREDENTIAL_ORIGIN_MISMATCH_CODE: &str = "CREDENTIAL_ORIGIN_MISMATCH";
+/// A saved secret has no origin binding yet (6.x or a failed write): never sent.
+pub const CREDENTIAL_ORIGIN_UNBOUND_CODE: &str = "CREDENTIAL_ORIGIN_UNBOUND";
 /// The `sys_trigger` fallback failed after its trigger row was inserted (wrap,
 /// poll or log read): the script may run or have run, so the result is unknown.
 pub const TRIGGER_INSERTED_RESULT_UNKNOWN_CODE: &str = "TRIGGER_INSERTED_RESULT_UNKNOWN";

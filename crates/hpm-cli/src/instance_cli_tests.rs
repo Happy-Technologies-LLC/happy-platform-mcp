@@ -949,7 +949,12 @@ async fn migrate_stores_plaintext_credentials_as_refs_and_preserves_document_pro
         written["instances"][1]["credentialRef"],
         json!({"password": "keychain:instance/oauth/password", "clientSecret": "keychain:instance/oauth/client-secret"})
     );
-    assert_eq!(secrets.count(), 3);
+    // Three secrets, each with its origin binding written alongside.
+    assert_eq!(secrets.count(), 6);
+    assert_eq!(
+        secrets.value("keychain:instance-origin/dev/password"),
+        Some("https://dev.service-now.com".to_owned())
+    );
     assert!(!out.contains("fixture-password"));
     assert!(!out.contains("fixture-client-secret"));
 }
@@ -1598,7 +1603,24 @@ async fn probe_never_follows_a_token_endpoint_redirect() {
     let token = TcpListener::bind("127.0.0.1:0").unwrap();
     let token_port = token.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut conn, _) = token.accept().unwrap();
+        // Bounded accept: a probe that refuses before sending fails the test
+        // instead of hanging it.
+        token.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut conn = loop {
+            match token.accept() {
+                Ok((conn, _)) => break conn,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the probe never reached the token endpoint"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        };
+        conn.set_nonblocking(false).unwrap();
         let mut buf = [0u8; 4096];
         let _ = conn.read(&mut buf).unwrap();
         let response = format!(
@@ -1614,6 +1636,14 @@ async fn probe_never_follows_a_token_endpoint_redirect() {
         "planted-client-secret",
     );
     let credentials = InstanceCredentialStore::new(memory);
+    // Saved for this instance, so bound to its origin (CLI rule).
+    credentials
+        .bind_origin(
+            "keychain:instance/dev/client-secret",
+            &format!("http://127.0.0.1:{token_port}"),
+        )
+        .await
+        .unwrap();
     let instance = obj(json!({
         "name": "dev", "url": format!("http://127.0.0.1:{token_port}"), "authType": "oauth",
         "grantType": "client_credentials", "clientId": "client",

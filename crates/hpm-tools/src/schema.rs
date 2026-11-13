@@ -124,10 +124,21 @@ fn lenient(schema: &serde_json::Value, err: &ValidationError<'_>) -> bool {
     let wants = |t: &str| expected.iter().any(|e| e == t);
     match err.instance().as_ref() {
         serde_json::Value::String(s) => {
-            let s = s.trim();
-            !s.is_empty()
-                && ((wants("integer") && s.parse::<i64>().is_ok())
-                    || (wants("number") && s.parse::<f64>().is_ok_and(f64::is_finite)))
+            let parsed = if wants("integer") && is_json_integer(s) {
+                s.parse::<i64>().ok().map(|v| v as f64)
+            } else if wants("number") && is_json_number(s) {
+                s.parse::<f64>().ok().filter(|v| v.is_finite())
+            } else {
+                None
+            };
+            // The range keywords skip strings, so apply them to the value here.
+            parsed.is_some_and(|v| {
+                err.schema_path()
+                    .as_str()
+                    .strip_suffix("/type")
+                    .and_then(|parent| schema.pointer(parent))
+                    .is_none_or(|sub| in_range(sub, v))
+            })
         }
         serde_json::Value::Bool(_) if wants("object") => {
             // `schema_path` ends in `/type`; its parent is the object's subschema.
@@ -147,6 +158,45 @@ fn lenient(schema: &serde_json::Value, err: &ValidationError<'_>) -> bool {
         }
         _ => false,
     }
+}
+
+/// `-?\d+`: no sign but `-`, no whitespace or control characters.
+fn is_json_integer(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?`, the JS numeric-literal subset 6.2.0
+/// handlers coerce; anything else (whitespace, CR/LF, `+`, `NaN`) is refused.
+fn is_json_number(s: &str) -> bool {
+    let s = s.strip_prefix('-').unwrap_or(s);
+    let (mantissa, exponent) = match s.find(['e', 'E']) {
+        Some(i) => (&s[..i], Some(&s[i + 1..])),
+        None => (s, None),
+    };
+    let (int, frac) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (mantissa, None),
+    };
+    let digits = |p: &str| p.bytes().all(|b| b.is_ascii_digit());
+    let mantissa_ok = digits(int)
+        && frac.is_none_or(digits)
+        && (!int.is_empty() || frac.is_some_and(|f| !f.is_empty()));
+    let exponent_ok = exponent.is_none_or(|e| {
+        let e = e.strip_prefix(['+', '-']).unwrap_or(e);
+        !e.is_empty() && digits(e)
+    });
+    mantissa_ok && exponent_ok
+}
+
+/// `minimum` / `maximum` / `exclusive*` / `multipleOf` of `sub` on `v`.
+fn in_range(sub: &serde_json::Value, v: f64) -> bool {
+    let num = |k: &str| sub.get(k).and_then(serde_json::Value::as_f64);
+    num("minimum").is_none_or(|m| v >= m)
+        && num("maximum").is_none_or(|m| v <= m)
+        && num("exclusiveMinimum").is_none_or(|m| v > m)
+        && num("exclusiveMaximum").is_none_or(|m| v < m)
+        && num("multipleOf").is_none_or(|m| m > 0.0 && (v / m).fract() == 0.0)
 }
 
 /// One violation as text, built from the schema keyword and the instance location only.
@@ -417,6 +467,8 @@ mod tests {
         "properties":{
             "priority":{"type":"number"},
             "count":{"type":"integer"},
+            "limit":{"type":"integer","minimum":1,"maximum":1000},
+            "ratio":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":1},
             "checks":{"type":"object","properties":{
                 "ui_policies":{"type":"object","properties":{"check_a":{"type":"boolean"}}},
                 "mixed":{"type":"object","properties":{"n":{"type":"string"}}}
@@ -432,6 +484,10 @@ mod tests {
             json!({"priority": "2"}),
             json!({"priority": "2.5", "count": "3"}),
             json!({"checks": {"ui_policies": true, "business_rules": true}}),
+            json!({"priority": "-1", "count": "-7", "limit": "1000"}),
+            json!({"priority": ".5"}),
+            json!({"priority": "1e3"}),
+            json!({"ratio": "0.5"}),
             json!({"checks": {"ui_policies": false}}),
         ] {
             assert_eq!(v.validate(&t, &ok), Ok(()), "{ok}");
@@ -444,6 +500,23 @@ mod tests {
             json!({"checks": true}),
             json!({"checks": {"mixed": true}}),
             json!({"checks": {"ui_policies": "yes"}}),
+            // M1: strict JSON-number text only, no whitespace or line breaks.
+            json!({"priority": "2\r\n"}),
+            json!({"priority": "2\n"}),
+            json!({"priority": " 2"}),
+            json!({"priority": "\t2"}),
+            json!({"priority": "+2"}),
+            json!({"priority": "NaN"}),
+            json!({"priority": "1e"}),
+            json!({"priority": "."}),
+            json!({"priority": "-"}),
+            json!({"count": "1e3"}),
+            json!({"count": "3\r\n"}),
+            // Range keywords apply to the parsed value.
+            json!({"limit": "5000"}),
+            json!({"limit": "0"}),
+            json!({"ratio": "1"}),
+            json!({"ratio": "0"}),
         ] {
             assert!(v.validate(&t, &bad).is_err(), "{bad}");
         }

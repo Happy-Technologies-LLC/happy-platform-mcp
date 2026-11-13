@@ -57,9 +57,23 @@ pub enum CredentialStoreError {
     EmptyValue,
     #[error("Keychain operation failed")]
     Operation,
+    /// The secret is not bound to any origin; it is never sent.
+    #[error("{}", crate::keychain::credential_origin_unbound(.0).message)]
+    OriginUnbound(String),
+    /// The secret is bound to another origin than the instance URL.
+    #[error("{}", crate::keychain::credential_origin_mismatch(&.0.name, &.0.bound, &.0.current).message)]
+    OriginMismatch(Box<OriginMismatch>),
     /// A backend failure propagated as-is.
     #[error(transparent)]
     Store(SecretStoreError),
+}
+
+/// Names and origins only; never the secret.
+#[derive(Debug)]
+pub struct OriginMismatch {
+    pub name: String,
+    pub bound: String,
+    pub current: String,
 }
 
 impl CredentialStoreError {
@@ -75,6 +89,8 @@ impl CredentialStoreError {
             }
             Self::Store(SecretStoreError::InvalidAccount) => "INVALID_CREDENTIAL_REF",
             Self::EmptyValue => "KEYCHAIN_OPERATION_FAILED",
+            Self::OriginUnbound(_) => crate::client::error::CREDENTIAL_ORIGIN_UNBOUND_CODE,
+            Self::OriginMismatch(_) => crate::client::error::CREDENTIAL_ORIGIN_MISMATCH_CODE,
         }
     }
 }
@@ -190,23 +206,38 @@ impl InstanceCredentialStore {
         }
     }
 
+    /// Saves `value` bound to `origin`. The old binding is cleared first and
+    /// the new one written last, so a partial failure leaves the secret
+    /// unbound, which is never sent (fail closed).
     pub async fn set_secret(
         &self,
         reference: &str,
         value: Secret,
+        origin: &str,
     ) -> Result<(), CredentialStoreError> {
         let parsed = parse_credential_ref(reference)?;
         if value.expose().is_empty() {
             return Err(CredentialStoreError::EmptyValue);
         }
+        if origin.is_empty() || origin == "null" {
+            return Err(CredentialStoreError::Operation);
+        }
+        self.clear_origin_binding(&parsed.reference).await?;
         self.store
             .set(&self.service, &parsed.reference, value)
             .await
             .map_err(CredentialStoreError::Store)?;
-        self.clear_origin_binding(&parsed.reference).await
+        self.store
+            .set(
+                &self.service,
+                &origin_binding_account(&parsed.reference),
+                Secret::new(origin.to_owned()),
+            )
+            .await
+            .map_err(CredentialStoreError::Store)
     }
 
-    /// The origin `reference`'s secret is bound to (`None`: not bound yet).
+    /// The origin `reference`'s secret is bound to (`None`: unbound).
     pub async fn bound_origin(
         &self,
         reference: &str,
@@ -220,25 +251,29 @@ impl InstanceCredentialStore {
             .map(|v| v.expose().to_owned()))
     }
 
-    /// Binds `reference`'s secret to `origin` (first use after save/migration).
-    pub async fn bind_origin(
+    /// The secret, only when it is bound to `origin`. Never binds: an unbound
+    /// secret is refused until the operator binds it with the CLI.
+    pub async fn get_secret_for_origin(
         &self,
         reference: &str,
         origin: &str,
-    ) -> Result<(), CredentialStoreError> {
-        let parsed = parse_credential_ref(reference)?;
-        self.store
-            .set(
-                &self.service,
-                &origin_binding_account(&parsed.reference),
-                Secret::new(origin.to_owned()),
-            )
-            .await
-            .map_err(CredentialStoreError::Store)
+    ) -> Result<Secret, CredentialStoreError> {
+        let secret = self.get_secret(reference).await?;
+        let name = parse_credential_ref(reference)?.instance_name;
+        match self.bound_origin(reference).await? {
+            Some(bound) if bound == origin => Ok(secret),
+            Some(bound) => Err(CredentialStoreError::OriginMismatch(Box::new(
+                OriginMismatch {
+                    name,
+                    bound,
+                    current: origin.to_owned(),
+                },
+            ))),
+            None => Err(CredentialStoreError::OriginUnbound(name)),
+        }
     }
 
-    /// See [`crate::keychain::origin_binding_account`]: cleared after every
-    /// secret write or delete, so a failed clear fails closed.
+    /// See [`crate::keychain::origin_binding_account`].
     async fn clear_origin_binding(&self, reference: &str) -> Result<(), CredentialStoreError> {
         self.store
             .delete(&self.service, &origin_binding_account(reference))
@@ -445,6 +480,8 @@ mod tests {
     use super::testing::{Fault, MemStore};
     use super::*;
 
+    const ORIGIN: &str = "https://dev.example.com";
+
     fn store(mem: MemStore) -> (Arc<MemStore>, InstanceCredentialStore) {
         let mem = Arc::new(mem);
         (mem.clone(), InstanceCredentialStore::new(mem))
@@ -505,7 +542,7 @@ mod tests {
     async fn stores_and_retrieves() {
         let (mem, s) = store(MemStore::default());
         assert!(
-            s.set_secret(&reference(), Secret::new("fixture-secret".into()))
+            s.set_secret(&reference(), Secret::new("fixture-secret".into()), ORIGIN)
                 .await
                 .is_ok()
         );
@@ -524,7 +561,7 @@ mod tests {
     async fn empty_value_rejected_without_echo() {
         let (_, s) = store(MemStore::default());
         let err = s
-            .set_secret(&reference(), Secret::new(String::new()))
+            .set_secret(&reference(), Secret::new(String::new()), ORIGIN)
             .await
             .err();
         assert!(matches!(err, Some(CredentialStoreError::EmptyValue)));
@@ -563,7 +600,7 @@ mod tests {
             assert!(s.has_secret(r).await.is_err(), "{r}");
             assert!(s.get_secret(r).await.is_err());
             assert!(
-                s.set_secret(r, Secret::new("fixture-secret".into()))
+                s.set_secret(r, Secret::new("fixture-secret".into()), ORIGIN)
                     .await
                     .is_err()
             );
@@ -616,7 +653,7 @@ mod tests {
     async fn deletes_and_reports_status() {
         let (_, s) = store(MemStore::default());
         assert!(
-            s.set_secret(&reference(), Secret::new("fixture-secret".into()))
+            s.set_secret(&reference(), Secret::new("fixture-secret".into()), ORIGIN)
                 .await
                 .is_ok()
         );
@@ -636,7 +673,7 @@ mod tests {
             let err = match op {
                 "get" => s.get_secret(&reference()).await.err(),
                 "set" => s
-                    .set_secret(&reference(), Secret::new("x".into()))
+                    .set_secret(&reference(), Secret::new("x".into()), ORIGIN)
                     .await
                     .err(),
                 _ => s.delete_secret(&reference()).await.err(),

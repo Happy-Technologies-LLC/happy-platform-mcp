@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use zeroize::Zeroize;
 
-use crate::credential::{InstanceCredentialStore, parse_credential_ref};
+use crate::credential::{CredentialStoreError, InstanceCredentialStore, parse_credential_ref};
 use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError};
 
 pub mod cicd_atf;
@@ -517,22 +517,6 @@ enum SecretKind {
     ClientSecret,
 }
 
-/// A saved secret bound to another origin than the instance now registered
-/// under its name. Raised before any request; only origins are named.
-fn credential_origin_mismatch(reference: &str, bound: &str, current: &str) -> ClientError {
-    let name = reference
-        .strip_prefix(crate::keychain::CREDENTIAL_PREFIX)
-        .and_then(|r| r.split('/').next())
-        .unwrap_or("");
-    ClientError::new(
-        "CredentialResolutionError",
-        format!(
-            "The saved credential for instance '{name}' was saved for {bound}, but the instance now points to {current}; it will not be sent there. Re-save it with: happy-platform-mcp instance credential set {name}"
-        ),
-        Some(error::CREDENTIAL_ORIGIN_MISMATCH_CODE),
-    )
-}
-
 /// `credentialRefForType`.
 fn credential_ref_for_type(
     reference: Option<&Value>,
@@ -947,29 +931,29 @@ impl ServiceNowClient {
         let flight_key = format!("cred:{key}");
         st.flights
             .run(&flight_key, || async move {
-                let result = store.get_secret(&cref).await;
-                self.assert_current(&st2)?;
-                let value = result.map_err(|e| ClientError::credential(e.code()))?;
-                let value = value.expose().to_owned();
-                if value.is_empty() {
-                    return Err(ClientError::credential("CREDENTIAL_NOT_FOUND"));
-                }
                 // Owner rule: a saved secret is only ever sent to the origin it
-                // was bound to. An unbound secret (6.x, or just re-saved) is bound
-                // on first use to the origin registered now.
+                // was stored for. The binding is written with the secret by the
+                // CLI; the request path never binds, so an unbound secret is
+                // refused until `instance credential bind`. The binding is the
+                // instance origin for every secret, the OAuth `client_secret`
+                // included: that one is sent to `tokenUrl`, whose origin is
+                // governed separately by the operator's trusted-origins
+                // allow-list (`TRUSTED_OAUTH_ORIGINS_ENV`), not by this binding.
                 let origin = url::Url::parse(&st2.url)
                     .map(|u| oauth_policy::origin_of(&u))
                     .map_err(|_| ClientError::credential("KEYCHAIN_OPERATION_FAILED"))?;
-                match store.bound_origin(&cref).await {
-                    Ok(Some(bound)) if bound == origin => {}
-                    Ok(Some(bound)) => {
-                        return Err(credential_origin_mismatch(&cref, &bound, &origin));
+                let result = store.get_secret_for_origin(&cref, &origin).await;
+                self.assert_current(&st2)?;
+                let value = result.map_err(|e| match e {
+                    CredentialStoreError::OriginUnbound(_)
+                    | CredentialStoreError::OriginMismatch(_) => {
+                        ClientError::new("CredentialResolutionError", e.to_string(), Some(e.code()))
                     }
-                    Ok(None) => store
-                        .bind_origin(&cref, &origin)
-                        .await
-                        .map_err(|e| ClientError::credential(e.code()))?,
-                    Err(e) => return Err(ClientError::credential(e.code())),
+                    e => ClientError::credential(e.code()),
+                })?;
+                let value = value.expose().to_owned();
+                if value.is_empty() {
+                    return Err(ClientError::credential("CREDENTIAL_NOT_FOUND"));
                 }
                 self.assert_current(&st2)?;
                 st2.secrets

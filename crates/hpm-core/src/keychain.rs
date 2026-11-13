@@ -484,6 +484,46 @@ pub fn keychain_operation_failed() -> CodedError {
     CodedError::new("KEYCHAIN_OPERATION_FAILED", "Keychain operation failed")
 }
 
+/// The web origin (`scheme://host[:port]`) a secret is bound to.
+pub fn instance_origin(url: &str) -> Result<String, CodedError> {
+    let origin = url::Url::parse(url)
+        .map_err(|_| invalid_instance_origin())?
+        .origin()
+        .ascii_serialization();
+    if origin == "null" {
+        return Err(invalid_instance_origin());
+    }
+    Ok(origin)
+}
+
+fn invalid_instance_origin() -> CodedError {
+    CodedError::new(
+        "INVALID_INSTANCE_URL",
+        "The instance URL has no web origin to bind the credential to",
+    )
+}
+
+/// A saved secret bound to another origin than the instance now registered
+/// under its name. Only origins are named.
+pub fn credential_origin_mismatch(name: &str, bound: &str, current: &str) -> CodedError {
+    CodedError::new(
+        crate::client::error::CREDENTIAL_ORIGIN_MISMATCH_CODE,
+        format!(
+            "The saved credential for instance '{name}' was saved for {bound}, but the instance now points to {current}; it will not be sent there. Re-save it with: happy-platform-mcp instance credential set {name}"
+        ),
+    )
+}
+
+/// A saved secret with no origin binding (saved by 6.x, or a failed write).
+pub fn credential_origin_unbound(name: &str) -> CodedError {
+    CodedError::new(
+        crate::client::error::CREDENTIAL_ORIGIN_UNBOUND_CODE,
+        format!(
+            "The saved credential for instance '{name}' is not bound to an instance URL yet; it will not be sent. Bind it once to the registered URL with: happy-platform-mcp instance credential bind {name}"
+        ),
+    )
+}
+
 fn store_error(e: SecretStoreError) -> CodedError {
     match e {
         SecretStoreError::Unavailable(_) => keychain_unavailable(),
@@ -584,13 +624,37 @@ impl InstanceCredentialStore {
         }
     }
 
-    pub async fn set_secret(&self, reference: &str, value: &str) -> Result<(), CodedError> {
+    /// Saves `value` bound to `origin` (owner rule: a saved secret is only ever
+    /// sent to the origin it was stored for). See [`Self::restore_secret`].
+    pub async fn set_secret(
+        &self,
+        reference: &str,
+        value: &str,
+        origin: &str,
+    ) -> Result<(), CodedError> {
+        self.restore_secret(reference, value, Some(origin)).await
+    }
+
+    /// Writes `value` with exactly `binding` (`None`: unbound, as a rollback of
+    /// an unbound 6.x secret). The old binding is cleared first and the new one
+    /// written last, so any partial failure leaves the secret unbound, which
+    /// is never sent (fail closed).
+    pub async fn restore_secret(
+        &self,
+        reference: &str,
+        value: &str,
+        binding: Option<&str>,
+    ) -> Result<(), CodedError> {
         let parsed = parse_credential_ref(reference)?;
         if value.is_empty() {
             return Err(CodedError::plain(
                 "Credential value must be a non-empty string",
             ));
         }
+        if binding.is_some_and(|o| o.is_empty() || o == "null") {
+            return Err(invalid_instance_origin());
+        }
+        self.clear_origin_binding(&parsed.reference).await?;
         self.store
             .set(
                 &self.service,
@@ -599,12 +663,56 @@ impl InstanceCredentialStore {
             )
             .await
             .map_err(store_error)?;
-        self.clear_origin_binding(&parsed.reference).await
+        match binding {
+            Some(origin) => self.bind_origin(&parsed.reference, origin).await,
+            None => Ok(()),
+        }
     }
 
-    /// A (re-)saved or deleted secret loses its origin binding; the next use
-    /// binds it to the origin registered then. Written after the secret, so a
-    /// failed clear leaves the new secret bound to the old origin (fail closed).
+    /// The origin `reference`'s secret is bound to (`None`: unbound).
+    pub async fn bound_origin(&self, reference: &str) -> Result<Option<String>, CodedError> {
+        let parsed = parse_credential_ref(reference)?;
+        Ok(self
+            .store
+            .get(&self.service, &origin_binding_account(&parsed.reference))
+            .await
+            .map_err(store_error)?
+            .map(|v| v.expose().to_owned()))
+    }
+
+    /// Binds `reference`'s existing secret to `origin` (`instance credential
+    /// bind`, and the last step of every secret write).
+    pub async fn bind_origin(&self, reference: &str, origin: &str) -> Result<(), CodedError> {
+        let parsed = parse_credential_ref(reference)?;
+        if origin.is_empty() || origin == "null" {
+            return Err(invalid_instance_origin());
+        }
+        self.store
+            .set(
+                &self.service,
+                &origin_binding_account(&parsed.reference),
+                Secret::new(origin.to_owned()),
+            )
+            .await
+            .map_err(store_error)
+    }
+
+    /// The secret, only when it is bound to `origin`; an unbound or
+    /// differently bound secret is refused without being returned.
+    pub async fn get_secret_for_origin(
+        &self,
+        reference: &str,
+        origin: &str,
+    ) -> Result<Secret, CodedError> {
+        let secret = self.get_secret(reference).await?;
+        let name = parse_credential_ref(reference)?.instance_name;
+        match self.bound_origin(reference).await? {
+            Some(bound) if bound == origin => Ok(secret),
+            Some(bound) => Err(credential_origin_mismatch(&name, &bound, origin)),
+            None => Err(credential_origin_unbound(&name)),
+        }
+    }
+
     async fn clear_origin_binding(&self, reference: &str) -> Result<(), CodedError> {
         self.store
             .delete(&self.service, &origin_binding_account(reference))

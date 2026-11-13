@@ -22,15 +22,19 @@ const SCRIPT_PREFIX: &str = "javascript:";
 pub const OPAQUE_FIELD: &str = "*";
 
 /// A value a tool interpolates into an encoded query (`field=<value>`). Refuses
-/// `^` (would start another condition such as `^OR`/`^NQ`), CR/LF and every
-/// other control character, so one argument can only ever be one operand.
+/// `^` (would start another condition such as `^OR`/`^NQ`), CR/LF, the
+/// Unicode line/paragraph separators and every other control character, so
+/// one argument can only ever be one operand.
 pub fn query_value<'a>(arg_name: &str, value: &'a str) -> Result<&'a str, ToolError> {
     if value.contains('^') {
         return Err(ToolError::InvalidParams(format!(
             "{arg_name} must not contain '^' (it would add encoded-query conditions)"
         )));
     }
-    if value.chars().any(char::is_control) {
+    if value
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
         return Err(ToolError::InvalidParams(format!(
             "{arg_name} must not contain line breaks or other control characters"
         )));
@@ -91,7 +95,10 @@ fn analyze_into(query: &str, info: &mut QueryInfo) {
             info.script_operands.push(operand);
         }
         // Whole-record search and cross-table operators read fields no
-        // predicate names: report them as the all-fields wildcard.
+        // predicate names: report them as the all-fields wildcard. They are
+        // matched anywhere in the condition (case-insensitive), since a
+        // sub-query is an operator after a field (`caller_idINSUBQUERYsys_id`);
+        // a field name that merely contains one only over-reports (fail-safe).
         let opaque = [
             "123TEXTQUERY321",
             "IR_",
@@ -99,15 +106,10 @@ fn analyze_into(query: &str, info: &mut QueryInfo) {
             "RLQUERY",
             "ENDRLQUERY",
             "SUBQUERY",
+            "ENDSUBQUERY",
         ]
         .iter()
-        .any(|p| {
-            cond.strip_prefix("NQ")
-                .or_else(|| cond.strip_prefix("OR"))
-                .unwrap_or(cond)
-                .get(..p.len())
-                .is_some_and(|h| h.eq_ignore_ascii_case(p))
-        });
+        .any(|p| find_ci(cond, p).is_some());
         if opaque {
             push_unique(&mut info.predicate_fields, OPAQUE_FIELD);
             continue;
@@ -149,7 +151,15 @@ mod tests {
     fn query_value_accepts_plain_values_and_refuses_injection() {
         assert_eq!(query_value("number", "INC0010001").ok(), Some("INC0010001"));
         assert_eq!(query_value("q", "a b=c").ok(), Some("a b=c"));
-        for bad in ["x^ORactive=true", "x\nactive=true", "x\r", "x\u{0}", "x\t"] {
+        for bad in [
+            "x^ORactive=true",
+            "x\nactive=true",
+            "x\r",
+            "x\u{0}",
+            "x\t",
+            "x\u{2028}active=true",
+            "x\u{2029}",
+        ] {
             let Err(ToolError::InvalidParams(m)) = query_value("number", bad) else {
                 panic!("{bad:?} accepted");
             };
@@ -196,5 +206,17 @@ mod tests {
     fn opaque_operators_report_all_fields() {
         let info = analyze_query("123TEXTQUERY321=foo^ORJOINincident.x=y");
         assert_eq!(info.predicate_fields, [OPAQUE_FIELD]);
+    }
+
+    /// Review W3 M5: a sub-query is an operator after the field, so the
+    /// opaque check matches anywhere in a condition.
+    #[test]
+    fn sub_queries_and_mid_condition_operators_report_all_fields() {
+        let info = analyze_query("caller_idINSUBQUERYsys_id^active=true^ENDSUBQUERY");
+        assert!(info.predicate_fields.iter().any(|f| f == OPAQUE_FIELD));
+        assert!(!info.predicate_fields.iter().any(|f| f == "ENDSUBQUERY"));
+        for q in ["sys_idIR_AND_QUERYx", "ORcaller_idrlquerysys_user"] {
+            assert_eq!(analyze_query(q).predicate_fields, [OPAQUE_FIELD], "{q}");
+        }
     }
 }

@@ -336,8 +336,21 @@ fn make_sandbox_with(
     let env = Env::from_fn(move |k| env.get(k).cloned());
     let registry = InstanceRegistry::at_paths(&config_path, &config_path, env.clone());
     let secrets = Arc::new(MemorySecretStore::new());
+    // Seeded secrets were saved for the stub instance (unless the scenario
+    // binds them elsewhere): bound to that origin, as the CLI writes them
+    // (owner rule: never sent elsewhere).
     for (account, secret) in &sc.keyring {
         secrets.insert(SERVICE_NAME, account, secret);
+        let origin = sc
+            .bindings
+            .iter()
+            .find(|(a, _)| a == account)
+            .map_or_else(|| world.stub.origin(), |(_, o)| (*o).to_owned());
+        secrets.insert(
+            SERVICE_NAME,
+            &hpm_core::keychain::origin_binding_account(account),
+            &origin,
+        );
     }
     Ok(Sandbox {
         work,
