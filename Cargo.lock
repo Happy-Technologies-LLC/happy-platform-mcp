@@ -912,6 +912,7 @@ dependencies = [
  "hpm-protocol",
  "hpm-types",
  "jsonschema",
+ "nix",
  "regex",
  "reqwest",
  "serde_json",

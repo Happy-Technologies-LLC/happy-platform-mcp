@@ -23,6 +23,9 @@ use crate::logic::js;
 const EMPTY_SCRIPT: &str = "❌ script must be a non-empty string";
 const NOT_BOOLEANS: &str = "❌ wait and record_for_rollback must be booleans";
 const SCOPE_NEEDS_WAIT: &str = "❌ scope is only supported when wait is true: the wait:false sys_trigger path cannot run a script in an application scope.";
+const ALLOW_NOT_BOOLEAN: &str = "❌ allow_trigger_fallback must be a boolean";
+/// Operator-wide consent to the sys_trigger fallback (owner decision P4-2).
+pub(crate) const TRIGGER_FALLBACK_ENV: &str = "HAPPY_MCP_ALLOW_TRIGGER_FALLBACK";
 
 /// Validated SN-Execute-Background-Script input.
 struct ExecInput<'a> {
@@ -31,6 +34,9 @@ struct ExecInput<'a> {
     wait: bool,
     scope: Option<&'a Value>,
     record_for_rollback: bool,
+    /// Per-call consent to the sys_trigger fallback; `Some(false)` refuses
+    /// even when the environment allows it (P4-2).
+    allow_trigger_fallback: Option<bool>,
 }
 
 impl ExecInput<'_> {
@@ -64,12 +70,18 @@ fn validate_exec(args: &Value) -> Result<ExecInput<'_>, &'static str> {
     let (Value::Bool(wait), Value::Bool(record_for_rollback)) = (wait, rollback) else {
         return Err(NOT_BOOLEANS);
     };
+    let allow_trigger_fallback = match args.get("allow_trigger_fallback") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return Err(ALLOW_NOT_BOOLEAN),
+    };
     let input = ExecInput {
         script,
         description: args.get("description"),
         wait: *wait,
         scope: args.get("scope"),
         record_for_rollback: *record_for_rollback,
+        allow_trigger_fallback,
     };
     if input.scoped() && !input.wait {
         return Err(SCOPE_NEEDS_WAIT);
@@ -266,11 +278,17 @@ fn render_processor(input: &ExecInput<'_>, result: &Value) -> (bool, String) {
         Some(id) if truthy(id) && Some(id) != scope => format!(" ({})", js::to_js_string(id)),
         _ => String::new(),
     };
+    let mismatch = result.get("scopeMismatch").filter(|m| truthy(m));
     let mut lines = vec![
-        if ok {
-            "✅ Script executed successfully.".to_owned()
-        } else {
-            "❌ Script reported errors — it did NOT complete successfully.".to_owned()
+        match mismatch {
+            // P4-1: it ran, but elsewhere. Never suggest running it again.
+            Some(m) => format!(
+                "❌ The script DID run, but in scope '{ran}', not in the requested scope '{}'. Any changes it made may have been made in '{ran}'. Check its Script Execution History record below before doing anything else.",
+                text(m.get("requested")),
+                ran = text(m.get("ran"))
+            ),
+            None if ok => "✅ Script executed successfully.".to_owned(),
+            None => "❌ Script reported errors — it did NOT complete successfully.".to_owned(),
         },
         String::new(),
         "Method: /sys.scripts.do processor (ran as the authenticated user, in that user's own session)".to_owned(),
@@ -327,11 +345,18 @@ enum NotRunRoute {
     Fallback(String),
 }
 
-fn not_run_route(input: &ExecInput<'_>, reason: &str) -> NotRunRoute {
+/// `env_allows`: [`TRIGGER_FALLBACK_ENV`] is `1`. The per-call argument, when
+/// given, decides; otherwise the environment does (owner decision P4-2).
+fn not_run_route(input: &ExecInput<'_>, reason: &str, env_allows: bool) -> NotRunRoute {
     if input.scoped() {
         return NotRunRoute::Refuse(format!(
             "❌ The script was NOT run. The /sys.scripts.do processor did not run it ({reason}), and the sys_trigger fallback was not used because it cannot run a script in the requested scope '{}'.",
             text(input.scope)
+        ));
+    }
+    if !input.allow_trigger_fallback.unwrap_or(env_allows) {
+        return NotRunRoute::Refuse(format!(
+            "❌ The script was NOT run. The /sys.scripts.do processor did not run it ({reason}), and the sys_trigger fallback was not used because it needs your consent: it would run the script as a scheduled job in the scheduler's session, not yours, so no rollback context is recorded and tracked configuration writes may be captured into the Default update set. To allow it, pass allow_trigger_fallback: true on this call, or set {TRIGGER_FALLBACK_ENV}=1 in the server's environment."
         ));
     }
     NotRunRoute::Fallback(format!(
@@ -382,7 +407,9 @@ pub(super) fn execute_background_script<'a>(
             let client = &client;
             async move {
                 let reason = error.reason.as_deref().unwrap_or("undefined");
-                match not_run_route(input, reason) {
+                let env_allows =
+                    deps.config.env().get(TRIGGER_FALLBACK_ENV).as_deref() == Some("1");
+                match not_run_route(input, reason, env_allows) {
                     NotRunRoute::Refuse(message) => {
                         done(MutationOutcome::Failed, Err(ToolError::Text(message)))
                     }
@@ -522,17 +549,38 @@ mod tests {
         let args = json!({"script": "x", "scope": "x_app"});
         let input = validate_exec(&args).expect("valid");
         assert_eq!(
-            not_run_route(&input, "not authorized"),
+            not_run_route(&input, "not authorized", true),
             NotRunRoute::Refuse(
                 "❌ The script was NOT run. The /sys.scripts.do processor did not run it (not authorized), and the sys_trigger fallback was not used because it cannot run a script in the requested scope 'x_app'.".to_owned()
             )
         );
+        // P4-2: the fallback needs consent (argument, else the environment).
         let args = json!({"script": "x"});
         let input = validate_exec(&args).expect("valid");
         assert!(matches!(
-            not_run_route(&input, "not authorized"),
+            not_run_route(&input, "not authorized", false),
+            NotRunRoute::Refuse(n) if n.contains("allow_trigger_fallback: true") && n.contains("HAPPY_MCP_ALLOW_TRIGGER_FALLBACK=1")
+        ));
+        assert!(matches!(
+            not_run_route(&input, "not authorized", true),
             NotRunRoute::Fallback(n) if n.ends_with("(record_for_rollback could not be honored).\n\n")
         ));
+        let args = json!({"script": "x", "allow_trigger_fallback": true});
+        let input = validate_exec(&args).expect("valid");
+        assert!(matches!(
+            not_run_route(&input, "x", false),
+            NotRunRoute::Fallback(_)
+        ));
+        let args = json!({"script": "x", "allow_trigger_fallback": false});
+        let input = validate_exec(&args).expect("valid");
+        assert!(matches!(
+            not_run_route(&input, "x", true),
+            NotRunRoute::Refuse(_)
+        ));
+        assert_eq!(
+            err(json!({"script": "x", "allow_trigger_fallback": "yes"})),
+            ALLOW_NOT_BOOLEAN
+        );
     }
 
     fn err(args: Value) -> &'static str {

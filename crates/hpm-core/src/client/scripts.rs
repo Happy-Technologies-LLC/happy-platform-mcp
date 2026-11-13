@@ -140,11 +140,27 @@ impl ScriptSession {
     /// `Drop` logout as a fallback (review L4).
     async fn end(&self) {
         let req = logout_request(&self.state.url, &self.auth_header);
-        let _ = self.request(req).await;
+        let _ = self.send_raw(req).await;
         self.ended.store(true, std::sync::atomic::Ordering::Release);
     }
 
-    async fn request(
+    /// A pre-POST request (user token, CSRF lookup): fails closed before
+    /// sending once the generation has moved, so nothing goes to the old host
+    /// with the old credential (review CO-8). The logout is exempt.
+    async fn request(&self, req: HttpRequest) -> Result<HttpResponse, super::http::TransportError> {
+        if self.client.assert_current(&self.state).is_err() {
+            return Err(super::http::TransportError::new(
+                "STALE_GENERATION",
+                "The ServiceNow instance changed before the request was sent",
+            ));
+        }
+        self.send_raw(req).await
+    }
+
+    /// Sends `req` in this session (auth, user agent, cookie jar) without a
+    /// generation check: the logout, and the script POST right after its own
+    /// explicit check.
+    async fn send_raw(
         &self,
         mut req: HttpRequest,
     ) -> Result<HttpResponse, super::http::TransportError> {
@@ -224,26 +240,54 @@ pub fn generate_script_execution_marker(now_ms: i64) -> String {
     format!("MCP_{now_ms}_{hex}")
 }
 
-/// `buildBackgroundScriptWrapper`.
+/// Prefix of the `*** Script` lines the wrapped script itself logs, so log
+/// capture is bounded to this run (review TF-8).
+fn run_log_prefix(marker: &str) -> String {
+    format!("{marker}:LOG ")
+}
+
+/// `buildBackgroundScriptWrapper`, plus two 7.0 safety changes:
+/// - `delete_trigger` (the trigger to delete afterwards) is embedded only when
+///   it is a well-formed sys_id (review CO-9);
+/// - the script runs with a `gs` whose logging methods (`info`, `print`,
+///   `log`, `warn`, `error`, `debug`) prefix each message with this run's
+///   marker, so only this run's lines are captured (review TF-8). Every other
+///   `gs` member is forwarded unchanged; if `gs` cannot be enumerated the real
+///   one is used and its lines are simply not captured.
 pub fn build_background_script_wrapper(
     script: &str,
     marker: &str,
-    auto_delete: bool,
-    trigger_sys_id: Option<&str>,
+    delete_trigger: Option<&str>,
 ) -> String {
     let start = format!("{marker}:START");
     let end = format!("{marker}:END");
-    let delete_block = if auto_delete {
-        format!(
-            "\n  var triggerGR = new GlideRecord('sys_trigger');\n  if (triggerGR.get('{}')) {{\n    triggerGR.deleteRecord();\n  }}",
-            trigger_sys_id.unwrap_or("undefined")
-        )
-    } else {
-        String::new()
+    let log = run_log_prefix(marker);
+    let delete_block = match delete_trigger.filter(|id| is_sys_id(id)) {
+        Some(id) => format!(
+            "\n  var triggerGR = new GlideRecord('sys_trigger');\n  if (triggerGR.get('{id}')) {{\n    triggerGR.deleteRecord();\n  }}"
+        ),
+        None => String::new(),
     };
+    let shim = format!(
+        "(function (g, prefix) {{\n    try {{\n      var p = {{}};\n      for (var k in g) {{\n        (function (n) {{\n          if (typeof g[n] !== 'function') {{\n            p[n] = g[n];\n          }} else if (/^(info|print|log|warn|error|debug)$/.test(n)) {{\n            p[n] = function () {{\n              var a = Array.prototype.slice.call(arguments);\n              a[0] = prefix + a[0];\n              return g[n].apply(g, a);\n            }};\n          }} else {{\n            p[n] = function () {{\n              return g[n].apply(g, arguments);\n            }};\n          }}\n        }})(k);\n      }}\n      if (typeof p.info === 'function' && typeof p.getProperty === 'function') {{\n        return p;\n      }}\n    }} catch (ignored) {{}}\n    return g;\n  }})(gs, '{log}')"
+    );
     format!(
-        "\n// Auto-generated MCP script trigger\ngs.info('{start}');\ntry {{\n  {script}\n  gs.info('{end}' + JSON.stringify({{ ok: true }}));\n}} catch (e) {{\n  gs.info('{end}' + JSON.stringify({{ ok: false, error: e.message, stack: e.stack || '' }}));\n}} finally {{{delete_block}\n}}"
+        "\n// Auto-generated MCP script trigger\ngs.info('{start}');\ntry {{\n  (function (gs) {{\n  {script}\n  }}).call(this, {shim});\n  gs.info('{end}' + JSON.stringify({{ ok: true }}));\n}} catch (e) {{\n  gs.info('{end}' + JSON.stringify({{ ok: false, error: e.message, stack: e.stack || '' }}));\n}} finally {{{delete_block}\n}}"
     )
+}
+
+/// This run's script log lines (marker prefix stripped) from `*** Script`
+/// messages, and whether the run's end marker was among them. Lines without
+/// this run's prefix (other sessions, other runs) never enter the result.
+pub(crate) fn run_log_lines(messages: Vec<String>, marker: &str) -> (Vec<String>, bool) {
+    let end = format!("{marker}:END");
+    let prefix = run_log_prefix(marker);
+    let verified = messages.iter().any(|m| m.starts_with(&end));
+    let lines = messages
+        .into_iter()
+        .filter_map(|m| m.strip_prefix(&prefix).map(str::to_owned))
+        .collect();
+    (lines, verified)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -278,25 +322,6 @@ pub fn parse_background_script_marker(record: &Value, marker: &str) -> MarkerOut
         error,
         stack: payload.get("stack").cloned(),
     }
-}
-
-/// Any execution's start/end marker line: `^MCP_\d+_[0-9a-f]+:(START|END)`.
-fn is_marker_line(message: &str) -> bool {
-    let Some(rest) = message.strip_prefix("MCP_") else {
-        return false;
-    };
-    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return false;
-    }
-    let Some(rest) = rest[digits..].strip_prefix('_') else {
-        return false;
-    };
-    let hex = rest
-        .bytes()
-        .take_while(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
-        .count();
-    hex > 0 && (rest[hex..].starts_with(":START") || rest[hex..].starts_with(":END"))
 }
 
 impl ServiceNowClient {
@@ -390,7 +415,7 @@ impl ServiceNowClient {
         }
         req.body = Some(form_encode(&form).into_bytes());
         req.timeout = Some(Duration::from_millis(options.timeout_ms));
-        let result = match session.request(req).await {
+        let result = match session.send_raw(req).await {
             Ok(response) => classify_processor_outcome(&Ok(response)),
             Err(e) => classify_processor_outcome(&Err(e)),
         };
@@ -412,12 +437,12 @@ impl ServiceNowClient {
         if let Some(t) = target.as_ref().filter(|t| t.inactive) {
             warnings.push(format!("Application '{}' is inactive.", t.label));
         }
-        if let Some(t) = target.as_ref().filter(|t| t.label != result.scope) {
-            warnings.push(format!(
-                "Requested scope '{}' but the instance reported running in '{}'.",
-                t.label, result.scope
-            ));
-        }
+        // The script ran, but not where it was asked to (owner decision P4-1,
+        // review CO-3): reported as a failure that names the scope it ran in.
+        let mismatch = target
+            .as_ref()
+            .filter(|t| t.label != result.scope)
+            .map(|t| json!({"requested": t.label, "ran": result.scope}));
         let mut rollback = None;
         if let Some(history) = &result.execution_history_id {
             match self.script_rollback_context_id(history).await {
@@ -429,10 +454,15 @@ impl ServiceNowClient {
             }
         }
         let mut out = Map::new();
-        out.insert("ok".into(), json!(result.ok));
+        let ok = result.ok && mismatch.is_none();
+        out.insert("ok".into(), json!(ok));
         out.insert(
             "status".into(),
-            json!(if result.ok { "completed" } else { "failed" }),
+            json!(match (&mismatch, result.ok) {
+                (Some(_), _) => "scope_mismatch",
+                (None, true) => "completed",
+                (None, false) => "failed",
+            }),
         );
         out.insert("method".into(), json!("processor"));
         out.insert("output".into(), json!(result.output));
@@ -444,11 +474,16 @@ impl ServiceNowClient {
         }
         out.insert("scope".into(), json!(result.scope));
         let scope_id = match &target {
+            // The requested scope's id would mislabel the scope it ran in.
+            Some(_) if mismatch.is_some() => Value::Null,
             Some(t) => json!(t.scope_id),
             None if result.scope == "global" => json!("global"),
             None => Value::Null,
         };
         out.insert("scopeId".into(), scope_id);
+        if let Some(m) = mismatch {
+            out.insert("scopeMismatch".into(), m);
+        }
         out.insert(
             "recordForRollback".into(),
             json!(options.record_for_rollback),
@@ -566,8 +601,17 @@ impl ServiceNowClient {
         self.execute_script_via_trigger_inner(script, description, auto_delete, options)
             .await
             .map_err(|e| {
-                let mut wrapped =
-                    ClientError::plain(format!("Failed to create script trigger: {}", e.message));
+                // After the insert the trigger exists: never call that a
+                // failure to create it (review TF-12).
+                let created = e.code() == Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE);
+                let mut wrapped = ClientError::plain(if created {
+                    format!(
+                        "The sys_trigger record was created, but a later step failed: {}",
+                        e.message
+                    )
+                } else {
+                    format!("Failed to create script trigger: {}", e.message)
+                });
                 wrapped.status = e.status;
                 wrapped.code = e.code;
                 // Trigger identity ("sys_id …" / "name …") for result-unknown text.
@@ -583,14 +627,6 @@ impl ServiceNowClient {
         auto_delete: bool,
         options: &TriggerOptions,
     ) -> Result<Value, ClientError> {
-        // Once the trigger row exists the script may run regardless of what
-        // fails next, so every later error is tagged "result unknown" and
-        // names the trigger (its sys_id) in `reason`.
-        let inserted = |mut e: ClientError, sys_id: &str| {
-            e.code = Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
-            e.reason = Some(format!("sys_id {sys_id}").into());
-            e
-        };
         let now = self.now_ms();
         let next_action = format_utc_datetime(now + 1000);
         let marker = generate_script_execution_marker(self.now_ms());
@@ -602,6 +638,24 @@ impl ServiceNowClient {
             description
         };
         let trigger_name = format!("MCP_Script_{}", self.now_ms());
+        // How the trigger is named in result-unknown text: its sys_id when the
+        // instance returned a well-formed one, else its name (review TF-12).
+        let trigger_ref = |trigger: &Value| match trigger
+            .get("sys_id")
+            .and_then(Value::as_str)
+            .filter(|id| is_sys_id(id))
+        {
+            Some(id) => format!("sys_id {id}"),
+            None => format!("name {trigger_name}"),
+        };
+        // Once the trigger row exists the script may run regardless of what
+        // fails next, so every later error is tagged "result unknown" and
+        // names the trigger in `reason`.
+        let inserted = |mut e: ClientError, trigger: &str| {
+            e.code = Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
+            e.reason = Some(trigger.to_owned().into());
+            e
+        };
         let base = json!({
             "name": trigger_name,
             "next_action": next_action,
@@ -625,24 +679,34 @@ impl ServiceNowClient {
                 .create_record("sys_trigger", &with_script(script.to_owned()))
                 .await
                 .map_err(named)?;
-            let sys_id = trigger
+            // The instance-supplied sys_id goes into the wrapper's source and
+            // the PUT path: only a well-formed one is used (review CO-9).
+            let Some(sys_id) = trigger
                 .get("sys_id")
                 .and_then(Value::as_str)
-                .unwrap_or("undefined")
-                .to_owned();
-            let wrapped = build_background_script_wrapper(script, &marker, true, Some(&sys_id));
+                .filter(|id| is_sys_id(id))
+                .map(str::to_owned)
+            else {
+                return Err(inserted(
+                    ClientError::plain(
+                        "ServiceNow did not return a valid sys_id for the new sys_trigger record, so it was not wrapped; it may still run the script",
+                    ),
+                    &trigger_ref(&trigger),
+                ));
+            };
+            let wrapped = build_background_script_wrapper(script, &marker, Some(&sys_id));
             self.update_record("sys_trigger", &sys_id, &json!({"script": wrapped}))
                 .await
-                .map_err(|e| inserted(e, &sys_id))?;
+                .map_err(|e| inserted(e, &trigger_ref(&trigger)))?;
             trigger
         } else {
-            let wrapped = build_background_script_wrapper(script, &marker, false, None);
+            let wrapped = build_background_script_wrapper(script, &marker, None);
             self.create_record("sys_trigger", &with_script(wrapped))
                 .await
                 .map_err(named)?
         };
         let trigger_sys_id = trigger.get("sys_id").cloned().unwrap_or(Value::Null);
-        let trigger_id = trigger_sys_id.as_str().unwrap_or("undefined").to_owned();
+        let trigger_id = trigger_ref(&trigger);
         let mut out = Map::new();
         out.insert("trigger_sys_id".into(), trigger_sys_id.clone());
         out.insert(
@@ -720,7 +784,7 @@ impl ServiceNowClient {
                 json!(format!(
                     "Timed out after {}ms waiting for the script's completion marker in syslog. Trigger {} may still be pending, may have run without producing a marker, or may have failed to fire — inspect it manually.",
                     options.timeout_ms,
-                    trigger_sys_id.as_str().unwrap_or("undefined")
+                    trigger_id
                 )),
             );
             return Ok(Value::Object(o));
@@ -732,7 +796,7 @@ impl ServiceNowClient {
             .unwrap_or("undefined")
             .to_owned();
         let (logs, truncated, unverified) = self
-            .collect_background_script_logs(&end_marker, &next_action, &until)
+            .collect_background_script_logs(&marker, &next_action, &until)
             .await
             .map_err(|e| inserted(e, &trigger_id))?;
         let mut o = match &outcome {
@@ -836,10 +900,12 @@ impl ServiceNowClient {
         self.send(&state, req).await.map(|_| ())
     }
 
-    /// `_collectBackgroundScriptLogs` (maxLines 100).
+    /// `_collectBackgroundScriptLogs` (maxLines 100), bounded to this run:
+    /// only lines carrying `marker` are read, and only the run's own log lines
+    /// are returned (review TF-8).
     async fn collect_background_script_logs(
         &self,
-        end_marker: &str,
+        marker: &str,
         since: &str,
         until: &str,
     ) -> Result<(Vec<String>, bool, bool), ClientError> {
@@ -849,7 +915,7 @@ impl ServiceNowClient {
                 "syslog",
                 &RecordQuery {
                     query: Some(format!(
-                        "source=*** Script^sys_created_on>={since}^sys_created_on<={until}^ORDERBYsys_created_on"
+                        "source=*** Script^messageSTARTSWITH{marker}:^sys_created_on>={since}^sys_created_on<={until}^ORDERBYsys_created_on"
                     )),
                     fields: Some("message,sys_created_on".into()),
                     limit: Some((MAX_LINES + 10).to_string()),
@@ -870,11 +936,7 @@ impl ServiceNowClient {
                     .collect()
             })
             .unwrap_or_default();
-        let verified = messages.iter().any(|m| m.starts_with(end_marker));
-        let mut lines: Vec<String> = messages
-            .into_iter()
-            .filter(|m| !is_marker_line(m))
-            .collect();
+        let (mut lines, verified) = run_log_lines(messages, marker);
         let truncated = lines.len() > MAX_LINES;
         lines.truncate(MAX_LINES);
         Ok((lines, truncated, !verified))

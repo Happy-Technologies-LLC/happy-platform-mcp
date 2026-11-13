@@ -221,6 +221,12 @@ fn resolve(value: &Path) -> std::io::Result<PathBuf> {
 /// directory, and any existing target (file or symlink) without following it.
 /// Returns the absolute path of the written file.
 ///
+/// On Unix the directory is opened once (`O_DIRECTORY|O_NOFOLLOW`), checked
+/// to be the same inode as the lstat-verified directory, and the file is
+/// created relative to that descriptor (`openat`, `O_EXCL|O_NOFOLLOW`, mode
+/// 0600), so a symlink swapped in after the checks cannot redirect the write
+/// (review CO-7/TF-11). Elsewhere a path-based re-check remains.
+///
 /// This does blocking `std::fs` I/O: async tool handlers must call it through
 /// `tokio::task::spawn_blocking`.
 pub fn write_fix_script_file(
@@ -264,51 +270,95 @@ pub fn write_fix_script_file(
         return Err(FixScriptError::NotDirectChild);
     }
 
-    // Ancestor check: write through the canonical directory (no symlinks left
-    // in it), then re-check that the created file still sits directly in that
-    // directory, so a symlink swapped into an ancestor between the checks and
-    // the open is detected and the file removed.
-    let canonical = std::fs::canonicalize(&root)?;
-    let real_path = canonical.join(file_name);
-    create_new_private_file(&real_path, |handle| handle.write_all(content.as_bytes()))?;
-    let parent = real_path.parent().map(std::fs::canonicalize).transpose()?;
-    if parent.as_deref() != Some(canonical.as_path())
-        || std::fs::symlink_metadata(&real_path)
-            .map(|m| m.is_file())
-            .ok()
-            != Some(true)
-    {
-        let _ = std::fs::remove_file(&real_path);
-        return Err(FixScriptError::ScriptsDirectoryIsSymlink(root));
-    }
+    write_in_dir(&root, file_name, |handle| {
+        handle.write_all(content.as_bytes())
+    })?;
     Ok(file_path)
 }
 
-/// Creates `file_path` with O_CREAT|O_EXCL (never following a final-component
-/// symlink) and mode 0600, then runs `write`. A failed write unlinks the file.
-fn create_new_private_file(
-    file_path: &Path,
+/// Opens `root` once and creates `file_name` relative to that descriptor; a
+/// failed `write` unlinks it through the same descriptor.
+#[cfg(unix)]
+fn write_in_dir(
+    root: &Path,
+    file_name: &str,
     write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
 ) -> Result<(), FixScriptError> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+    use nix::errno::Errno;
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+    use std::os::unix::fs::MetadataExt as _;
+
+    let expected = std::fs::symlink_metadata(root)?;
+    let dir = match open(
+        root,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            return Err(FixScriptError::ScriptsDirectoryIsSymlink(root.into()));
+        }
+        Err(e) => return Err(std::io::Error::from(e).into()),
+    };
+    let dir = std::fs::File::from(dir);
+    let opened = dir.metadata()?;
+    if (opened.dev(), opened.ino()) != (expected.dev(), expected.ino()) {
+        // An ancestor was swapped between the lstat and the open.
+        return Err(FixScriptError::ScriptsDirectoryIsSymlink(root.into()));
     }
-    let mut handle = match options.open(file_path) {
+    let fd = match openat(
+        &dir,
+        file_name,
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::from_bits_truncate(0o600),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::EEXIST | Errno::ELOOP) => {
+            return Err(FixScriptError::AlreadyExists(root.join(file_name)));
+        }
+        Err(e) => return Err(std::io::Error::from(e).into()),
+    };
+    let mut handle = std::fs::File::from(fd);
+    if let Err(error) = write(&mut handle) {
+        drop(handle);
+        let _ = unlinkat(&dir, file_name, UnlinkatFlags::NoRemoveDir);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+/// Non-Unix: write through the canonical directory, then re-check that the
+/// created file still sits directly in it; otherwise remove it.
+#[cfg(not(unix))]
+fn write_in_dir(
+    root: &Path,
+    file_name: &str,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(), FixScriptError> {
+    let canonical = std::fs::canonicalize(root)?;
+    let real_path = canonical.join(file_name);
+    let mut handle = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&real_path)
+    {
         Ok(handle) => handle,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(FixScriptError::AlreadyExists(file_path.to_path_buf()));
+            return Err(FixScriptError::AlreadyExists(real_path));
         }
         Err(error) => return Err(error.into()),
     };
-
     if let Err(error) = write(&mut handle) {
         drop(handle);
-        let _ = std::fs::remove_file(file_path);
+        let _ = std::fs::remove_file(&real_path);
         return Err(error.into());
+    }
+    let parent = real_path.parent().map(std::fs::canonicalize).transpose()?;
+    if parent.as_deref() != Some(canonical.as_path()) {
+        let _ = std::fs::remove_file(&real_path);
+        return Err(FixScriptError::ScriptsDirectoryIsSymlink(root.into()));
     }
     Ok(())
 }
@@ -320,15 +370,44 @@ mod tests {
     #[test]
     fn failed_write_removes_the_partial_file() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let file_path = temp.path().join("write_fails.js");
-        let error = create_new_private_file(&file_path, |handle| {
+        let error = write_in_dir(temp.path(), "write_fails.js", |handle| {
             handle.write_all(b"gs.info('partial');")?;
             Err(std::io::Error::other("simulated disk full"))
         })
         .expect_err("write failure must surface");
         assert!(matches!(error, FixScriptError::Io(_)));
         assert_eq!(error.to_string(), "simulated disk full");
-        assert!(!file_path.exists());
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_refused_without_following_and_mode_is_private() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real = temp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = temp.path().join("scripts");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(matches!(
+            write_fix_script_file(&link, "a.js", "x"),
+            Err(FixScriptError::ScriptsDirectoryIsSymlink(_))
+        ));
+        assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
+
+        let outside = temp.path().join("outside.js");
+        std::os::unix::fs::symlink(&outside, real.join("b.js")).unwrap();
+        assert!(matches!(
+            write_fix_script_file(&real, "b.js", "x"),
+            Err(FixScriptError::AlreadyExists(_))
+        ));
+        assert!(!outside.exists());
+
+        let path = write_fix_script_file(&real, "c.js", "ok").expect("write");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ok");
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

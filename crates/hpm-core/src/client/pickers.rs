@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 
 use super::error::{ClientError, RawError};
 use super::http::{HttpRequest, Method, format_iso};
@@ -26,7 +27,9 @@ pub(crate) struct PickerSession {
     client: ServiceNowClient,
     state: Arc<State>,
     pub auth_header: String,
-    cookie: String,
+    /// The UI session cookie (`JSESSIONID`, `glide_session_store`): zeroized
+    /// on drop like the processor's `CookieJar` (review CR-9).
+    cookie: Zeroizing<String>,
     /// Set once `/logout.do` was sent (RFC §4 per-operation UI logout).
     ended: bool,
 }
@@ -43,7 +46,7 @@ impl PickerSession {
     fn logout(&self) -> HttpRequest {
         let mut req = logout_request(&self.state.url, &self.auth_header);
         if !self.cookie.is_empty() {
-            req.set_header("Cookie", self.cookie.clone());
+            req.set_header("Cookie", self.cookie.as_str());
         }
         req
     }
@@ -63,7 +66,7 @@ impl PickerSession {
         req.set_header("Accept", "application/json");
         req.set_header("User-Agent", UI_USER_AGENT);
         if !self.cookie.is_empty() {
-            req.set_header("Cookie", self.cookie.clone());
+            req.set_header("Cookie", self.cookie.as_str());
         }
         req.max_redirects = 5;
         req
@@ -75,7 +78,10 @@ impl PickerSession {
         raw.into_safe_servicenow(redactor)
     }
 
+    /// Fails closed (stale) before sending when the generation has moved, so
+    /// no request goes to the old host with the old credential (review CO-8).
     async fn exchange(&self, req: HttpRequest) -> Result<Value, ClientError> {
+        self.client.assert_current(&self.state)?;
         let response = self.client.send(&self.state, req).await?;
         if (200..300).contains(&response.status) {
             Ok(response.data())
@@ -121,20 +127,39 @@ impl ServiceNowClient {
             client: self.clone(),
             state,
             auth_header,
-            cookie: String::new(),
+            cookie: Zeroizing::new(String::new()),
             ended: false,
         });
         let mut landing = session.request(Method::Get, "/");
         landing.set_header("Accept", "text/html");
-        let response = self.send(&session.state, landing).await?;
-        // Captured before the status check so the logout can end a session
-        // the landing page opened even when it answered non-2xx (review L-2).
-        session.cookie = response
-            .header_all("set-cookie")
-            .map(|e| e.split(';').next().unwrap_or(""))
-            .filter(|p| !p.is_empty())
-            .collect::<Vec<_>>()
-            .join("; ");
+        self.assert_current(&session.state)?;
+        let response = self.deps().transport.send(landing).await;
+        // Captured before the generation and status checks so the logout can
+        // end a session the landing page opened even when it answered non-2xx
+        // (review L-2) or the generation moved while it was in flight (CR-1).
+        if let Ok(response) = &response {
+            session.cookie = Zeroizing::new(
+                response
+                    .header_all("set-cookie")
+                    .map(|e| e.split(';').next().unwrap_or(""))
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+        }
+        if self.assert_current(&session.state).is_err() {
+            return Err(ClientError::stale_after_send());
+        }
+        let response = response.map_err(|e| {
+            self.sanitize(
+                &session.state,
+                RawError {
+                    message: e.message,
+                    code: e.code,
+                    ..RawError::default()
+                },
+            )
+        })?;
         if !(200..300).contains(&response.status) {
             return Err(session.fail(RawError::http(response.status, response.data())));
         }

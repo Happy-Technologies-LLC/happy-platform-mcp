@@ -1429,15 +1429,43 @@ async fn processor_not_run_and_unknown_outcomes() {
     );
 }
 
+const TID: &str = "0123456789abcdef0123456789abcdef";
+
+/// TF-8: only this run's prefixed lines are captured, in order, prefix
+/// stripped; other sessions' and other runs' lines are dropped.
+#[test]
+fn run_log_lines_keep_only_this_run() {
+    let messages = [
+        "MCP_1_ab:START",
+        "MCP_1_ab:LOG mine 1",
+        "someone else's gs.info",
+        "MCP_9_ff:LOG other run",
+        "MCP_1_abc:LOG longer marker",
+        "MCP_1_ab:LOG mine 2",
+        "MCP_1_ab:END{\"ok\":true}",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (lines, verified) = scripts::run_log_lines(messages, "MCP_1_ab");
+    assert_eq!(lines, vec!["mine 1".to_owned(), "mine 2".to_owned()]);
+    assert!(verified);
+}
+
 #[test]
 fn wrapper_and_marker_parsing() {
-    let w = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", true, Some("tid"));
+    let w = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", Some(TID));
     assert!(w.contains("gs.info('MCP_1_ab:START');"));
     assert!(w.contains("} catch (e) {"));
-    assert!(w.contains("triggerGR.get('tid')"));
-    let w2 = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", false, None);
+    assert!(w.contains(&format!("triggerGR.get('{TID}')")));
+    // The script's own logging is prefixed with the run marker (TF-8).
+    assert!(w.contains("(function (gs) {\n  doIt();\n  }).call(this, "));
+    assert!(w.contains("})(gs, 'MCP_1_ab:LOG '));\n"));
+    let w2 = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", None);
     assert!(!w2.contains("triggerGR"));
     assert!(w2.ends_with("} finally {\n}"));
+    // CO-9: a malformed server-supplied sys_id never reaches the source.
+    let w3 = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", Some("x');evil('"));
+    assert!(!w3.contains("triggerGR") && !w3.contains("evil"));
     use scripts::{MarkerOutcome, parse_background_script_marker as parse};
     assert_eq!(
         parse(
@@ -1481,9 +1509,9 @@ fn trigger_fake(marker_message: Option<&'static str>, logs: Value) -> Arc<FakeTr
         match (r.method, path.as_str()) {
             (Method::Post, "/api/now/table/sys_trigger") => Ok(HttpResponse::json(
                 201,
-                &json!({"result": {"sys_id": "tid", "name": "MCP_Script"}}),
+                &json!({"result": {"sys_id": TID, "name": "MCP_Script"}}),
             )),
-            (Method::Put, "/api/now/table/sys_trigger/tid") => {
+            (Method::Put, p) if p == format!("/api/now/table/sys_trigger/{TID}") => {
                 Ok(HttpResponse::json(200, &json!({"result": {}})))
             }
             (Method::Get, "/api/now/table/syslog") if q.contains("messageLIKE") => {
@@ -1510,7 +1538,14 @@ fn trigger_fake(marker_message: Option<&'static str>, logs: Value) -> Arc<FakeTr
 
 #[tokio::test]
 async fn trigger_completed_with_logs_and_utc_times() {
-    let logs = json!([{"message": "MCP_1_ab:START"}, {"message": "user line"}, {"message": "MCP_9_ff:END{}"}]);
+    // Interleaved foreign lines (other sessions' gs.info, other runs' markers
+    // and logs) never enter the result (TF-8).
+    let logs = json!([
+        {"message": "MCP_1_ab:START"},
+        {"message": "other session line"},
+        {"message": "MCP_9_ff:LOG foreign run"},
+        {"message": "MCP_9_ff:END{}"}
+    ]);
     let h = harness(
         basic(Some("pw")),
         trigger_fake(Some("{\"ok\":true}"), logs),
@@ -1524,8 +1559,15 @@ async fn trigger_completed_with_logs_and_utc_times() {
         .unwrap_or_default();
     assert_eq!(r["status"], "completed");
     assert_eq!(r["success"], true);
-    assert_eq!(r["logs"], json!(["user line"]));
+    assert_eq!(r["logs"], json!([]));
     assert_eq!(r["logsWindowUnverified"], true);
+    assert!(
+        h.transport
+            .requests()
+            .iter()
+            .any(|q| q.url.contains("messageSTARTSWITHMCP_")),
+        "the log query is bounded to this run's marker"
+    );
     // FakeClock starts at 2026-08-28T12:00:00Z; next_action is +1s in UTC.
     assert_eq!(r["next_action"], "2026-08-28 12:00:01");
     let create = &h.transport.requests()[0];
@@ -1657,10 +1699,7 @@ async fn trigger_errors_after_insert_are_tagged_result_unknown() {
             basic(Some("pw")),
             FakeTransport::new(move |r| {
                 if r.method == Method::Post {
-                    Ok(HttpResponse::json(
-                        201,
-                        &json!({"result": {"sys_id": "tid"}}),
-                    ))
+                    Ok(HttpResponse::json(201, &json!({"result": {"sys_id": TID}})))
                 } else if r.method == failing {
                     Ok(HttpResponse::json(
                         403,
@@ -1680,8 +1719,11 @@ async fn trigger_errors_after_insert_are_tagged_result_unknown() {
             .expect_err("post-insert failure");
         assert_eq!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
         assert_eq!(e.status, Some(403));
-        assert_eq!(e.message, "Failed to create script trigger: 403 ACL");
-        assert_eq!(e.reason.as_deref(), Some("sys_id tid"));
+        assert_eq!(
+            e.message,
+            "The sys_trigger record was created, but a later step failed: 403 ACL"
+        );
+        assert_eq!(e.reason.as_deref(), Some(format!("sys_id {TID}").as_str()));
     }
 }
 
@@ -1907,6 +1949,34 @@ async fn progress_is_per_call_and_monotonic() {
         vec![(3.0, Some("a1".into())), (4.0, Some("a2".into()))]
     );
     assert_eq!(got(&b), vec![(1.0, Some("b1".into()))]);
+}
+
+/// CO-1: a handler that calls `client(ctx)` twice gets two clones for the
+/// same call sink; they share one counter, so progress never goes backwards.
+#[tokio::test]
+async fn progress_is_shared_by_clones_of_one_call() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let sink = Arc::new(Sink::default());
+    let first = h.client.with_progress(sink.clone());
+    first.notify_progress("a", Some(5), None).await;
+    let second = h.client.with_progress(sink.clone());
+    second.notify_progress("b", None, None).await;
+    first.notify_progress("c", Some(1), None).await;
+    drop((first, second));
+    let got = sink.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        got,
+        vec![
+            (5.0, Some("a".into())),
+            (6.0, Some("b".into())),
+            (7.0, Some("c".into()))
+        ]
+    );
 }
 
 mod atf;

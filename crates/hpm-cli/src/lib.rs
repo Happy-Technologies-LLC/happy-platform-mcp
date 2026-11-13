@@ -81,11 +81,16 @@ pub struct SingleUser {
 impl SingleUser {
     /// Process environment, default registry paths, OS keychain, reqwest.
     pub fn from_process(config: Arc<ConfigManager>) -> Result<Self, String> {
-        Ok(Self::new(
+        let root = Self::new(
             config,
             ClientDeps::production(Arc::new(LazySecretStore::os()))
                 .map_err(|e| format!("ServiceNow client setup failed: {e}"))?,
-        ))
+        );
+        // Fix scripts land under the startup directory, captured once so a
+        // later cwd change cannot move them (review TF-11).
+        let cwd = std::env::current_dir()
+            .map_err(|e| format!("Cannot read the current directory: {e}"))?;
+        Ok(root.working_dir(cwd))
     }
 
     /// `config` fixes the instances file and env map

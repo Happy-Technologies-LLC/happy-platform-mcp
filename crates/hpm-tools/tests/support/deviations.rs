@@ -18,6 +18,14 @@ pub enum Expected {
     /// whole batch.` naming `operation_0..operation_{created-1}` (full text
     /// compared; the sys_ids come from the stub).
     RecordedTextThenNotRolledBack { created: usize },
+    /// Exactly the first `requests` recorded outbound requests, then only
+    /// requests to the `then` paths (in order), then an `isError: true`
+    /// single text that contains `contains`.
+    OutboundPrefixThenErrorText {
+        requests: usize,
+        then: &'static [&'static str],
+        contains: &'static str,
+    },
 }
 
 #[derive(Debug)]
@@ -45,6 +53,20 @@ pub const DEVIATIONS: &[Deviation] = &[
         reason: "6.2.0 hid that operation 0 was already created although the call \
                  asked for a transaction; 7.0 names the records it did not roll back \
                  and says not to re-run the whole batch (partially committed)",
+    },
+    Deviation {
+        golden: "SN-Execute-Background-Script/processor-unauthorized-trigger-fallback",
+        step: 0,
+        expected: Expected::OutboundPrefixThenErrorText {
+            requests: 4,
+            then: &["/logout.do"],
+            contains: "allow_trigger_fallback: true",
+        },
+        reason: "owner decision P4-2: the sys_trigger fallback (runs the script \
+                 outside record_for_rollback, in the Default update set) is opt-in in \
+                 7.0; without consent the call stops after /sys.scripts.do refused, \
+                 ends the cookie session it opened, and names the opt-in instead of \
+                 inserting a sys_trigger",
     },
 ];
 
@@ -117,6 +139,33 @@ impl Expected {
                 if !keys_ok {
                     problems.push(format!(
                         "expected {recorded:?} + {NOT_ROLLED_BACK:?} + {{operation_0..{created}}} + {DO_NOT_RERUN:?}, got {text:?}"
+                    ));
+                }
+            }
+            Self::OutboundPrefixThenErrorText {
+                requests,
+                then,
+                contains,
+            } => {
+                let prefix = &want_outbound[..requests.min(want_outbound.len())];
+                let tail: Vec<&str> = outbound
+                    .get(prefix.len()..)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|r| r["path"].as_str().unwrap_or_default())
+                    .collect();
+                if outbound.get(..prefix.len()) != Some(prefix) || tail != then {
+                    problems.push(format!(
+                        "outbound differs: got {outbound:?}, want the first {requests} recorded {prefix:?} then {then:?}"
+                    ));
+                }
+                if got["response"]["result"]["isError"] != true {
+                    problems.push(format!("expected isError: true, got {}", got["response"]));
+                }
+                if !single_text(&got["response"]).is_some_and(|t| t.contains(contains)) {
+                    problems.push(format!(
+                        "expected one text item containing {contains:?}, got {}",
+                        got["response"]
                     ));
                 }
             }
