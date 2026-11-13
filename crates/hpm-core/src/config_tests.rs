@@ -429,6 +429,7 @@ fn concurrent_apply_with_the_same_version_admits_exactly_one() {
     let v = cm
         .snapshot_for(&hpm_types::context::Principal::LocalOperator)
         .registry_version;
+    assert_eq!(cm.registry_version(), v);
     let barrier = Arc::new(std::sync::Barrier::new(8));
     let threads: Vec<_> = (0..8)
         .map(|i| {
@@ -460,4 +461,5 @@ fn concurrent_apply_with_the_same_version_admits_exactly_one() {
         }
     }
     assert_eq!(won, 1);
+    assert_eq!(cm.registry_version(), v + 1);
 }
