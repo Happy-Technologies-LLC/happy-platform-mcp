@@ -329,16 +329,33 @@ impl<S: Sn> Call<'_, S> {
                 Ok(v)
             }
             Err(e) => {
-                // Stale: never sent. An HTTP status: ServiceNow answered and
-                // rejected it. Anything else (transport) may have committed.
-                self.outcome = if e.is_stale() || e.status.is_some_and(|s| s != 0) {
-                    MutationOutcome::Failed
-                } else {
-                    MutationOutcome::Unknown
-                };
+                self.outcome = failed_outcome(&e);
                 Err(Fail::Client(e))
             }
         }
+    }
+
+    /// A write whose path failed to build: nothing was sent.
+    fn not_sent(&mut self, e: ClientError) -> Fail {
+        self.outcome = MutationOutcome::NotSent;
+        Fail::Client(e)
+    }
+}
+
+/// What a failed single write proves about the server side: stale or
+/// credential errors are raised before the send; an HTTP status means
+/// ServiceNow answered; anything else (transport) may have committed.
+fn failed_outcome(e: &ClientError) -> MutationOutcome {
+    let pre_send = e.is_stale()
+        || e.code
+            .as_deref()
+            .is_some_and(hpm_core::client::error::is_credential_error_code);
+    if pre_send {
+        MutationOutcome::NotSent
+    } else if e.status.is_some_and(|s| s != 0) {
+        MutationOutcome::Failed
+    } else {
+        MutationOutcome::Unknown
     }
 }
 
@@ -358,7 +375,13 @@ fn iso_now() -> String {
 fn first(list: &Value, not_found: impl FnOnce() -> String) -> Result<Value, Fail> {
     match list {
         Value::Null => Err(Fail::Js(not_found())),
-        Value::Array(a) => a.first().cloned().ok_or_else(|| Fail::Js(not_found())),
+        Value::Array(a) => match a.first() {
+            None => Err(Fail::Js(not_found())),
+            Some(Value::Null) => Err(Fail::Js(
+                "Cannot read properties of null (reading 'sys_id')".to_owned(),
+            )),
+            Some(v) => Ok(v.clone()),
+        },
         Value::String(s) if s.is_empty() => Err(Fail::Js(not_found())),
         Value::Bool(false) => Err(Fail::Js(not_found())),
         _ => Err(Fail::Js(
@@ -730,7 +753,36 @@ mod tests {
     }
 
     #[test]
-    fn registers_23_tools() {
+    fn registers_23_tools_each_bound_to_its_kind() {
+        let expected = [
+            (Kind::ListIncidents, "SN-List-Incidents"),
+            (Kind::CreateIncident, "SN-Create-Incident"),
+            (Kind::GetIncident, "SN-Get-Incident"),
+            (Kind::ListSysUsers, "SN-List-SysUsers"),
+            (Kind::ListCmdbCis, "SN-List-CmdbCis"),
+            (Kind::ListSysUserGroups, "SN-List-SysUserGroups"),
+            (Kind::ListChangeRequests, "SN-List-ChangeRequests"),
+            (Kind::ListProblems, "SN-List-Problems"),
+            (Kind::ValidateConfiguration, "SN-Validate-Configuration"),
+            (Kind::AddComment, "SN-Add-Comment"),
+            (Kind::AddWorkNotes, "SN-Add-Work-Notes"),
+            (Kind::AssignIncident, "SN-Assign-Incident"),
+            (Kind::ResolveIncident, "SN-Resolve-Incident"),
+            (Kind::CloseIncident, "SN-Close-Incident"),
+            (Kind::AddChangeComment, "SN-Add-Change-Comment"),
+            (Kind::AssignChange, "SN-Assign-Change"),
+            (Kind::ApproveChange, "SN-Approve-Change"),
+            (Kind::AddProblemComment, "SN-Add-Problem-Comment"),
+            (Kind::CloseProblem, "SN-Close-Problem"),
+            (Kind::CatalogGetItem, "SN-Catalog-Get-Item"),
+            (Kind::CatalogSearchItems, "SN-Catalog-Search-Items"),
+            (Kind::CatalogSubmit, "SN-Catalog-Submit"),
+            (Kind::CatalogGetCategories, "SN-Catalog-Get-Categories"),
+        ];
         assert_eq!(KINDS.len(), schemas::TOOLS.len());
+        assert_eq!(expected.len(), KINDS.len());
+        for (kind, name) in expected {
+            assert_eq!(schemas::TOOLS[kind_index(kind)].0, name, "{kind:?}");
+        }
     }
 }

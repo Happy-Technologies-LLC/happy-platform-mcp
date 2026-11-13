@@ -198,6 +198,10 @@ pub(super) async fn run<S: Sn>(
     }
 
     let data = update_data(kind, args, assigned.as_ref(), group.as_ref());
+    // A path that cannot be built is refused before anything is sent.
+    if let Err(e) = hpm_core::client::table_path(t.table, Some(&sys_id)) {
+        return Err(call.not_sent(e));
+    }
     let result = call.mutate(call.sn.update(t.table, &sys_id, &data)).await?;
     let now = iso_now();
     let a = |k: &str| tpl(args.get(k));
@@ -525,5 +529,66 @@ mod tests {
         );
         assert!(ops[3].action.is_mutation());
         assert_eq!(ops[3].written_fields, ["assigned_to", "assignment_group"]);
+    }
+}
+
+#[cfg(test)]
+mod pre_send_tests {
+    use super::super::fake::Fake;
+    use super::super::{Kind, run};
+    use hpm_core::client::ClientError;
+    use hpm_types::tool::{MutationOutcome, ToolError};
+    use serde_json::json;
+
+    fn message(done: &hpm_types::tool::HandlerCompletion) -> String {
+        match &done.result {
+            Err(ToolError::Message(m)) => m.clone(),
+            Err(ToolError::Upstream { message, .. }) => message.clone(),
+            other => panic!("not an error: {other:?}"),
+        }
+    }
+
+    const ARGS: &str = r#"{"incident_number":"INC1","comment":"c"}"#;
+
+    #[tokio::test]
+    async fn credential_and_stale_errors_on_the_write_are_not_sent_and_keep_their_text() {
+        let args: serde_json::Value = serde_json::from_str(ARGS).expect("json");
+        for (e, text) in [
+            (
+                ClientError::credential("CREDENTIAL_NOT_FOUND"),
+                "Credential not found",
+            ),
+            (
+                ClientError::stale(),
+                "Instance changed during credential resolution",
+            ),
+        ] {
+            let sn = Fake::new().ok(json!([{"sys_id": "abc"}])).err(e);
+            let done = run(Kind::AddComment, &sn, &args).await;
+            assert_eq!(message(&done), text);
+            assert_eq!(done.outcome, MutationOutcome::NotSent);
+        }
+    }
+
+    #[tokio::test]
+    async fn unbuildable_write_path_sends_nothing() {
+        let args: serde_json::Value = serde_json::from_str(ARGS).expect("json");
+        let sn = Fake::new().ok(json!([{"sys_id": ""}]));
+        let done = run(Kind::AddComment, &sn, &args).await;
+        assert_eq!(message(&done), "sys_id is not a valid path segment");
+        assert_eq!(done.outcome, MutationOutcome::NotSent);
+        assert_eq!(sn.calls().len(), 1, "only the lookup GET");
+    }
+
+    #[tokio::test]
+    async fn null_first_record_throws_like_v8() {
+        let args: serde_json::Value = serde_json::from_str(ARGS).expect("json");
+        let sn = Fake::new().ok(json!([null]));
+        let done = run(Kind::AddComment, &sn, &args).await;
+        assert_eq!(
+            message(&done),
+            "Cannot read properties of null (reading 'sys_id')"
+        );
+        assert_eq!(sn.calls().len(), 1);
     }
 }

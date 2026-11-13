@@ -137,13 +137,26 @@ pub(super) struct QueryFacts {
 }
 
 impl QueryFacts {
+    /// Scans the query as sent and, when it holds `%` escapes, its decoded
+    /// form too, so an encoded `javascript%3A` operand cannot slip past the guard.
     pub(super) fn add(&mut self, query: &str) {
+        self.scan(query);
+        if query.contains('%') {
+            let decoded = percent_decode(query);
+            if decoded != query {
+                self.scan(&decoded);
+            }
+        }
+    }
+
+    fn scan(&mut self, query: &str) {
         for seg in query.split('^') {
             if let Some(field) = seg
                 .strip_prefix("ORDERBYDESC")
                 .or_else(|| seg.strip_prefix("ORDERBY"))
+                .or_else(|| seg.strip_prefix("GROUPBY"))
             {
-                push_unique(&mut self.ordering, field);
+                push_unique(&mut self.ordering, field_prefix(field));
                 continue;
             }
             let cond = seg
@@ -164,6 +177,38 @@ impl QueryFacts {
             }
         }
     }
+}
+
+/// Copied from lane A's `crud::normalize`; the lead dedupes on merge.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (
+                bytes.get(i + 1).copied().and_then(hex),
+                bytes.get(i + 2).copied().and_then(hex),
+            )
+        {
+            out.push(u8::try_from(h * 16 + l).unwrap_or(b'?'));
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The leading field name (`[A-Za-z0-9_.]*`) of a condition or ordering term.
+fn field_prefix(s: &str) -> &str {
+    let s = s.trim_start();
+    let end = s
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+        .unwrap_or(s.len());
+    &s[..end]
 }
 
 fn push_unique(v: &mut Vec<String>, s: &str) {
@@ -218,5 +263,13 @@ mod tests {
         assert_eq!(f.predicate, ["active", "priority", "assigned_to"]);
         assert_eq!(f.ordering, ["number"]);
         assert_eq!(f.operands, ["gs.getUserID()"]);
+    }
+
+    #[test]
+    fn query_facts_decode_escapes_and_trim_ordering() {
+        let mut f = QueryFacts::default();
+        f.add("caller_id=javascript%3Ags.getSession()^GROUPBYstate^ORDERBYnumber DESC");
+        assert_eq!(f.operands, ["gs.getSession()"]);
+        assert_eq!(f.ordering, ["state", "number"]);
     }
 }

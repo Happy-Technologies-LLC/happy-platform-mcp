@@ -39,6 +39,11 @@ impl Fake {
             .push_back(Err(ClientError::plain(message)));
         self
     }
+    /// Any client error, as-is.
+    pub(super) fn err(self, e: ClientError) -> Self {
+        self.answers.lock().expect("lock").push_back(Err(e));
+        self
+    }
     pub(super) fn cancelled(self) -> Self {
         self.dead.store(true, Ordering::SeqCst);
         self

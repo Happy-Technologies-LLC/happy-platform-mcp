@@ -97,9 +97,13 @@ fn parse_int(v: Option<&Value>) -> i64 {
     if neg { -n } else { n }
 }
 
+/// `list.map(v => v.sys_id).join(',')`: null and undefined join as empty.
 fn ids(list: &[Value]) -> String {
     list.iter()
-        .map(|v| tpl(prop(Some(v), "sys_id")))
+        .map(|v| match prop(Some(v), "sys_id") {
+            None | Some(Value::Null) => String::new(),
+            id => tpl(id),
+        })
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -420,7 +424,7 @@ fn submit_payload(args: &Value) -> Value {
 }
 
 pub(super) async fn submit<S: Sn>(call: &mut Call<'_, S>, args: &Value) -> Result<String, Fail> {
-    let path = order_now_path(&tpl(args.get("sys_id"))).map_err(Fail::Client)?;
+    let path = order_now_path(&tpl(args.get("sys_id"))).map_err(|e| call.not_sent(e))?;
     let payload = submit_payload(args);
     let data = call.mutate(call.sn.post(&path, &payload)).await?;
     let result = prop(Some(&data), "result");
