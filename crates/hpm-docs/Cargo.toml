@@ -9,6 +9,18 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+bytes.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "fs", "sync"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["time", "fs", "sync", "net", "io-util"] }
 
 [lints]
 workspace = true
