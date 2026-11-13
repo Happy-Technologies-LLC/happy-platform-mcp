@@ -379,6 +379,68 @@ fn ref_config(auth: AuthType, reference: Value) -> InstanceConfig {
 }
 
 #[tokio::test]
+async fn saved_secret_is_never_sent_to_a_new_origin() {
+    const REF: &str = "keychain:instance/dev/password";
+    let h = harness(
+        ref_config(AuthType::Basic, json!(REF)),
+        FakeTransport::new(ok_result(json!([]))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    // A 6.x secret with no binding: the first use binds it to the origin now.
+    h.creds.put(REF, "kc-pass");
+    let q = RecordQuery::default();
+    assert!(h.client.get_records("x", &q).await.is_ok());
+    let store = InstanceCredentialStore::new(h.creds.clone());
+    assert_eq!(
+        store.bound_origin(REF).await.ok().flatten().as_deref(),
+        Some(URL.trim_end_matches('/'))
+    );
+
+    // Re-registering the name with a new URL keeps the reference: refused
+    // before any request reaches the new host.
+    let moved = "https://elsewhere.example.com";
+    h.client
+        .set_instance(InstanceConfig {
+            url: moved.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    let err = h.client.get_records("x", &q).await.expect_err("mismatch");
+    assert_eq!(err.code(), Some(error::CREDENTIAL_ORIGIN_MISMATCH_CODE));
+    assert!(
+        err.message.contains("instance credential set dev"),
+        "{}",
+        err.message
+    );
+    assert!(!err.message.contains("kc-pass"));
+    assert!(
+        h.transport
+            .requests()
+            .iter()
+            .all(|r| !r.url.starts_with(moved))
+    );
+
+    // Re-saving the credential clears the binding; the next use binds it to
+    // the new origin.
+    store
+        .set_secret(REF, hpm_types::credential::Secret::new("new-pass".into()))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    h.client
+        .set_instance(InstanceConfig {
+            url: moved.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(h.client.get_records("x", &q).await.is_ok());
+    assert_eq!(
+        store.bound_origin(REF).await.ok().flatten().as_deref(),
+        Some(moved)
+    );
+}
+
+#[tokio::test]
 async fn basic_password_resolved_from_keychain_once() {
     let h = harness(
         ref_config(AuthType::Basic, json!("keychain:instance/dev/password")),
@@ -1393,6 +1455,55 @@ async fn trigger_errors_are_wrapped() {
         e.map(|e| e.message),
         Some("Failed to create script trigger: 403 ACL".into())
     );
+}
+
+#[tokio::test]
+async fn trigger_errors_after_insert_are_tagged_result_unknown() {
+    // Insert refused: never inserted, no tag.
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(|_| Ok(HttpResponse::json(403, &json!({})))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let e = h
+        .client
+        .execute_script_via_trigger("x", "", true, &TriggerOptions::default())
+        .await
+        .expect_err("insert refused");
+    assert_ne!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+
+    // Inserted, then the wrap (auto_delete) or the syslog poll fails.
+    for (auto_delete, failing) in [(true, Method::Put), (false, Method::Get)] {
+        let h = harness(
+            basic(Some("pw")),
+            FakeTransport::new(move |r| {
+                if r.method == Method::Post {
+                    Ok(HttpResponse::json(
+                        201,
+                        &json!({"result": {"sys_id": "tid"}}),
+                    ))
+                } else if r.method == failing {
+                    Ok(HttpResponse::json(
+                        403,
+                        &json!({"error": {"message": "ACL"}}),
+                    ))
+                } else {
+                    Ok(HttpResponse::json(200, &json!({"result": {}})))
+                }
+            }),
+            FakePoster::new(vec![]),
+            Value::Null,
+        );
+        let e = h
+            .client
+            .execute_script_via_trigger("x", "", auto_delete, &TriggerOptions::default())
+            .await
+            .expect_err("post-insert failure");
+        assert_eq!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+        assert_eq!(e.status, Some(403));
+        assert_eq!(e.message, "Failed to create script trigger: 403 ACL");
+    }
 }
 
 // ---- url-bounds (tests/url-bounds.test.js:198-219) ----------------------------

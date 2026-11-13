@@ -5,6 +5,7 @@
 //! rules from `src/generated-scripts.js`.
 
 pub mod bulk_limits;
+pub mod encoded_query;
 pub mod generated_scripts;
 pub mod js;
 pub mod nl;

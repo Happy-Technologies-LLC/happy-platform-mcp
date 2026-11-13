@@ -8,7 +8,7 @@ use std::sync::Arc;
 use base64::Engine;
 use hpm_types::credential::Secret;
 
-use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError};
+use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError, origin_binding_account};
 
 pub mod provider;
 
@@ -202,6 +202,48 @@ impl InstanceCredentialStore {
         self.store
             .set(&self.service, &parsed.reference, value)
             .await
+            .map_err(CredentialStoreError::Store)?;
+        self.clear_origin_binding(&parsed.reference).await
+    }
+
+    /// The origin `reference`'s secret is bound to (`None`: not bound yet).
+    pub async fn bound_origin(
+        &self,
+        reference: &str,
+    ) -> Result<Option<String>, CredentialStoreError> {
+        let parsed = parse_credential_ref(reference)?;
+        Ok(self
+            .store
+            .get(&self.service, &origin_binding_account(&parsed.reference))
+            .await
+            .map_err(CredentialStoreError::Store)?
+            .map(|v| v.expose().to_owned()))
+    }
+
+    /// Binds `reference`'s secret to `origin` (first use after save/migration).
+    pub async fn bind_origin(
+        &self,
+        reference: &str,
+        origin: &str,
+    ) -> Result<(), CredentialStoreError> {
+        let parsed = parse_credential_ref(reference)?;
+        self.store
+            .set(
+                &self.service,
+                &origin_binding_account(&parsed.reference),
+                Secret::new(origin.to_owned()),
+            )
+            .await
+            .map_err(CredentialStoreError::Store)
+    }
+
+    /// See [`crate::keychain::origin_binding_account`]: cleared after every
+    /// secret write or delete, so a failed clear fails closed.
+    async fn clear_origin_binding(&self, reference: &str) -> Result<(), CredentialStoreError> {
+        self.store
+            .delete(&self.service, &origin_binding_account(reference))
+            .await
+            .map(|_| ())
             .map_err(CredentialStoreError::Store)
     }
 
@@ -240,6 +282,7 @@ impl InstanceCredentialStore {
             .await
             .map_err(CredentialStoreError::Store)?
         {
+            self.clear_origin_binding(&parsed.reference).await?;
             Ok(true)
         } else {
             Err(CredentialStoreError::Operation)
