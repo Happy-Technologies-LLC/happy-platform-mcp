@@ -285,6 +285,16 @@ fn tool_names(list: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Lanes register tools over time: assert shape, not a fixed list. Every listed
+/// name is a 6.2.0 tool, listed once, in 6.2.0 `tools/list` order.
+fn assert_known_tools(names: &[String]) {
+    let ranks: Vec<usize> = names
+        .iter()
+        .map(|n| hpm_tools::tool_order::rank(n).unwrap_or_else(|| panic!("unknown tool {n}")))
+        .collect();
+    assert!(ranks.windows(2).all(|w| w[0] < w[1]), "{names:?}");
+}
+
 #[test]
 fn guard_rejects_missing_token_and_foreign_host_or_origin() {
     let s = start(&[("HAPPY_MCP_ALLOWED_ORIGINS", "https://console.example.com")]);
@@ -407,8 +417,7 @@ fn streamable_http_initialize_and_tools_list() {
     let list = json!({"jsonrpc":"2.0","id":2,"method":"tools/list"});
     let r = authed(s.addr, "POST", "/mcp", &session, &list.to_string());
     assert_eq!(r.status, 200, "{}", r.body);
-    // The composition root registers no tools yet.
-    assert_eq!(tool_names(&r.rpc(2)), Vec::<String>::new());
+    assert_known_tools(&tool_names(&r.rpc(2)));
 }
 
 /// An open legacy SSE stream.
@@ -502,7 +511,7 @@ fn legacy_sse_initialize_and_tools_list() {
         post(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).status,
         202
     );
-    assert_eq!(tool_names(&sse.response(1)), Vec::<String>::new());
+    assert_known_tools(&tool_names(&sse.response(1)));
 }
 
 #[test]

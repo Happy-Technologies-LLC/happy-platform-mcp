@@ -521,6 +521,29 @@ fn comparable_outbound(list: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// A step's outbound requests as the harness compares them.
+pub fn outbound_of(step: &Value) -> Vec<Value> {
+    comparable_outbound(&step["outbound"])
+}
+
+/// Intentional 7.0 difference (RFC §4 per-operation UI logout): Rust ends every
+/// cookie UI session with `GET /logout.do` as the operation's last request; 6.2.0
+/// never logged out, so the goldens do not record it. Only that exact request,
+/// and only as the final outbound entry of a step, is left out of the comparison;
+/// a logout anywhere else (e.g. before a later read) still shows as a mismatch.
+pub fn without_final_ui_logout(mut got: Vec<Value>) -> Vec<Value> {
+    let is_ui_logout = got.last().is_some_and(|e| {
+        e["target"] == "servicenow"
+            && e["method"] == "GET"
+            && e["path"] == "/logout.do"
+            && e["credentials"]["sessionCookie"] == true
+    });
+    if is_ui_logout {
+        got.pop();
+    }
+    got
+}
+
 fn diff_outbound(step: usize, got: &[Value], want: &[Value], problems: &mut Vec<String>) {
     if got == want {
         return;
@@ -664,6 +687,13 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
     let mut problems = Vec::new();
     for (i, (got, want)) in got_steps.iter().zip(&steps).enumerate() {
         let got = fold_tmp(scrubber.deep(got));
+        if let Some(dev) = super::deviations::lookup(id, i) {
+            let outbound = comparable_outbound(&got["outbound"]);
+            for p in dev.expected.check(&got, &outbound) {
+                problems.push(format!("step {i} deviation ({}): {p}", dev.reason));
+            }
+            continue;
+        }
         for field in ["response", "notifications", "files"] {
             if let Some(diff) = first_difference(&got[field], &want[field], String::new()) {
                 problems.push(format!("step {i} {field} {diff}"));
@@ -671,7 +701,7 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
         }
         diff_outbound(
             i,
-            &comparable_outbound(&got["outbound"]),
+            &without_final_ui_logout(comparable_outbound(&got["outbound"])),
             &comparable_outbound(&want["outbound"]),
             &mut problems,
         );

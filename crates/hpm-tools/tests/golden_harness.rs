@@ -250,11 +250,24 @@ mod selftest {
 
     #[tokio::test]
     async fn unported_tool_is_reported() {
+        // A name no 6.2.0 tool (or lane) can ever register; the golden is
+        // synthesized so the selftest never depends on fixtures/** or lane state.
+        const FAKE: &str = "Test-Only-Never-A-Tool";
+        assert!(hpm_tools::tool_order::rank(FAKE).is_none());
         let world = World::start().await;
-        let err = harness::replay(&world, "crud/SN-Get-Record__basic.json")
+        let file =
+            std::env::temp_dir().join(format!("hpm-selftest-unported-{}.json", std::process::id()));
+        let golden = serde_json::json!({
+            "id": "selftest/unported",
+            "steps": [{"request": {"method": "tools/call",
+                "params": {"name": FAKE, "arguments": {}}}}]
+        });
+        std::fs::write(&file, golden.to_string()).expect("write synthetic golden");
+        let err = harness::replay_with(&world, &file, harness::production)
             .await
-            .expect_err("no family registers SN-Get-Record yet");
-        assert!(err.ends_with("not ported: SN-Get-Record"), "{err}");
+            .expect_err("a never-real tool cannot be registered");
+        let _ = std::fs::remove_file(&file);
+        assert!(err.ends_with(&format!("not ported: {FAKE}")), "{err}");
     }
 
     #[tokio::test]
@@ -273,6 +286,50 @@ mod selftest {
             ),
             "{err}"
         );
+    }
+
+    #[test]
+    fn deviations_name_real_golden_steps_and_reject_the_620_result() {
+        use crate::support::deviations::{DEVIATIONS, Expected};
+        for dev in DEVIATIONS {
+            assert!(!dev.reason.trim().is_empty(), "{dev:?}");
+            let golden = harness::all_goldens()
+                .into_iter()
+                .map(|rel| {
+                    let text = std::fs::read_to_string(harness::tools_dir().join(rel)).unwrap();
+                    serde_json::from_str::<Value>(&text).unwrap()
+                })
+                .find(|g| g["id"] == dev.golden)
+                .unwrap_or_else(|| panic!("no golden {}", dev.golden));
+            let step = &golden["steps"][dev.step];
+            assert!(step.is_object(), "{dev:?}: no such step");
+            // The recorded 6.2.0 behavior must fail the 7.0 expectation.
+            let recorded = harness::outbound_of(step);
+            assert!(!dev.expected.check(step, &recorded).is_empty(), "{dev:?}");
+        }
+        let ok = json!({"response": {"error": {"code": -32602, "message": "m"}}});
+        assert!(Expected::InvalidParamsNoOutbound.check(&ok, &[]).is_empty());
+    }
+
+    #[test]
+    fn only_a_final_cookie_logout_is_ignored() {
+        let entry = |path: &str, cookie: bool| {
+            json!({"target": "servicenow", "method": "GET", "path": path,
+                "credentials": {"scheme": "basic", "sessionCookie": cookie}})
+        };
+        let read = entry("/api/now/table/sys_script_execution_history/x", false);
+        let logout = entry("/logout.do", true);
+        // Final cookie-session logout: the intentional 7.0 difference, dropped.
+        assert_eq!(
+            harness::without_final_ui_logout(vec![read.clone(), logout.clone()]),
+            vec![read.clone()]
+        );
+        // A logout before a later read stays and is compared.
+        let early = vec![logout.clone(), read.clone()];
+        assert_eq!(harness::without_final_ui_logout(early.clone()), early);
+        // Without the session cookie it is not the UI logout.
+        let plain = vec![entry("/logout.do", false)];
+        assert_eq!(harness::without_final_ui_logout(plain.clone()), plain);
     }
 
     #[test]
