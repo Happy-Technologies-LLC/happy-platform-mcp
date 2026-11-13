@@ -1310,4 +1310,109 @@ async fn trigger_errors_are_wrapped() {
     );
 }
 
+// ---- url-bounds (tests/url-bounds.test.js:198-219) ----------------------------
+
+#[tokio::test]
+async fn credentials_never_cross_origin_or_escape_the_path_prefix() {
+    let mut cfg = basic(Some("pw"));
+    cfg.url = format!("{URL}/tenant{}", "/".repeat(3000));
+    let h = harness(
+        cfg,
+        FakeTransport::new(ok_result(json!([]))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    h.client
+        .get_records("incident", &RecordQuery::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let sent = h.transport.requests();
+    assert_eq!(sent.len(), 1);
+    assert!(!auth_of(&sent[0]).is_empty());
+    assert_eq!(sent[0].url, format!("{URL}/tenant/api/now/table/incident?"));
+
+    let slash_run = "/".repeat(100_000);
+    for path in [
+        "https://evil.example.com/api/now/table/incident".to_owned(),
+        "//evil.example.com/x".to_owned(),
+        format!("{URL}/other/api"),
+        format!("{slash_run}evil.example.com/api"),
+        "/../other/api".to_owned(),
+    ] {
+        let start = std::time::Instant::now();
+        let err = h.client.rest(Method::Get, &path, None).await.err();
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "{path:.40}"
+        );
+        assert_eq!(
+            err.and_then(|e| e.code).as_deref(),
+            Some(super::error::STALE_INSTANCE_CODE),
+            "{path:.40}"
+        );
+        assert_eq!(h.transport.requests().len(), 1, "{path:.40}");
+    }
+    // Authority-looking relative paths are joined under the base path.
+    for (path, expected) in [
+        ("@evil.example/x", "/tenant/@evil.example/x"),
+        (".evil.example/x", "/tenant/.evil.example/x"),
+        (":8443/x", "/tenant/:8443/x"),
+        ("/x#frag", "/tenant/x"),
+    ] {
+        h.client
+            .rest(Method::Get, path, None)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let last = h.transport.requests().pop().map(|r| r.url);
+        assert_eq!(last, Some(format!("{URL}{expected}")));
+    }
+}
+
+#[tokio::test]
+async fn table_and_sys_id_segments_cannot_retarget() {
+    let mut cfg = basic(Some("pw"));
+    cfg.url = format!("{URL}/tenant");
+    let h = harness(
+        cfg,
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let params = RecordParams::default();
+    for (table, id, expected) in [
+        (
+            "incident",
+            "../../x",
+            "/tenant/api/now/table/incident/%2E%2E%2F%2E%2E%2Fx",
+        ),
+        (
+            "incident",
+            "a#frag",
+            "/tenant/api/now/table/incident/a%23frag",
+        ),
+        (
+            "incident",
+            "a?sysparm_limit=1",
+            "/tenant/api/now/table/incident/a%3Fsysparm_limit%3D1",
+        ),
+        (
+            "@evil.example",
+            "a",
+            "/tenant/api/now/table/%40evil%2Eexample/a",
+        ),
+    ] {
+        h.client
+            .get_record(table, id, &params)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let last = h.transport.requests().pop().map(|r| r.url);
+        assert_eq!(last, Some(format!("{URL}{expected}")));
+    }
+    for id in ["..", "."] {
+        assert!(h.client.get_record("incident", id, &params).await.is_err());
+    }
+    assert!(h.client.delete_record("..", "a").await.is_err());
+    assert_eq!(h.transport.requests().len(), 4);
+}
+
 mod atf;

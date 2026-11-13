@@ -7,7 +7,7 @@
 
 use std::sync::LazyLock;
 
-use fancy_regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde_json::{Map, Value, json};
 
 use super::ServiceNowClient;
@@ -65,7 +65,49 @@ static NO_LOGS_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| static_regex(r"(?i)^\s*No logs found for test result\b"));
 
 fn matches(re: &Regex, text: &str) -> bool {
-    re.is_match(text).unwrap_or(false)
+    re.is_match(text)
+}
+
+/// Compile budget for validating a user log pattern (it is never matched
+/// locally, only forwarded as `sysparm_regex`).
+const LOG_PATTERN_SIZE_LIMIT: usize = 1 << 20;
+
+/// Constructs the linear `regex` engine cannot bound (or ECMAScript lacks),
+/// rejected before anything is compiled: backreferences, named
+/// back/subroutine references, recursion and lookaround.
+fn unsupported_construct(pattern: &str) -> Option<&'static str> {
+    let mut chars = pattern.chars();
+    let mut prev_open = String::new();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('1'..='9') => return Some("backreferences are not supported"),
+                Some('g' | 'k') => {
+                    return Some("named backreferences and subroutine calls are not supported");
+                }
+                _ => {}
+            }
+            prev_open.clear();
+            continue;
+        }
+        if c == '(' {
+            prev_open = String::from("(");
+            continue;
+        }
+        if !prev_open.is_empty() {
+            prev_open.push(c);
+            match prev_open.as_str() {
+                "(?" | "(?P" | "(?<" => continue,
+                "(?=" | "(?!" | "(?<=" | "(?<!" => {
+                    return Some("lookaround assertions are not supported");
+                }
+                "(?P>" | "(?R" | "(?&" => return Some("recursion is not supported"),
+                _ => {}
+            }
+            prev_open.clear();
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -566,15 +608,26 @@ pub fn validate_log_pattern(pattern: Option<&Value>) -> Result<Option<String>, C
     if pattern.chars().any(|c| c <= '\u{1f}' || c == '\u{7f}') {
         return Err(input_error("pattern must not contain control characters"));
     }
-    if let Err(e) = Regex::new(&format!("(?i){pattern}")) {
-        return Err(input_error(format!(
-            "pattern is not a valid regular expression: {e}"
-        )));
-    }
     if has_nested_quantifier(pattern) {
         return Err(input_error(
             "pattern contains a nested quantifier such as (a+)+, which can backtrack catastrophically; simplify the expression",
         ));
+    }
+    if let Some(reason) = unsupported_construct(pattern) {
+        return Err(input_error(format!(
+            "pattern is not a valid regular expression: {reason}"
+        )));
+    }
+    if let Err(e) = RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .size_limit(LOG_PATTERN_SIZE_LIMIT)
+        .dfa_size_limit(LOG_PATTERN_SIZE_LIMIT)
+        .nest_limit(64)
+        .build()
+    {
+        return Err(input_error(format!(
+            "pattern is not a valid regular expression: {e}"
+        )));
     }
     Ok(Some(pattern.clone()))
 }

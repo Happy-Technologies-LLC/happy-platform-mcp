@@ -233,6 +233,92 @@ pub fn normalize_client_instance_url(instance_url: &str) -> Result<String, Clien
     Ok(trim_trailing_slashes(instance_url).to_owned())
 }
 
+/// `normalizePathname`: trailing slashes removed, `/` for the root.
+fn normalize_pathname(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() { "/" } else { trimmed }
+}
+
+/// `requestBelongsToInstance`: resolves `request` (absolute, or a path
+/// relative to the instance base) and returns the URL to send only when it
+/// keeps the instance origin and stays under the base path. The fragment is
+/// dropped, as axios does.
+pub fn resolve_instance_request(instance_url: &str, request: &str) -> Option<String> {
+    if request.is_empty() {
+        return None;
+    }
+    let base = Url::parse(instance_url).ok()?;
+    let base_path = normalize_pathname(base.path()).to_owned();
+    let absolute = request.starts_with("//") || {
+        let mut chars = request.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && request.split_once(':').is_some_and(|(scheme, _)| {
+                scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            })
+    };
+    let mut resolved = if absolute {
+        let resolved = base.join(request).ok()?;
+        if resolved.origin() != base.origin() {
+            return None;
+        }
+        resolved
+    } else {
+        let path_end = request.find(['?', '#']).unwrap_or(request.len());
+        let (raw_path, suffix) = request.split_at(path_end);
+        let relative = raw_path.trim_start_matches('/');
+        let joined = if base_path == "/" {
+            format!("/{relative}")
+        } else {
+            format!("{base_path}/{relative}")
+        };
+        let origin = base.origin().ascii_serialization();
+        Url::parse(&format!("{origin}{joined}{suffix}")).ok()?
+    };
+    let path = normalize_pathname(resolved.path());
+    let inside = base_path == "/"
+        || path == base_path
+        || path
+            .strip_prefix(base_path.as_str())
+            .is_some_and(|rest| rest.starts_with('/'));
+    if !inside {
+        return None;
+    }
+    resolved.set_fragment(None);
+    Some(resolved.into())
+}
+
+/// One Table API path segment: `table` / `sys_id` values are percent-encoded
+/// (everything but `A-Za-z0-9_-`), and dot segments are rejected, so they
+/// cannot add query parameters, a fragment, an authority or `..` traversal.
+fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
+    if value.is_empty() || value == "." || value == ".." {
+        return Err(ClientError::plain(format!(
+            "{field} is not a valid path segment"
+        )));
+    }
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Ok(out)
+}
+
+/// `/api/now/table/{table}[/{sys_id}]` with both segments encoded.
+fn table_path(table: &str, sys_id: Option<&str>) -> Result<String, ClientError> {
+    let mut path = format!("/api/now/table/{}", path_segment(table, "table")?);
+    if let Some(id) = sys_id {
+        path.push('/');
+        path.push_str(&path_segment(id, "sys_id")?);
+    }
+    Ok(path)
+}
+
 /// `oauthRefreshTokenAccount`: `identity-v1-<sha256 hex>` of the identity tuple.
 pub fn oauth_refresh_token_account(
     url: &str,
@@ -1035,11 +1121,13 @@ impl ServiceNowClient {
         body: Option<&Value>,
     ) -> Result<(u16, Value), ClientError> {
         let st = self.state();
+        // `requestBelongsToInstance`: checked before any credential is built.
+        let url = resolve_instance_request(&st.url, path).ok_or_else(ClientError::stale)?;
         let header = self.auth_header_for(&st).await?;
         self.assert_current(&st)?;
         st.note_request_value(&header);
         let build = |auth: &str| {
-            let mut req = HttpRequest::new(method, format!("{}{path}", st.url));
+            let mut req = HttpRequest::new(method, url.clone());
             req.set_header("Accept", "application/json");
             req.set_header("Content-Type", "application/json");
             req.set_header("User-Agent", REST_USER_AGENT);
@@ -1111,7 +1199,7 @@ impl ServiceNowClient {
                 pairs.push((name, v));
             }
         }
-        let path = format!("/api/now/table/{table}?{}", form_encode(&pairs));
+        let path = format!("{}?{}", table_path(table, None)?, form_encode(&pairs));
         Ok(Self::result_of(self.rest(Method::Get, &path, None).await?))
     }
 
@@ -1136,17 +1224,18 @@ impl ServiceNowClient {
             }
         }
         let qs = form_encode(&pairs);
+        let base = table_path(table, Some(sys_id))?;
         let path = if qs.is_empty() {
-            format!("/api/now/table/{table}/{sys_id}")
+            base
         } else {
-            format!("/api/now/table/{table}/{sys_id}?{qs}")
+            format!("{base}?{qs}")
         };
         Ok(Self::result_of(self.rest(Method::Get, &path, None).await?))
     }
 
     pub async fn create_record(&self, table: &str, data: &Value) -> Result<Value, ClientError> {
         Ok(Self::result_of(
-            self.rest(Method::Post, &format!("/api/now/table/{table}"), Some(data))
+            self.rest(Method::Post, &table_path(table, None)?, Some(data))
                 .await?,
         ))
     }
@@ -1158,22 +1247,14 @@ impl ServiceNowClient {
         data: &Value,
     ) -> Result<Value, ClientError> {
         Ok(Self::result_of(
-            self.rest(
-                Method::Put,
-                &format!("/api/now/table/{table}/{sys_id}"),
-                Some(data),
-            )
-            .await?,
+            self.rest(Method::Put, &table_path(table, Some(sys_id))?, Some(data))
+                .await?,
         ))
     }
 
     pub async fn delete_record(&self, table: &str, sys_id: &str) -> Result<Value, ClientError> {
-        self.rest(
-            Method::Delete,
-            &format!("/api/now/table/{table}/{sys_id}"),
-            None,
-        )
-        .await?;
+        self.rest(Method::Delete, &table_path(table, Some(sys_id))?, None)
+            .await?;
         Ok(serde_json::json!({"success": true}))
     }
 

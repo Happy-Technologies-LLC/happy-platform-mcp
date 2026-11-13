@@ -649,3 +649,40 @@ async fn logs_reject_bad_input_before_any_request() {
         assert!(h.transport.requests().is_empty());
     }
 }
+
+#[test]
+fn log_pattern_rejects_unbounded_constructs_promptly() {
+    use crate::client::cicd_atf::validate_log_pattern;
+    for pattern in [
+        r"(a|b\g<1>\g<1>\g<1>)",
+        r"(?P<x>a|b(?P>x)(?P>x))",
+        r"(a|(?R))",
+        r"(a)\1",
+        r"(?<n>a)\k<n>",
+        r"a(?=b)",
+        r"a(?!b)",
+        r"(?<=a)b",
+        r"(?<!a)b",
+    ] {
+        let start = std::time::Instant::now();
+        let e = validate_log_pattern(Some(&json!(pattern))).err();
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(100),
+            "{pattern}"
+        );
+        let msg = e.map(|e| e.message).unwrap_or_default();
+        assert!(
+            msg.starts_with("pattern is not a valid regular expression"),
+            "{pattern}: {msg}"
+        );
+    }
+    for pattern in [r"(?<name>err)or", r"\\1", r"fail(ed|ure)"] {
+        assert_eq!(
+            validate_log_pattern(Some(&json!(pattern)))
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some(pattern)
+        );
+    }
+}
