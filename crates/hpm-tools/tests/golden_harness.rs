@@ -250,11 +250,24 @@ mod selftest {
 
     #[tokio::test]
     async fn unported_tool_is_reported() {
+        // A name no 6.2.0 tool (or lane) can ever register; the golden is
+        // synthesized so the selftest never depends on fixtures/** or lane state.
+        const FAKE: &str = "Test-Only-Never-A-Tool";
+        assert!(hpm_tools::tool_order::rank(FAKE).is_none());
         let world = World::start().await;
-        let err = harness::replay(&world, "crud/SN-Get-Record__basic.json")
+        let file =
+            std::env::temp_dir().join(format!("hpm-selftest-unported-{}.json", std::process::id()));
+        let golden = serde_json::json!({
+            "id": "selftest/unported",
+            "steps": [{"request": {"method": "tools/call",
+                "params": {"name": FAKE, "arguments": {}}}}]
+        });
+        std::fs::write(&file, golden.to_string()).expect("write synthetic golden");
+        let err = harness::replay_with(&world, &file, harness::production)
             .await
-            .expect_err("no family registers SN-Get-Record yet");
-        assert!(err.ends_with("not ported: SN-Get-Record"), "{err}");
+            .expect_err("a never-real tool cannot be registered");
+        let _ = std::fs::remove_file(&file);
+        assert!(err.ends_with(&format!("not ported: {FAKE}")), "{err}");
     }
 
     #[tokio::test]
@@ -273,6 +286,27 @@ mod selftest {
             ),
             "{err}"
         );
+    }
+
+    #[test]
+    fn only_a_final_cookie_logout_is_ignored() {
+        let entry = |path: &str, cookie: bool| {
+            json!({"target": "servicenow", "method": "GET", "path": path,
+                "credentials": {"scheme": "basic", "sessionCookie": cookie}})
+        };
+        let read = entry("/api/now/table/sys_script_execution_history/x", false);
+        let logout = entry("/logout.do", true);
+        // Final cookie-session logout: the intentional 7.0 difference, dropped.
+        assert_eq!(
+            harness::without_final_ui_logout(vec![read.clone(), logout.clone()]),
+            vec![read.clone()]
+        );
+        // A logout before a later read stays and is compared.
+        let early = vec![logout.clone(), read.clone()];
+        assert_eq!(harness::without_final_ui_logout(early.clone()), early);
+        // Without the session cookie it is not the UI logout.
+        let plain = vec![entry("/logout.do", false)];
+        assert_eq!(harness::without_final_ui_logout(plain.clone()), plain);
     }
 
     #[test]

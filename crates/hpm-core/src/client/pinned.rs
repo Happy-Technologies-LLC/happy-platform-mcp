@@ -52,6 +52,15 @@ impl PinnedClient {
         self.client.assert_current(&self.state)
     }
 
+    /// This handle with progress routed to one call's sink (6.2.0 per-request
+    /// progress). The provider attaches `ctx.progress()` in `client(ctx)`.
+    pub fn with_progress(self, sink: Arc<dyn hpm_types::context::ProgressSink>) -> Self {
+        Self {
+            client: self.client.with_progress(sink),
+            state: self.state,
+        }
+    }
+
     /// The [`ServiceNowClient`] pinned to this generation, for multi-step flows
     /// (`execute_script_via_processor`/`_via_trigger`, pickers, ATF): every
     /// method runs on the pinned instance only and fails stale once it moved.

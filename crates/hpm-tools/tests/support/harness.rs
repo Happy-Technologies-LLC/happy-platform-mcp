@@ -521,6 +521,24 @@ fn comparable_outbound(list: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// Intentional 7.0 difference (RFC §4 per-operation UI logout): Rust ends every
+/// cookie UI session with `GET /logout.do` as the operation's last request; 6.2.0
+/// never logged out, so the goldens do not record it. Only that exact request,
+/// and only as the final outbound entry of a step, is left out of the comparison;
+/// a logout anywhere else (e.g. before a later read) still shows as a mismatch.
+pub fn without_final_ui_logout(mut got: Vec<Value>) -> Vec<Value> {
+    let is_ui_logout = got.last().is_some_and(|e| {
+        e["target"] == "servicenow"
+            && e["method"] == "GET"
+            && e["path"] == "/logout.do"
+            && e["credentials"]["sessionCookie"] == true
+    });
+    if is_ui_logout {
+        got.pop();
+    }
+    got
+}
+
 fn diff_outbound(step: usize, got: &[Value], want: &[Value], problems: &mut Vec<String>) {
     if got == want {
         return;
@@ -671,7 +689,7 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
         }
         diff_outbound(
             i,
-            &comparable_outbound(&got["outbound"]),
+            &without_final_ui_logout(comparable_outbound(&got["outbound"])),
             &comparable_outbound(&want["outbound"]),
             &mut problems,
         );
