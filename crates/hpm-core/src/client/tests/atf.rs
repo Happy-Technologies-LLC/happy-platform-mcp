@@ -676,6 +676,26 @@ async fn logs_reject_bad_input_before_any_request() {
 }
 
 #[test]
+fn invalid_log_pattern_reads_like_v8() {
+    use crate::client::cicd_atf::validate_log_pattern;
+    for (pattern, reason) in [
+        ("(", "Unterminated group"),
+        ("[a", "Unterminated character class"),
+    ] {
+        let msg = validate_log_pattern(Some(&json!(pattern)))
+            .err()
+            .map(|e| e.message)
+            .unwrap_or_default();
+        assert_eq!(
+            msg,
+            format!(
+                "pattern is not a valid regular expression: Invalid regular expression: /{pattern}/i: {reason}"
+            )
+        );
+    }
+}
+
+#[test]
 fn log_pattern_rejects_unbounded_constructs_promptly() {
     use crate::client::cicd_atf::validate_log_pattern;
     for pattern in [

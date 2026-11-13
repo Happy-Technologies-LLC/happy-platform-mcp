@@ -629,10 +629,31 @@ pub fn validate_log_pattern(pattern: Option<&Value>) -> Result<Option<String>, C
         .build()
     {
         return Err(input_error(format!(
-            "pattern is not a valid regular expression: {e}"
+            "pattern is not a valid regular expression: Invalid regular expression: /{pattern}/i: {}",
+            js_regex_reason(&e)
         )));
     }
     Ok(Some(pattern.clone()))
+}
+
+/// The V8 `SyntaxError` reason for a pattern the `regex` crate rejects, so the
+/// text matches 6.2.0 (`new RegExp(pattern, 'i')`). Unmapped errors keep the
+/// crate's own description.
+fn js_regex_reason(e: &regex::Error) -> String {
+    let text = e.to_string();
+    const MAP: [(&str, &str); 5] = [
+        ("unclosed group", "Unterminated group"),
+        ("unopened group", "Unmatched ')'"),
+        ("unclosed character class", "Unterminated character class"),
+        (
+            "repetition operator missing expression",
+            "Nothing to repeat",
+        ),
+        ("incomplete escape sequence", "\\ at end of pattern"),
+    ];
+    MAP.iter()
+        .find(|(rust, _)| text.contains(rust))
+        .map_or(text.clone(), |(_, js)| (*js).to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -938,14 +959,16 @@ async fn poll_progress(
             .get("status_message")
             .filter(|m| crate::client::pickers::truthy(m))
             .map_or(String::new(), |m| format!(" {}", js_string(Some(m))));
-        client.notify_progress(
-            &format!(
-                "sn_cicd {progress_id}: {}{percent}{message}",
-                snapshot_state(&snapshot)
-            ),
-            Some(attempt),
-            None,
-        );
+        client
+            .notify_progress(
+                &format!(
+                    "sn_cicd {progress_id}: {}{percent}{message}",
+                    snapshot_state(&snapshot)
+                ),
+                Some(attempt),
+                None,
+            )
+            .await;
         if snapshot.get("finished") == Some(&Value::Bool(true)) {
             return Ok((snapshot, false));
         }

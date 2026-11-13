@@ -47,8 +47,12 @@ use oauth_policy::{
 pub use pinned::PinnedClient;
 pub use scripts::{ProcessorOptions, TriggerOptions};
 
-/// Progress callback: `(message, current, total)`.
-pub type ProgressCallback = Arc<dyn Fn(&str, Option<u64>, Option<u64>) + Send + Sync>;
+/// One call's progress route (6.2.0 per-request `progressContext`): the call's
+/// sink plus its monotonically increasing counter. Never shared across calls.
+struct CallProgress {
+    sink: Arc<dyn hpm_types::context::ProgressSink>,
+    last: Mutex<f64>,
+}
 
 pub const REST_USER_AGENT: &str = "axios/1.20.0";
 pub const UI_USER_AGENT: &str = "ServiceNow-MCP-Client/2.0";
@@ -399,7 +403,9 @@ pub fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
     }
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+        // encodeURIComponent's unreserved set (6.2.0 parity). `/ ? # %` and space
+        // stay encoded; whole dot segments were rejected above.
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
             out.push(char::from(b));
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -671,7 +677,6 @@ fn record_path(table: &str, sys_id: &str, params: &RecordParams) -> Result<Strin
 pub(crate) struct Inner {
     deps: ClientDeps,
     current: RwLock<Arc<State>>,
-    progress: Mutex<Option<ProgressCallback>>,
 }
 
 /// Cheap to clone; clones share one instance state. A pinned clone
@@ -681,6 +686,8 @@ pub(crate) struct Inner {
 pub struct ServiceNowClient {
     inner: Arc<Inner>,
     pin: Option<Arc<State>>,
+    /// Set only on a per-call clone ([`ServiceNowClient::with_progress`]).
+    progress: Option<Arc<CallProgress>>,
 }
 
 impl ServiceNowClient {
@@ -690,9 +697,9 @@ impl ServiceNowClient {
             inner: Arc::new(Inner {
                 deps,
                 current: RwLock::new(Arc::new(state)),
-                progress: Mutex::new(None),
             }),
             pin: None,
+            progress: None,
         })
     }
 
@@ -775,6 +782,19 @@ impl ServiceNowClient {
         Self {
             inner: self.inner.clone(),
             pin: Some(st),
+            progress: self.progress.clone(),
+        }
+    }
+
+    /// A clone that reports progress to one call's sink. Other clones (other
+    /// calls) are unaffected.
+    pub fn with_progress(&self, sink: Arc<dyn hpm_types::context::ProgressSink>) -> Self {
+        Self {
+            progress: Some(Arc::new(CallProgress {
+                sink,
+                last: Mutex::new(0.0),
+            })),
+            ..self.clone()
         }
     }
 
@@ -813,24 +833,24 @@ impl ServiceNowClient {
         &self.inner.deps
     }
 
-    pub fn set_progress_callback(&self, callback: Option<ProgressCallback>) {
-        *self
-            .inner
-            .progress
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = callback;
-    }
-
-    pub fn notify_progress(&self, message: &str, current: Option<u64>, total: Option<u64>) {
-        let cb = self
-            .inner
-            .progress
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if let Some(cb) = cb {
-            cb(message, current, total);
-        }
+    /// 6.2.0 `notifyProgress`: routed to this call's sink only (none: dropped).
+    /// `progress` is `current` when finite, else last + 1, and never decreases.
+    pub async fn notify_progress(&self, message: &str, current: Option<u64>, total: Option<u64>) {
+        let Some(p) = &self.progress else {
+            return;
+        };
+        let progress = {
+            let mut last = p.last.lock().unwrap_or_else(|e| e.into_inner());
+            let mut next = current.map_or(*last + 1.0, |c| c as f64);
+            if next <= *last {
+                next = *last + 1.0;
+            }
+            *last = next;
+            next
+        };
+        p.sink
+            .emit(progress, total.map(|t| t as f64), Some(message.to_owned()))
+            .await;
     }
 
     /// `getCurrentInstance`.
