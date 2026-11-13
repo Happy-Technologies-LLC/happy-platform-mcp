@@ -570,3 +570,57 @@ fn dotenv_warns_for_instance_url_and_malformed_lines_without_quoting_them() {
     let parsed = DotEnv::parse("SERVICENOW_INSTANCE_URL=https://x.invalid\n", |_| true);
     assert_eq!(parsed.warnings, Vec::<String>::new());
 }
+
+#[test]
+fn dotenv_strips_a_utf8_bom() {
+    let parsed = DotEnv::parse("\u{feff}HAPPY_MCP_API_TOKEN=tok\r\n", |_| false);
+    assert_eq!(parsed.values["HAPPY_MCP_API_TOKEN"], "tok");
+    assert_eq!(parsed.warnings, Vec::<String>::new());
+}
+
+#[test]
+fn dotenv_read_takes_regular_files_up_to_64_kib() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".env");
+    assert_eq!(read_dotenv(&path), Ok(None));
+    std::fs::write(&path, "A=1\n").unwrap();
+    assert_eq!(read_dotenv(&path), Ok(Some("A=1\n".to_owned())));
+    let exact = "#".repeat(DOTENV_MAX_BYTES as usize);
+    std::fs::write(&path, &exact).unwrap();
+    assert_eq!(read_dotenv(&path), Ok(Some(exact)));
+    std::fs::write(&path, "#".repeat(DOTENV_MAX_BYTES as usize + 1)).unwrap();
+    assert_eq!(
+        read_dotenv(&path),
+        Err(".env not loaded: larger than 64 KiB".to_owned())
+    );
+    let sub = dir.path().join("sub");
+    std::fs::create_dir_all(sub.join(".env")).unwrap();
+    assert_eq!(
+        read_dotenv(&sub.join(".env")),
+        Err(".env not loaded: not a regular file".to_owned())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn dotenv_read_refuses_devices_and_never_blocks_on_a_fifo() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join(".env");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = fifo.clone();
+    std::thread::spawn(move || tx.send(read_dotenv(&path)));
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("reading a FIFO .env must not block");
+    assert_eq!(
+        result,
+        Err(".env not loaded: not a regular file".to_owned())
+    );
+    let link = dir.path().join("zero");
+    std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
+    assert_eq!(
+        read_dotenv(&link),
+        Err(".env not loaded: not a regular file".to_owned())
+    );
+}

@@ -11,47 +11,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use hpm_core::client::PinnedClient;
-use hpm_core::config::{CodedError, ConfigManager, Env, InstanceSummary, Object};
+use hpm_core::config::{ConfigManager, Env};
 use hpm_core::credential::InstanceCredentialStore;
-use hpm_core::registry::InstanceRegistry;
-use hpm_types::registry::RegistryStore;
 use hpm_types::servicenow::ServiceNowAccess;
 
 use crate::registration::{RegistrationError, ToolRegistry};
-
-/// What the `instances` family may do with the registry (CO-6): select and
-/// list instances through the `RegistryStore`, and register one. No other
-/// family gets registry access.
-pub trait InstanceRegistryAccess: RegistryStore {
-    /// Sanitised entry (no inline secrets).
-    fn get_instance(&self, name: &str) -> Result<Object, CodedError>;
-    fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError>;
-    fn registry_version(&self) -> u64;
-    /// The file registry `SN-Register-Instance` validates, writes and
-    /// compensates through.
-    fn registration_registry(&self) -> Arc<InstanceRegistry>;
-    /// Re-reads the registry after a registration (bumps the version when
-    /// the document changed).
-    fn reload(&self) -> Result<(), CodedError>;
-}
-
-impl InstanceRegistryAccess for ConfigManager {
-    fn get_instance(&self, name: &str) -> Result<Object, CodedError> {
-        ConfigManager::get_instance(self, name)
-    }
-    fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError> {
-        ConfigManager::list_instances(self)
-    }
-    fn registry_version(&self) -> u64 {
-        ConfigManager::registry_version(self)
-    }
-    fn registration_registry(&self) -> Arc<InstanceRegistry> {
-        self.registry().clone()
-    }
-    fn reload(&self) -> Result<(), CodedError> {
-        ConfigManager::reload(self).map(drop)
-    }
-}
 
 pub mod atf;
 pub mod common;
@@ -68,8 +32,9 @@ pub struct FamilyDeps {
     /// The client pinned to the call's credential binding (G2). Handlers never
     /// pick an instance themselves.
     pub servicenow: Arc<dyn ServiceNowAccess<Client = PinnedClient>>,
-    /// Registry access for the instance tools only (lane D, CO-6).
-    pub instances: Arc<dyn InstanceRegistryAccess>,
+    /// Registry access for the instance tools only (CO-6): opaque outside
+    /// [`instances`], so no other family can read or write the registry.
+    instances: instances::InstancesAccess,
     /// The environment (6.2.0 `process.env`), read by docs settings and the
     /// `servicenow://instance` resource.
     pub env: Env,
@@ -104,7 +69,7 @@ impl FamilyDeps {
             servicenow,
             env: config.env().clone(),
             registry_read_path: config.registry().read_path(),
-            instances: config,
+            instances: instances::InstancesAccess::new(config),
             credentials,
             docs_base_url: None,
             working_dir: None,

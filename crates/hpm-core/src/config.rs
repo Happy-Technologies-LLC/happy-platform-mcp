@@ -146,6 +146,8 @@ impl DotEnv {
     /// quote a line, so a malformed secret is not echoed.
     pub fn parse(text: &str, is_set: impl Fn(&str) -> bool) -> Self {
         let mut out = Self::default();
+        // A-4: a UTF-8 BOM is not part of the first key (dotenv's `\s` drops it).
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         for (index, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -211,16 +213,53 @@ fn dotenv_value(value: &str) -> Option<String> {
 /// returns the warnings to print on stderr. A missing file is not an error. Call
 /// once at process start, before any `Env::process` lookup.
 pub fn install_dotenv(dir: &Path) -> Vec<String> {
-    let text = match std::fs::read_to_string(dir.join(".env")) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(e) => return vec![format!(".env not loaded: {e}")],
+    let text = match read_dotenv(&dir.join(".env")) {
+        Ok(Some(text)) => text,
+        Ok(None) => return Vec::new(),
+        Err(warning) => return vec![warning],
     };
     let DotEnv { values, warnings } = DotEnv::parse(&text, |key| std::env::var_os(key).is_some());
     if DOTENV.set(values).is_err() {
         return vec![".env already loaded".to_owned()];
     }
     warnings
+}
+
+/// Largest `.env` read (A-5); a larger file is not loaded at all.
+pub const DOTENV_MAX_BYTES: u64 = 64 * 1024;
+
+/// Reads `path` if it is a regular file (a symlink to one is followed, as
+/// 6.2.0 does) of at most [`DOTENV_MAX_BYTES`]. `Ok(None)`: no file. On Unix
+/// the open is non-blocking, so a FIFO never stalls start-up; it is then
+/// refused as not a regular file. Errors are the warning to print.
+pub fn read_dotenv(path: &Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits());
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!(".env not loaded: {e}")),
+    };
+    let regular = file.metadata().map(|m| m.is_file()).unwrap_or(false);
+    if !regular {
+        return Err(".env not loaded: not a regular file".to_owned());
+    }
+    let mut bytes = Vec::new();
+    if let Err(e) = file.take(DOTENV_MAX_BYTES + 1).read_to_end(&mut bytes) {
+        return Err(format!(".env not loaded: {e}"));
+    }
+    if bytes.len() as u64 > DOTENV_MAX_BYTES {
+        return Err(".env not loaded: larger than 64 KiB".to_owned());
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| ".env not loaded: not UTF-8".to_owned())
 }
 
 /// `os.homedir()`: `$HOME` (`%USERPROFILE%` on Windows), else the passwd entry.

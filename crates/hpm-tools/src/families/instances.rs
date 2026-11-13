@@ -9,21 +9,21 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use hpm_core::config::{CodedError, resolve_path};
+use hpm_core::config::{CodedError, ConfigManager, InstanceSummary, resolve_path};
 use hpm_core::credential::{InstanceCredentialStore, credential_ref_for};
 use hpm_core::registry::{RegisterOptions, canonicalize_instance_url};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
 use hpm_types::credential::CredentialNeed;
 use hpm_types::operation::{Action, Operation, OperationSet, Subject};
-use hpm_types::registry::{RegistryChange, RegistryError, RegistryView};
+use hpm_types::registry::{RegistryChange, RegistryError, RegistryStore, RegistryView};
 use hpm_types::tool::{
     AccessClass, HandlerCompletion, MutationOutcome, NormalizeInput, OpCompletion, OutputClass,
     ResultBody, RetryEligibility, SideEffectClass, ToolDescriptor, ToolError, ToolHandler,
 };
 use serde_json::{Map, Value, json};
 
-use crate::families::{FamilyDeps, InstanceRegistryAccess};
+use crate::families::FamilyDeps;
 use crate::registration::{RegistrationError, ToolRegistry};
 
 type Object = Map<String, Value>;
@@ -31,6 +31,95 @@ type Object = Map<String, Value>;
 const SET: &str = "SN-Set-Instance";
 const CURRENT: &str = "SN-Get-Current-Instance";
 const REGISTER: &str = "SN-Register-Instance";
+
+/// What the instance tools may do with the registry (CO-6): select and list
+/// instances through the `RegistryStore`, and register one. Every read is a
+/// non-secret summary; there is no raw entry, document or write handle.
+pub trait InstanceRegistryAccess: RegistryStore {
+    /// Non-secret summary of one instance (6.2.0 `getInstance` errors).
+    fn instance_summary(&self, name: &str) -> Result<InstanceSummary, CodedError>;
+    fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError>;
+    fn registry_version(&self) -> u64;
+    /// Registry validation of new instance metadata (no write).
+    fn validate(&self, metadata: &Value) -> Result<(), CodedError>;
+    /// Whether the registry file already names `name`.
+    fn exists(&self, name: &str) -> Result<bool, CodedError>;
+    /// Writes `metadata` (non-secret, canonical) as a new instance.
+    fn register(
+        &self,
+        metadata: &Value,
+        options: RegisterOptions<'_>,
+    ) -> Result<Object, CodedError>;
+    /// Undoes [`Self::register`] when the committed entry still matches.
+    fn compensate_registration(
+        &self,
+        name: &str,
+        expected: Option<&Value>,
+        prior_default: Option<(&str, bool)>,
+    ) -> Result<(), CodedError>;
+    /// Re-reads the registry after a registration (bumps the version when
+    /// the document changed).
+    fn reload(&self) -> Result<(), CodedError>;
+}
+
+impl InstanceRegistryAccess for ConfigManager {
+    fn instance_summary(&self, name: &str) -> Result<InstanceSummary, CodedError> {
+        let entry = self.get_instance(name)?;
+        let text = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or_default();
+        Ok(InstanceSummary {
+            name: text("name").to_owned(),
+            url: text("url").to_owned(),
+            default: entry.get("default") == Some(&Value::Bool(true)),
+            description: text("description").to_owned(),
+        })
+    }
+    fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError> {
+        ConfigManager::list_instances(self)
+    }
+    fn registry_version(&self) -> u64 {
+        ConfigManager::registry_version(self)
+    }
+    fn validate(&self, metadata: &Value) -> Result<(), CodedError> {
+        self.registry().validate(metadata)
+    }
+    fn exists(&self, name: &str) -> Result<bool, CodedError> {
+        match self.registry().get(name) {
+            Ok(_) => Ok(true),
+            Err(e) if e.code == "INSTANCE_NOT_FOUND" => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+    fn register(
+        &self,
+        metadata: &Value,
+        options: RegisterOptions<'_>,
+    ) -> Result<Object, CodedError> {
+        self.registry().register(metadata, options)
+    }
+    fn compensate_registration(
+        &self,
+        name: &str,
+        expected: Option<&Value>,
+        prior_default: Option<(&str, bool)>,
+    ) -> Result<(), CodedError> {
+        self.registry()
+            .compensate_registration(name, expected, prior_default)
+    }
+    fn reload(&self) -> Result<(), CodedError> {
+        ConfigManager::reload(self).map(drop)
+    }
+}
+
+/// [`InstanceRegistryAccess`] as [`FamilyDeps`] carries it: the field is
+/// private to this module, so other families can hold but never use it.
+#[derive(Clone)]
+pub struct InstancesAccess(Arc<dyn InstanceRegistryAccess>);
+
+impl InstancesAccess {
+    pub fn new(access: Arc<dyn InstanceRegistryAccess>) -> Self {
+        Self(access)
+    }
+}
 
 pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), RegistrationError> {
     registry.register_tool(
@@ -40,7 +129,7 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
             include_str!("instances/SN-Set-Instance.schema.json"),
             normalize_set,
             Arc::new(SetInstance {
-                config: deps.instances.clone(),
+                config: deps.instances.0.clone(),
             }),
             render,
         )
@@ -57,7 +146,7 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
             include_str!("instances/SN-Get-Current-Instance.schema.json"),
             |_, i| Ok(op(CURRENT, Action::Read, i)),
             Arc::new(CurrentInstance {
-                config: deps.instances.clone(),
+                config: deps.instances.0.clone(),
             }),
             render,
         )
@@ -74,7 +163,7 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
             include_str!("instances/SN-Register-Instance.schema.json"),
             |_, i| Ok(op(REGISTER, Action::ConfigWrite, i)),
             Arc::new(RegisterInstance {
-                config: deps.instances.clone(),
+                config: deps.instances.0.clone(),
                 credentials: deps.credentials.clone(),
                 docs_only: deps.docs_only,
             }),
@@ -195,17 +284,17 @@ impl SetInstance {
         let Some(name) = set_target(args) else {
             return HandlerCompletion::not_a_mutation(self.list(ctx));
         };
-        let instance = match self.config.get_instance(&name) {
+        let instance = match self.config.instance_summary(&name) {
             Ok(i) => i,
             Err(e) => {
                 return outcome(MutationOutcome::NotSent, Err(ToolError::Message(e.message)));
             }
         };
-        let instance_name = instance
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(&name)
-            .to_owned();
+        let instance_name = if instance.name.is_empty() {
+            name.clone()
+        } else {
+            instance.name.clone()
+        };
         if ctx.cancel().is_cancelled() {
             return outcome(MutationOutcome::NotSent, Err(ToolError::Cancelled));
         }
@@ -236,16 +325,13 @@ impl SetInstance {
                 Err(ToolError::Message(e.to_string())),
             );
         }
-        let url = instance.get("url").cloned().unwrap_or(Value::Null);
-        eprintln!(
-            "🔄 Switched to instance: {instance_name} ({})",
-            url.as_str().unwrap_or_default()
-        );
+        let url = instance.url;
+        eprintln!("🔄 Switched to instance: {instance_name} ({url})");
         let mut summary = Object::new();
         summary.insert("name".into(), instance_name.clone().into());
-        summary.insert("url".into(), url);
-        if let Some(d) = instance.get("description") {
-            summary.insert("description".into(), d.clone());
+        summary.insert("url".into(), url.into());
+        if !instance.description.is_empty() {
+            summary.insert("description".into(), instance.description.into());
         }
         committed(text(&json!({
             "success": true,
@@ -686,6 +772,11 @@ fn log_diagnostic(operation: &str, code: &str, name: Option<&Value>) {
     }) {
         diagnostic.insert("name".into(), n.into());
     }
+    #[cfg(test)]
+    tests::DIAGNOSTICS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Value::Object(diagnostic.clone()));
     eprintln!("{}", Value::Object(diagnostic));
 }
 
@@ -797,7 +888,7 @@ impl RegisterInstance {
         let Ok(canonical) = canonical_metadata(&input) else {
             return not_sent(invalid("Instance metadata failed canonical validation"));
         };
-        let registry = self.config.registration_registry();
+        let registry = self.config.clone();
         if let Err(e) = registry.validate(&canonical.metadata) {
             return not_sent(registry_error(&e));
         }
@@ -805,8 +896,8 @@ impl RegisterInstance {
         // no credential requirements (authorization_code), where the registry
         // validation above rejects a missing name.
         let name = display_name(input.get("name"));
-        match registry.get(&name) {
-            Ok(_) => {
+        match registry.exists(&name) {
+            Ok(true) => {
                 return not_sent(error_response(
                     "INSTANCE_ALREADY_EXISTS",
                     "An instance with this name already exists; use the local CLI update command.",
@@ -816,7 +907,7 @@ impl RegisterInstance {
                     )]),
                 ));
             }
-            Err(e) if e.code == "INSTANCE_NOT_FOUND" => {}
+            Ok(false) => {}
             Err(e) => return not_sent(registry_error(&e)),
         }
         let origin = match canonical
@@ -842,7 +933,6 @@ impl RegisterInstance {
             config: self.config.clone(),
             credentials: self.credentials.clone(),
             docs_only: self.docs_only,
-            registry,
             canonical,
             name,
             origin,
@@ -868,7 +958,6 @@ struct Commit {
     config: Arc<dyn InstanceRegistryAccess>,
     credentials: InstanceCredentialStore,
     docs_only: bool,
-    registry: Arc<hpm_core::registry::InstanceRegistry>,
     canonical: Canonical,
     name: String,
     origin: String,
@@ -881,7 +970,6 @@ impl Commit {
             config,
             credentials,
             docs_only,
-            registry,
             canonical,
             name,
             origin,
@@ -890,7 +978,7 @@ impl Commit {
         let not_sent = |e| outcome(MutationOutcome::NotSent, Err(e));
         let make_default = input.get("makeDefault") == Some(&Value::Bool(true));
         let registered = {
-            let registry = registry.clone();
+            let registry = config.clone();
             let store = credentials.clone();
             let metadata = canonical.metadata.clone();
             let requirements = canonical.requirements.clone();
@@ -956,9 +1044,17 @@ impl Commit {
         if let Err((_, response)) =
             check_credentials(&credentials, &canonical.requirements, &name, &origin).await
         {
-            return match registry.compensate_registration(&name, Some(&expected), prior) {
+            return match config.compensate_registration(&name, Some(&expected), prior) {
                 Ok(()) => outcome(MutationOutcome::Failed, Err(response)),
-                Err(e) => outcome(MutationOutcome::Committed, Err(registry_error(&e))),
+                Err(e) => {
+                    // A-7: the call may already be gone (CR-7); log it.
+                    log_diagnostic(
+                        "registration_rollback",
+                        "REGISTRY_ROLLBACK_REQUIRED",
+                        input.get("name"),
+                    );
+                    outcome(MutationOutcome::Committed, Err(registry_error(&e)))
+                }
             };
         }
 
@@ -968,7 +1064,7 @@ impl Commit {
                 "REGISTRY_RELOAD_FAILED",
                 input.get("name"),
             );
-            if registry
+            if config
                 .compensate_registration(&name, Some(&expected), prior)
                 .is_err()
             {
@@ -1448,5 +1544,83 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    /// Diagnostics `log_diagnostic` emitted in this test binary.
+    pub(super) static DIAGNOSTICS: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
+
+    /// A-7: a detached tail whose post-commit credential re-check fails and
+    /// whose compensation also fails logs `REGISTRY_ROLLBACK_REQUIRED`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_compensation_in_a_dropped_registration_is_logged() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, file, cm) = registry_fixture();
+        let mem = Arc::new(MemorySecretStore::new());
+        let gate = Arc::new(GateAfterCommit {
+            inner: mem.clone(),
+            file: file.clone(),
+            gated: std::sync::atomic::AtomicBool::new(false),
+            reached: Notify::new(),
+            release: Notify::new(),
+        });
+        let h = handler(&cm, gate.clone());
+        h.credentials
+            .set_secret(REF, Secret::new("pw".into()), DEV_URL)
+            .await
+            .unwrap();
+        tokio::select! {
+            _ = h.run(&|| false, dev_args()) => panic!("call finished before the gate"),
+            () = gate.reached.notified() => {}
+        }
+        assert!(
+            mem.delete(
+                SERVICE_NAME,
+                &hpm_core::keychain::origin_binding_account(REF)
+            )
+            .await
+            .unwrap()
+        );
+        // The compensation's atomic write needs a temp file in this directory.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        gate.release.notify_one();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let logged = loop {
+            let found = DIAGNOSTICS.lock().unwrap().iter().any(|d| {
+                d["operation"] == "registration_rollback"
+                    && d["code"] == "REGISTRY_ROLLBACK_REQUIRED"
+                    && d["name"] == "dev"
+            });
+            if found || std::time::Instant::now() > deadline {
+                break found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(logged, "{:?}", DIAGNOSTICS.lock().unwrap());
+    }
+
+    /// A-2: the instance tools' registry read is a non-secret summary, even
+    /// under the env fallback (where the raw entry carries the password).
+    #[test]
+    fn instance_summary_carries_no_inline_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("missing.json");
+        let env = Env::from_pairs(&[
+            ("SERVICENOW_INSTANCE_URL", "https://env.example.com"),
+            ("SERVICENOW_USERNAME", "svc"),
+            ("SERVICENOW_PASSWORD", "pw-inline-s3cret"),
+            ("HAPPY_CONFIG_PATH", file.to_str().unwrap()),
+        ]);
+        let cm = ConfigManager::new(
+            Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+            env,
+        );
+        let raw = cm.get_instance("default").unwrap();
+        assert!(Value::Object(raw).to_string().contains("pw-inline-s3cret"));
+        let access: &dyn InstanceRegistryAccess = &cm;
+        let summary = access.instance_summary("default").unwrap();
+        assert_eq!(summary.url, "https://env.example.com");
+        assert!(!format!("{summary:?}").contains("pw-inline-s3cret"));
     }
 }

@@ -116,3 +116,25 @@ fn http_server_takes_the_token_but_not_the_bind_host_from_dotenv() {
         "{listening}"
     );
 }
+
+/// A-6: like 6.2.0, `instance …` and help never read `.env`, so they print
+/// none of its warnings.
+#[test]
+fn instance_cli_and_help_do_not_load_dotenv() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".env"),
+        "SERVICENOW_INSTANCE_URL=https://dev.example.invalid\nnot a pair\n",
+    )
+    .unwrap();
+    for exe in [
+        env!("CARGO_BIN_EXE_happy-platform-mcp"),
+        env!("CARGO_BIN_EXE_servicenow-mcp-server"),
+    ] {
+        for args in [&["--help"][..], &["instance", "--help"][..]] {
+            let output = command(exe, dir.path()).args(args).output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!stderr.contains(".env"), "{exe} {args:?}: {stderr}");
+        }
+    }
+}

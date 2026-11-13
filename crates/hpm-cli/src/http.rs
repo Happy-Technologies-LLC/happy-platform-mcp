@@ -46,6 +46,7 @@ pub fn load_dotenv() {
 /// Process entry of `happy-platform-mcp-http`. Arguments are ignored, as `node
 /// src/server.js` ignores them.
 pub fn main() -> ExitCode {
+    load_dotenv();
     let runtime = match multi_thread_runtime() {
         Ok(rt) => rt,
         Err(e) => {

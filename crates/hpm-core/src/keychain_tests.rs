@@ -28,30 +28,29 @@ fn secrets_equal_is_byte_exact() {
     assert!(!secrets_equal("pw", "pw\0"));
     assert!(!secrets_equal("pw\0", "pw"));
     assert!(!secrets_equal("", "\0"));
-    // HMAC hashes keys over 64 bytes; plain byte equality must not.
+    // The HMAC-key case (a >64-byte key equals its SHA-256 digest) needs the
+    // raw digest bytes as the other operand; they are not valid UTF-8, so it
+    // is unreachable for `&str` and is not tested here (A-8). The NUL cases
+    // above are what failed under the old key-based HMAC.
     let long = "k".repeat(100);
-    let digest = ring::digest::digest(&ring::digest::SHA256, long.as_bytes());
-    // The digest bytes as text (one char per byte; UTF-8 lossy below).
-    let digest_str: String = digest.as_ref().iter().map(|&b| char::from(b)).collect();
-    assert!(!secrets_equal(&long, &digest_str));
-    let utf8_digest = String::from_utf8_lossy(digest.as_ref()).into_owned();
-    assert!(!secrets_equal(&long, &utf8_digest));
     assert!(secrets_equal(&long, &long.clone()));
 }
 
-/// CR-13: a mismatch waits the fixed delay; a match does not.
+/// CR-13 / A-1: every guess, matching or not, waits the same fixed delay, so
+/// the time to any result does not reveal the outcome.
 #[tokio::test]
-async fn bind_mismatch_waits_the_fixed_delay() {
+async fn every_bind_guess_waits_the_fixed_delay() {
     let (mem, s, pauses) = recorded_store();
     let r = "keychain:instance/old/password";
     mem.insert(SERVICE_NAME, r, "legacy");
     s.verify_secret(r, "legacy").await.unwrap();
-    assert!(pauses.lock().unwrap().is_empty());
+    assert_eq!(*pauses.lock().unwrap(), vec![BIND_MISMATCH_DELAY]);
     let e = s.verify_secret(r, "guess").await.unwrap_err();
     assert_eq!(e.code, "CREDENTIAL_SECRET_MISMATCH");
-    assert_eq!(*pauses.lock().unwrap(), vec![BIND_MISMATCH_DELAY]);
-    s.bind_origin(r, ORIGIN, "guess").await.unwrap_err();
     assert_eq!(pauses.lock().unwrap().len(), 2);
+    s.bind_origin(r, ORIGIN, "guess").await.unwrap_err();
+    s.bind_origin(r, ORIGIN, "legacy").await.unwrap();
+    assert_eq!(pauses.lock().unwrap().len(), 4);
     assert_eq!(BIND_MISMATCH_DELAY, std::time::Duration::from_secs(1));
 }
 

@@ -588,8 +588,8 @@ fn secrets_equal(a: &str, b: &str) -> bool {
     ring::hmac::verify(&key, b.as_bytes(), tag.as_ref()).is_ok()
 }
 
-/// Fixed wait after a re-entered secret does not match (`instance credential
-/// bind`), so the bind command is not a fast local guess oracle.
+/// Fixed wait before any re-entered secret check (`instance credential bind`)
+/// returns, match or not, so the bind command is not a fast local guess oracle.
 pub const BIND_MISMATCH_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Waits for the given duration; injectable so tests never sleep for real.
@@ -661,8 +661,8 @@ impl InstanceCredentialStore {
         }
     }
 
-    /// Replaces the wait run for [`BIND_MISMATCH_DELAY`] after a secret
-    /// mismatch (tests record it instead of sleeping).
+    /// Replaces the wait run for [`BIND_MISMATCH_DELAY`] on every secret check
+    /// (tests record it instead of sleeping).
     #[must_use]
     pub fn with_mismatch_pause(mut self, pause: Pause) -> Self {
         self.mismatch_pause = pause;
@@ -742,6 +742,12 @@ impl InstanceCredentialStore {
         self.clear_origin_binding(&parsed.reference).await?;
         // CR-11: delete, then create, so an item an attacker planted under
         // this account (with an any-app ACL) is never updated in place.
+        // Residual risk (A-3, accepted for the single-user 7.0 model): the
+        // `SecretStore` has no create-only write and no item owner/ACL check,
+        // so a local attacker looping `security add-generic-password -A` can
+        // re-plant the item between this delete and the `set` below, which
+        // then updates it in place. Closing it needs a create-only operation
+        // (`SecItemAdd`, fail closed on `errSecDuplicateItem`).
         self.store
             .delete(&self.service, &parsed.reference)
             .await
@@ -816,10 +822,13 @@ impl InstanceCredentialStore {
         entered: &str,
     ) -> Result<Secret, CodedError> {
         let secret = self.get_secret(&parsed.reference).await?;
-        if secrets_equal(secret.expose(), entered) {
+        let matched = secrets_equal(secret.expose(), entered);
+        // A-1: every guess waits the same fixed delay before its result is
+        // acted on, so killing a slow process early reveals nothing.
+        (self.mismatch_pause)(BIND_MISMATCH_DELAY).await;
+        if matched {
             Ok(secret)
         } else {
-            (self.mismatch_pause)(BIND_MISMATCH_DELAY).await;
             Err(credential_secret_mismatch(&parsed.instance_name))
         }
     }
@@ -832,6 +841,7 @@ impl InstanceCredentialStore {
     ) -> Result<(), CodedError> {
         // CR-10: delete, then create (never update a planted binding item in
         // place); a failed create leaves the secret unbound (fail closed).
+        // The same delete/set race as in `restore_secret` remains (A-3).
         self.clear_origin_binding(reference).await?;
         self.store
             .set(

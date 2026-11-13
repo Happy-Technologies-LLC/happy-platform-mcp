@@ -57,7 +57,11 @@ pub fn main(args: &[String]) -> ExitCode {
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     match route(args, &mut stdout, &mut stderr) {
-        Dispatch::Serve => crate::serve_stdio(),
+        Dispatch::Serve => {
+            // A-6: like 6.2.0, only the servers read `.env`, not `instance …`/help.
+            crate::http::load_dotenv();
+            crate::serve_stdio()
+        }
         Dispatch::Exit(code) => exit(code),
         Dispatch::Instance => {
             let runtime = match tokio::runtime::Builder::new_current_thread()

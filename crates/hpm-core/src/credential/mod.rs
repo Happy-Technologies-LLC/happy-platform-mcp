@@ -228,7 +228,9 @@ impl InstanceCredentialStore {
         self.clear_origin_binding(&parsed.reference).await?;
         let binding = origin_binding_value(&parsed.reference, value.expose(), origin);
         // CR-11: delete, then create, so an item planted under this account
-        // (with an any-app ACL) is never updated in place.
+        // (with an any-app ACL) is never updated in place. A re-plant racing
+        // between the delete and the set is a residual risk (A-3; see
+        // `keychain::InstanceCredentialStore::restore_secret`).
         self.store
             .delete(&self.service, &parsed.reference)
             .await
