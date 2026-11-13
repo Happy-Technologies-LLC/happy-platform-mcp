@@ -12,6 +12,16 @@
 //! 3. drift: runs `scripts/golden/verify.mjs` (re-capture from the Node 6.2.0 baseline
 //!    against a loopback stub, byte-compare with `fixtures/golden`) from a fresh temp
 //!    cwd with ServiceNow targeting variables removed.
+//!
+//! `cargo xtask check-trusted-root [--offline]` (review H1): feature unification lets
+//! any crate in a build with hpm-cli see `hpm-types/trusted-root`, so the gate checks
+//! each crate alone.
+//! 1. `cargo check -p <crate> --lib --locked` (bins for bin-only crates) for every
+//!    workspace crate except hpm-cli, one invocation each, no extra features;
+//! 2. a grep over `Cargo.toml` and `src/` (not `tests/`; dev-dependencies are not
+//!    unified into the lib or release builds) of every crate except hpm-cli, the
+//!    defining hpm-types and xtask, rejecting the trusted-root constructors and the
+//!    feature name. Comment lines are ignored.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -20,7 +30,21 @@ use std::process::{Command, ExitCode};
 
 use sha2::{Digest, Sha256};
 
-const USAGE: &str = "usage: cargo xtask fixtures verify";
+const USAGE: &str =
+    "usage: cargo xtask fixtures verify | cargo xtask check-trusted-root [--offline]";
+
+/// The composition root: the only crate allowed to use `trusted-root`.
+const TRUSTED_ROOT_CRATE: &str = "hpm-cli";
+/// Skipped by the grep only: hpm-types defines the items, xtask names the patterns.
+const GREP_EXEMPT: &[&str] = &["hpm-cli", "hpm-types", "xtask"];
+/// Rejected in non-root `src/` and `Cargo.toml`.
+const TRUSTED_ROOT_PATTERNS: &[&str] = &[
+    "mint(",
+    "single_user_stdio(",
+    "streamable_http(",
+    "legacy_sse(",
+    "trusted-root",
+];
 
 /// Files under `fixtures/` that are not golden captures listed in MANIFEST.json.
 const FIXTURE_FILES_OUTSIDE_MANIFEST: &[&str] = &[
@@ -51,6 +75,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        ["check-trusted-root", rest @ ..] if rest.iter().all(|a| *a == "--offline") => {
+            match check_trusted_root(!rest.is_empty()) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("check-trusted-root: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -62,6 +95,121 @@ fn repo_root() -> Result<PathBuf, String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     root.canonicalize()
         .map_err(|e| format!("repo root {}: {e}", root.display()))
+}
+
+struct Member {
+    name: String,
+    dir: PathBuf,
+    has_lib: bool,
+}
+
+fn workspace_members(root: &Path, offline: bool) -> Result<Vec<Member>, String> {
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args(["metadata", "--no-deps", "--format-version", "1", "--locked"])
+        .current_dir(root);
+    if offline {
+        cmd.arg("--offline");
+    }
+    let out = cmd.output().map_err(|e| format!("cargo metadata: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let meta: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
+    let packages = meta["packages"]
+        .as_array()
+        .ok_or("cargo metadata: no packages")?;
+    let mut members = Vec::new();
+    for p in packages {
+        let name = p["name"].as_str().ok_or("package without name")?.to_owned();
+        let manifest = p["manifest_path"]
+            .as_str()
+            .ok_or("package without manifest_path")?;
+        let dir = Path::new(manifest)
+            .parent()
+            .ok_or("manifest without parent")?
+            .to_path_buf();
+        let has_lib = p["targets"].as_array().into_iter().flatten().any(|t| {
+            t["kind"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|k| k.as_str().is_some_and(|k| k == "lib" || k.ends_with("lib")))
+        });
+        members.push(Member { name, dir, has_lib });
+    }
+    Ok(members)
+}
+
+fn check_trusted_root(offline: bool) -> Result<ExitCode, String> {
+    let root = repo_root()?;
+    let members = workspace_members(&root, offline)?;
+    let mut problems = Vec::new();
+
+    for m in members.iter().filter(|m| m.name != TRUSTED_ROOT_CRATE) {
+        let mut cmd = Command::new(env!("CARGO"));
+        cmd.args(["check", "--locked", "-p", &m.name])
+            .arg(if m.has_lib { "--lib" } else { "--bins" })
+            .current_dir(&root);
+        if offline {
+            cmd.arg("--offline");
+        }
+        eprintln!("check-trusted-root: cargo check -p {} alone", m.name);
+        let status = cmd.status().map_err(|e| format!("cargo check: {e}"))?;
+        if !status.success() {
+            problems.push(format!("cargo check -p {} failed in isolation", m.name));
+        }
+    }
+
+    for m in members
+        .iter()
+        .filter(|m| !GREP_EXEMPT.contains(&m.name.as_str()))
+    {
+        grep_file(&m.dir.join("Cargo.toml"), "#", &mut problems)?;
+        let src = m.dir.join("src");
+        if src.is_dir() {
+            grep_rust_tree(&src, &mut problems)?;
+        }
+    }
+
+    if problems.is_empty() {
+        eprintln!("check-trusted-root: OK");
+        return Ok(ExitCode::SUCCESS);
+    }
+    eprintln!("check-trusted-root: {} problem(s):", problems.len());
+    for p in &problems {
+        eprintln!("  {p}");
+    }
+    Ok(ExitCode::FAILURE)
+}
+
+fn grep_rust_tree(dir: &Path, problems: &mut Vec<String>) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if path.is_dir() {
+            grep_rust_tree(&path, problems)?;
+        } else if path.extension().is_some_and(|x| x == "rs") {
+            grep_file(&path, "//", problems)?;
+        }
+    }
+    Ok(())
+}
+
+/// Flags pattern hits outside comments (`comment` starts a line comment).
+fn grep_file(path: &Path, comment: &str, problems: &mut Vec<String>) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    for (n, line) in text.lines().enumerate() {
+        let code = line.split(comment).next().unwrap_or("");
+        for pat in TRUSTED_ROOT_PATTERNS {
+            if code.contains(pat) {
+                problems.push(format!("{}:{}: uses `{pat}`", path.display(), n + 1));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fixtures_verify() -> Result<ExitCode, String> {

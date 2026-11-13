@@ -50,16 +50,19 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut registry = ToolRegistry::new();
-    if let Err(e) = register_tools(&mut registry) {
-        eprintln!("{NAME}: tool registration failed: {e}");
+    let registry = ToolRegistry::new().and_then(|mut r| register_tools(&mut r).map(|()| r));
+    let registry = match registry {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{NAME}: tool registration failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(key) = AdmissionKey::mint() else {
+        eprintln!("{NAME}: admission key already minted in this process");
         return ExitCode::FAILURE;
-    }
-    let dispatcher = Arc::new(Dispatcher::new(
-        registry,
-        single_user_services(),
-        AdmissionKey::mint(),
-    ));
+    };
+    let dispatcher = Arc::new(Dispatcher::new(registry, single_user_services(), key));
     match runtime.block_on(hpm_protocol::stdio::serve(
         TrustedRoot::single_user_stdio(),
         dispatcher,

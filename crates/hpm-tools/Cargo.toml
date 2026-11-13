@@ -16,10 +16,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 jsonschema.workspace = true # C6; root pin disables remote `$ref` fetching
 
-[dev-dependencies]
-hpm-types = { workspace = true, features = ["trusted-root"] }
-tokio.workspace = true
-tokio-util.workspace = true
-
 [lints]
 workspace = true

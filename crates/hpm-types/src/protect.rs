@@ -17,12 +17,37 @@ pub struct ProtectionRules {
 }
 
 /// Built once at admission; never reloaded between channels of one call.
+/// `on_unanalyzable` is pinned with the rules (D-06): with `Deny` (default) the
+/// dispatcher denies any call whose set holds an effective Execute op
+/// (`EXECUTE_UNDER_PROTECTION`, RFC §13 Q2). `PatternsOnly` is the explicit, scoped
+/// exception the protector selects for this call; it is audited via the pinned
+/// `rules.version`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProtectionContext {
     pub subject: Subject,
     pub ops: Arc<OperationSet>,
     pub output: OutputClass,
     pub rules: Arc<ProtectionRules>,
+    pub on_unanalyzable: OnUnanalyzable,
+}
+
+impl ProtectionContext {
+    pub fn new(
+        subject: Subject,
+        ops: Arc<OperationSet>,
+        output: OutputClass,
+        rules: Arc<ProtectionRules>,
+        on_unanalyzable: OnUnanalyzable,
+    ) -> Self {
+        Self {
+            subject,
+            ops,
+            output,
+            rules,
+            on_unanalyzable,
+        }
+    }
 }
 
 /// D-06 profile setting for tools whose accessed tables cannot be resolved statically

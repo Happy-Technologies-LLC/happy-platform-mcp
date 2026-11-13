@@ -379,7 +379,9 @@ dependencies = [
  "hpm-protocol",
  "hpm-tools",
  "hpm-types",
+ "serde_json",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -413,8 +415,6 @@ dependencies = [
  "jsonschema",
  "serde_json",
  "thiserror",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]

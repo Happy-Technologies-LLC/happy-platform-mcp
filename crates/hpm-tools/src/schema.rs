@@ -149,11 +149,8 @@ mod tests {
 
     use hpm_types::BoxFut;
     use hpm_types::context::RequestContext;
-    use hpm_types::credential::CredentialNeed;
     use hpm_types::operation::OperationSet;
-    use hpm_types::tool::{
-        AccessClass, HandlerCompletion, OutputClass, RetryEligibility, SideEffectClass, ToolHandler,
-    };
+    use hpm_types::tool::{HandlerCompletion, ToolHandler};
     use serde_json::json;
 
     use super::*;
@@ -190,20 +187,14 @@ mod tests {
     }
 
     fn tool(name: &'static str, schema: &'static str) -> ToolDescriptor {
-        ToolDescriptor {
+        ToolDescriptor::new(
             name,
-            description: "",
-            input_schema_json: schema,
-            access: AccessClass::Read,
-            output: OutputClass::None,
-            side_effect: SideEffectClass::None,
-            retry: RetryEligibility::Idempotent,
-            needs_instance: false,
-            credentials: CredentialNeed::None,
-            normalize: |_, _| Ok(OperationSet::default()),
-            handler: Arc::new(NoHandler),
-            render: |_| String::new(),
-        }
+            "",
+            schema,
+            |_, _| Ok(OperationSet::default()),
+            Arc::new(NoHandler),
+            |_| String::new(),
+        )
     }
 
     fn validator() -> (CompiledSchemaValidator, ToolDescriptor, ToolDescriptor) {

@@ -31,8 +31,10 @@ pub enum PolicyError {
 
 pub trait PolicyEngine: Send + Sync {
     /// Whole OperationSet in one decision; any denied element denies the call.
-    /// Under active protection, effective Execute ops are denied unless an explicit,
-    /// scoped, audited exception applies (Q2).
+    /// Runs before protection is pinned, so it does not enforce Q2: the dispatcher
+    /// denies effective Execute ops under active protection right after `pin`
+    /// unless the pinned context carries the scoped `OnUnanalyzable::PatternsOnly`
+    /// exception.
     fn decide<'a>(
         &'a self,
         ctx: &'a RequestContext,

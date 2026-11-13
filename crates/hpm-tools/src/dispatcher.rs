@@ -16,14 +16,17 @@ use hpm_types::audit::{
 use hpm_types::context::{AdmissionKey, ProgressSink, RequestContext};
 use hpm_types::credential::{CredentialError, CredentialNeed, CredentialProvider};
 use hpm_types::dispatch::{
-    DispatchOutcome, QUERY_SCRIPT_NOT_ALLOWED, Rendered, SchemaValidator, UNCLASSIFIED_TABLE,
+    DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered, SchemaValidator,
+    UNCLASSIFIED_TABLE,
 };
 use hpm_types::operation::{
-    Action, ClassificationSource, Operation, OperationSet, ScriptOperandGuard, Subject, TableClass,
+    Action, ClassificationSource, Operation, OperationSet, ScriptOperandGuard, Subject,
     script_operand_allowed,
 };
 use hpm_types::policy::{Decision, PolicyEngine};
-use hpm_types::protect::{DataProtector, InputVerdict, ProtectedProgress, ProtectionContext};
+use hpm_types::protect::{
+    DataProtector, InputVerdict, OnUnanalyzable, ProtectedProgress, ProtectionContext,
+};
 use hpm_types::tool::{
     HandlerCompletion, MutationOutcome, NormalizeInput, OutputClass, ResourceDescriptor,
     ResultBody, ToolDescriptor, ToolError,
@@ -130,11 +133,12 @@ impl Dispatcher {
                 reason: UNCLASSIFIED_TABLE.into(),
             }));
         }
-        // `javascript:` operand guard (query and written values), every mode.
+        // `javascript:` query-operand guard, every mode. Written script values are
+        // not rejected: they already escalated the op to Execute (D-05 rule 5).
         if ops
             .0
             .iter()
-            .flat_map(|o| &o.script_operands)
+            .flat_map(|o| &o.query_script_operands)
             .any(|op| !script_operand_allowed(op, s.script_guard))
         {
             self.exceptional(ctx, subject, "script_operand_blocked")
@@ -185,6 +189,23 @@ impl Dispatcher {
                     return Err(Err(ToolError::Unavailable("data protection")));
                 }
             };
+            // Q2 (RFC §13, D-06): under active protection an effective Execute op is
+            // denied unless the pinned context carries the scoped exception.
+            if ops.has_execute() && pinned.on_unanalyzable != OnUnanalyzable::PatternsOnly {
+                let _ = s
+                    .audit
+                    .record(AuditEvent::Denied {
+                        call_id: ctx.call_id().clone(),
+                        principal: ctx.principal().clone(),
+                        ops: summaries(&ops),
+                        reason: EXECUTE_UNDER_PROTECTION.into(),
+                        policy_version: decision.policy_version,
+                    })
+                    .await;
+                return Err(Err(ToolError::Denied {
+                    reason: EXECUTE_UNDER_PROTECTION.into(),
+                }));
+            }
             match s.protector.guard_input(&pinned, args).await {
                 Ok(InputVerdict::Allow) => {}
                 Ok(InputVerdict::Block { reason }) => {
@@ -275,12 +296,13 @@ impl Dispatcher {
             return Err(ToolError::InvalidParams(msg));
         }
         let classification = s.classification.snapshot(ctx.instance());
-        let input = NormalizeInput {
-            instance: ctx.instance(),
-            classification: &classification,
-        };
+        let input = NormalizeInput::new(ctx.instance(), &classification);
         let ops = match (tool.normalize)(&args, &input) {
-            Ok(ops) => Arc::new(ops),
+            Ok(mut ops) => {
+                // D-05 value rule 5, applied centrally for every tool.
+                ops.escalate_written_scripts();
+                Arc::new(ops)
+            }
             Err(_) => {
                 // Pre-admission errors render fixed safe text (no echoed values).
                 self.exceptional(ctx, &subject, "normalize_failed").await;
@@ -316,14 +338,14 @@ impl Dispatcher {
         }
 
         let pending = if ops.mutates() {
-            let record = AttemptRecord {
-                call_id: actx.call_id().clone(),
-                mcp_request_id: actx.mcp_request_id().to_owned(),
-                principal: actx.principal().clone(),
-                ops: summaries(&ops),
-                policy_version: admitted.policy_version,
-                protection_version: admitted.pinned.as_ref().map_or(0, |p| p.rules.version),
-            };
+            let record = AttemptRecord::new(
+                actx.call_id().clone(),
+                actx.mcp_request_id().to_owned(),
+                actx.principal().clone(),
+                summaries(&ops),
+                admitted.policy_version,
+                admitted.pinned.as_ref().map_or(0, |p| p.rules.version),
+            );
             match s.audit.begin_attempt(record).await {
                 Ok(p) => Some(p),
                 Err(_) if s.audit.failure_policy() == SinkFailurePolicy::FailClosedForMutations => {
@@ -341,6 +363,7 @@ impl Dispatcher {
             outcome,
             ops: op_facts,
             result,
+            ..
         } = tool.handler.call(actx, args).await;
 
         // Protection changes visibility only; `outcome`/`op_facts` stay as reported.
@@ -398,19 +421,10 @@ impl Dispatcher {
             .find(|r| r.uri == uri)
             .ok_or_else(|| ToolError::InvalidParams("Unknown resource".into()))?;
         let subject = Subject::Resource(res.uri.to_owned());
-        let ops = Arc::new(OperationSet(vec![Operation {
-            subject: subject.clone(),
-            instance_id: ctx.instance().map(|i| i.instance_id.clone()),
-            table: None,
-            action: Action::Read,
-            class: TableClass::NotApplicable,
-            arg_location: String::new(),
-            returned_fields: Vec::new(),
-            written_fields: Vec::new(),
-            predicate_fields: Vec::new(),
-            ordering_fields: Vec::new(),
-            script_operands: Vec::new(),
-        }]));
+        let ops = Arc::new(OperationSet(vec![
+            Operation::new(subject.clone(), Action::Read)
+                .instance_id(ctx.instance().map(|i| i.instance_id.clone())),
+        ]));
         let admitted = match self
             .admit(
                 ctx,

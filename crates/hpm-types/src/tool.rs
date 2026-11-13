@@ -92,9 +92,16 @@ pub struct OpCompletion {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Record {
     pub sys_id: Option<String>,
     pub fields: Vec<(String, serde_json::Value)>,
+}
+
+impl Record {
+    pub fn new(sys_id: Option<String>, fields: Vec<(String, serde_json::Value)>) -> Self {
+        Self { sys_id, fields }
+    }
 }
 
 /// Typed body. Renderers turn this into 6.2.0 text; the DataProtector walks it.
@@ -123,10 +130,29 @@ pub enum ResultBody {
 
 /// Every handler return path carries the facts, independent of the error (edit 2).
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct HandlerCompletion {
     pub outcome: MutationOutcome,
     pub ops: Vec<OpCompletion>,
     pub result: Result<ResultBody, ToolError>,
+}
+
+impl HandlerCompletion {
+    pub fn new(
+        outcome: MutationOutcome,
+        ops: Vec<OpCompletion>,
+        result: Result<ResultBody, ToolError>,
+    ) -> Self {
+        Self {
+            outcome,
+            ops,
+            result,
+        }
+    }
+    /// A call that mutated nothing (`MutationOutcome::NotAMutation`, no op facts).
+    pub fn not_a_mutation(result: Result<ResultBody, ToolError>) -> Self {
+        Self::new(MutationOutcome::NotAMutation, Vec::new(), result)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -173,9 +199,24 @@ pub trait ResourceHandler: Send + Sync {
 }
 
 /// Inputs to a pure normalizer: validated args plus immutable classification (edit 1).
+/// The classification snapshot is the only per-instance metadata a normalizer gets:
+/// normalizers classify, they never look up schema. Build with [`NormalizeInput::new`].
+#[non_exhaustive]
 pub struct NormalizeInput<'a> {
     pub instance: Option<&'a ResolvedInstance>,
     pub classification: &'a ClassificationSnapshot,
+}
+
+impl<'a> NormalizeInput<'a> {
+    pub fn new(
+        instance: Option<&'a ResolvedInstance>,
+        classification: &'a ClassificationSnapshot,
+    ) -> Self {
+        Self {
+            instance,
+            classification,
+        }
+    }
 }
 
 pub type Normalizer =
@@ -184,7 +225,12 @@ pub type Normalizer =
 /// Pure; reproduces 6.2.0 bytes (golden-tested) for visible results.
 pub type Renderer = fn(&ResultBody) -> String;
 
+/// `#[non_exhaustive]`: build with [`ToolDescriptor::new`] and the setters. Defaults
+/// (`Read`, `OutputClass::None`, `SideEffectClass::None`, `Idempotent`, no instance,
+/// `CredentialNeed::None`) must be overridden to match the tool's D-05 row; the
+/// registry rejects any mismatch.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
@@ -202,7 +248,58 @@ pub struct ToolDescriptor {
     pub render: Renderer,
 }
 
+impl ToolDescriptor {
+    pub fn new(
+        name: &'static str,
+        description: &'static str,
+        input_schema_json: &'static str,
+        normalize: Normalizer,
+        handler: Arc<dyn ToolHandler>,
+        render: Renderer,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            input_schema_json,
+            access: AccessClass::Read,
+            output: OutputClass::None,
+            side_effect: SideEffectClass::None,
+            retry: RetryEligibility::Idempotent,
+            needs_instance: false,
+            credentials: CredentialNeed::None,
+            normalize,
+            handler,
+            render,
+        }
+    }
+    pub fn access(mut self, access: AccessClass) -> Self {
+        self.access = access;
+        self
+    }
+    pub fn output(mut self, output: OutputClass) -> Self {
+        self.output = output;
+        self
+    }
+    pub fn side_effect(mut self, side_effect: SideEffectClass) -> Self {
+        self.side_effect = side_effect;
+        self
+    }
+    pub fn retry(mut self, retry: RetryEligibility) -> Self {
+        self.retry = retry;
+        self
+    }
+    pub fn needs_instance(mut self, needs_instance: bool) -> Self {
+        self.needs_instance = needs_instance;
+        self
+    }
+    pub fn credentials(mut self, credentials: CredentialNeed) -> Self {
+        self.credentials = credentials;
+        self
+    }
+}
+
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ResourceDescriptor {
     pub uri: &'static str,
     pub output: OutputClass,
@@ -210,28 +307,32 @@ pub struct ResourceDescriptor {
     pub handler: Arc<dyn ResourceHandler>,
 }
 
+impl ResourceDescriptor {
+    pub fn new(
+        uri: &'static str,
+        output: OutputClass,
+        credentials: CredentialNeed,
+        handler: Arc<dyn ResourceHandler>,
+    ) -> Self {
+        Self {
+            uri,
+            output,
+            credentials,
+            handler,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::{Operation, Subject, TableClass};
+    use crate::operation::{Operation, Subject};
 
     fn ops(actions: &[Action]) -> OperationSet {
         OperationSet(
             actions
                 .iter()
-                .map(|&action| Operation {
-                    subject: Subject::Tool("T"),
-                    instance_id: None,
-                    table: None,
-                    action,
-                    class: TableClass::NotApplicable,
-                    arg_location: String::new(),
-                    returned_fields: vec![],
-                    written_fields: vec![],
-                    predicate_fields: vec![],
-                    ordering_fields: vec![],
-                    script_operands: vec![],
-                })
+                .map(|&action| Operation::new(Subject::Tool("T"), action))
                 .collect(),
         )
     }

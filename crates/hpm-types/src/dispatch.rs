@@ -32,3 +32,6 @@ pub enum DispatchOutcome {
 pub const QUERY_SCRIPT_NOT_ALLOWED: &str = "QUERY_SCRIPT_NOT_ALLOWED";
 /// Stable reason code for an unknown table class under active policy or protection.
 pub const UNCLASSIFIED_TABLE: &str = "UNCLASSIFIED_TABLE";
+/// Stable reason code for an effective Execute operation under active protection
+/// whose pinned `on_unanalyzable` is `Deny` (RFC §13 Q2, D-06).
+pub const EXECUTE_UNDER_PROTECTION: &str = "EXECUTE_UNDER_PROTECTION";

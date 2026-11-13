@@ -58,7 +58,10 @@ pub enum TableClass {
     NotApplicable,
 }
 
+/// One normalized operation. `#[non_exhaustive]`: build with [`Operation::new`] and
+/// the builder setters; fields stay readable.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Operation {
     pub subject: Subject,
     pub instance_id: Option<String>,
@@ -77,9 +80,92 @@ pub struct Operation {
     /// Fields used for ordering (ORDERBY leaks by inference).
     pub ordering_fields: Vec<String>,
     /// Decoded, whitespace-normalized `javascript:` operands (without the prefix)
-    /// found in the query or in written values (`conditions`, `reference_qual`,
-    /// `default_value`, `template_value`). Checked by [`script_operand_allowed`].
-    pub script_operands: Vec<String>,
+    /// found in the encoded query or filter only. Checked by
+    /// [`script_operand_allowed`]; a rejected operand is `QUERY_SCRIPT_NOT_ALLOWED`
+    /// (signed deviation, RFC §14).
+    pub query_script_operands: Vec<String>,
+    /// Names of written fields whose value is script ([`is_script_value`]:
+    /// `reference_qual`, `default_value`, `conditions`, …). Never rejected: the
+    /// operation escalates to Execute (D-05 value rule 5, 6.2.0 parity), see
+    /// [`OperationSet::escalate_written_scripts`].
+    pub written_script_fields: Vec<String>,
+}
+
+impl Operation {
+    /// No table (`TableClass::NotApplicable`), whole-call location, no fields.
+    pub fn new(subject: Subject, action: Action) -> Self {
+        Self {
+            subject,
+            instance_id: None,
+            table: None,
+            action,
+            class: TableClass::NotApplicable,
+            arg_location: String::new(),
+            returned_fields: Vec::new(),
+            written_fields: Vec::new(),
+            predicate_fields: Vec::new(),
+            ordering_fields: Vec::new(),
+            query_script_operands: Vec::new(),
+            written_script_fields: Vec::new(),
+        }
+    }
+
+    /// Sets the table and applies the table rule ([`ClassificationSnapshot::classify_write`])
+    /// to the current action.
+    pub fn on_table(mut self, table: impl Into<String>, snapshot: &ClassificationSnapshot) -> Self {
+        let table = table.into();
+        (self.action, self.class) = snapshot.classify_write(&table, self.action);
+        self.table = Some(table);
+        self
+    }
+    /// Sets table and class verbatim (no table rule). Prefer [`Self::on_table`].
+    pub fn table(mut self, table: impl Into<String>, class: TableClass) -> Self {
+        self.table = Some(table.into());
+        self.class = class;
+        self
+    }
+    pub fn instance_id(mut self, id: Option<String>) -> Self {
+        self.instance_id = id;
+        self
+    }
+    pub fn at(mut self, arg_location: impl Into<String>) -> Self {
+        self.arg_location = arg_location.into();
+        self
+    }
+    pub fn returned_fields(mut self, f: Vec<String>) -> Self {
+        self.returned_fields = f;
+        self
+    }
+    pub fn written_fields(mut self, f: Vec<String>) -> Self {
+        self.written_fields = f;
+        self
+    }
+    pub fn predicate_fields(mut self, f: Vec<String>) -> Self {
+        self.predicate_fields = f;
+        self
+    }
+    pub fn ordering_fields(mut self, f: Vec<String>) -> Self {
+        self.ordering_fields = f;
+        self
+    }
+    pub fn query_script_operands(mut self, o: Vec<String>) -> Self {
+        self.query_script_operands = o;
+        self
+    }
+    pub fn written_script_fields(mut self, f: Vec<String>) -> Self {
+        self.written_script_fields = f;
+        self
+    }
+}
+
+/// D-05 value rule 5: a written string whose trimmed text starts with `javascript:`
+/// (case-insensitive) or contains a `<g:evaluate` / `${` Jelly/script marker.
+pub fn is_script_value(value: &str) -> bool {
+    let t = value.trim_start();
+    t.get(..11)
+        .is_some_and(|p| p.eq_ignore_ascii_case("javascript:"))
+        || value.contains("<g:evaluate")
+        || value.contains("${")
 }
 
 /// A whole call: every batch element, generated convenience query and fallback
@@ -93,6 +179,22 @@ impl OperationSet {
     }
     pub fn has_unknown_class(&self) -> bool {
         self.0.iter().any(|o| o.class == TableClass::Unknown)
+    }
+    pub fn has_execute(&self) -> bool {
+        self.0.iter().any(|o| o.action == Action::Execute)
+    }
+    /// D-05 value rule 5: a mutation writing a script value becomes Execute. Admin
+    /// outranks execute (D-05 `execute < admin`), so `AdminWrite` stays. The
+    /// dispatcher applies this to every normalized set before the access floor.
+    pub fn escalate_written_scripts(&mut self) {
+        for o in &mut self.0 {
+            if !o.written_script_fields.is_empty()
+                && o.action.is_mutation()
+                && o.action != Action::AdminWrite
+            {
+                o.action = Action::Execute;
+            }
+        }
     }
 }
 
@@ -121,9 +223,69 @@ pub const EXECUTE_STATIC_PREFIXES: &[&str] = &[
     "sys_script",
 ];
 
+/// D-05 admin tables (exact list, rule 7). Match the table or any ancestor.
+/// `user_criteria` and `sys_security_acl` are also script-bearing; admin wins.
+pub const ADMIN_STATIC_TABLES: &[&str] = &[
+    "sys_user",
+    "sys_user_role",
+    "sys_user_has_role",
+    "sys_user_grmember",
+    "sys_user_group",
+    "sys_group_has_role",
+    "sys_user_role_contains",
+    "sys_user_has_role_time_limited",
+    "sys_user_delegate",
+    "sys_security_acl",
+    "sys_security_acl_role",
+    "sys_security_attribute",
+    "sys_security_data_filter",
+    "sys_security_restricted_list",
+    "sys_security_type",
+    "sys_security_operation",
+    "sys_security_obj_oper",
+    "sys_properties",
+    "sys_auth_profile",
+    "sys_auth_profile_basic",
+    "sys_auth_profile_oauth2",
+    "oauth_entity",
+    "oauth_credential",
+    "oauth_entity_profile",
+    "sys_certificate",
+    "discovery_credentials",
+    "sys_alias",
+    "sys_connection",
+    "sys_rest_message",
+    "sys_rest_message_fn",
+    "sys_soap_message",
+    "sys_scope_privilege",
+    "sys_restricted_caller_access",
+    "sys_api_access_policy",
+    "sys_soap_api_access_policy",
+    "ip_access",
+    "sys_cors_rule",
+    "sys_dictionary_override",
+    "user_criteria",
+    "sys_glide_object",
+    "sys_scope",
+    "sys_app",
+    "sys_store_app",
+];
+
+/// D-05 admin tables that match exact-only: no propagation to descendants (otherwise
+/// the `var_dictionary`-derived variable tables would become admin).
+pub const ADMIN_EXACT_ONLY: &[&str] = &["sys_dictionary", "sys_db_object"];
+
+/// D-05 admin prefixes. Match the table or any ancestor.
+pub const ADMIN_STATIC_PREFIXES: &[&str] = &["sys_auth_", "oauth_"];
+
+/// Bound on `super_class` walks (defends against a cyclic parent map).
+const MAX_ANCESTRY: usize = 64;
+
 /// Immutable per-instance classification, built at connect from `sys_dictionary`
 /// and the `sys_db_object.super_class` closure. Versioned; pinned for a call.
+/// `#[non_exhaustive]`: start from `Default` and assign fields.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct ClassificationSnapshot {
     pub version: u64,
     /// Product baseline rule version this snapshot was derived with.
@@ -133,34 +295,54 @@ pub struct ClassificationSnapshot {
     /// Closure of tables (own or inherited) carrying code, plus deployment additions.
     /// The static baseline is applied by [`ClassificationSnapshot::classify`].
     pub execute_tables: HashSet<String>,
-    /// Exact privilege/schema list plus any table with a password field.
+    /// Tables with an own or inherited password field, plus deployment additions.
+    /// The static admin baseline is applied by [`ClassificationSnapshot::classify`].
     pub admin_tables: HashSet<String>,
-    /// `super_class` parent map, for diagnostics and ancestry queries.
+    /// `super_class` parent map, for ancestry and diagnostics.
     pub parent: HashMap<String, String>,
-    /// False if the dictionary load failed: every table is then Unknown.
+    /// False if the dictionary load failed: every table outside the static
+    /// baselines is then Unknown.
     pub complete: bool,
 }
 
 impl ClassificationSnapshot {
+    /// The table followed by its `super_class` ancestors (bounded).
+    fn lineage<'a>(&'a self, table: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        std::iter::successors(Some(table), |t| self.parent.get(*t).map(String::as_str))
+            .take(MAX_ANCESTRY)
+    }
+
+    /// D-05 order: static baselines first (they hold even when the table is not in
+    /// `sys_db_object` or the load failed), admin before execute (admin outranks
+    /// execute), then the known-table check, then Ordinary.
     pub fn classify(&self, table: &str) -> TableClass {
-        if !self.complete || !self.known_tables.contains(table) {
-            return TableClass::Unknown;
+        let admin = ADMIN_EXACT_ONLY.contains(&table)
+            || self.lineage(table).any(|t| {
+                ADMIN_STATIC_TABLES.contains(&t)
+                    || ADMIN_STATIC_PREFIXES.iter().any(|p| t.starts_with(p))
+                    || self.admin_tables.contains(t)
+            });
+        if admin {
+            return TableClass::Admin;
         }
-        if self.execute_tables.contains(table)
-            || EXECUTE_STATIC_TABLES.contains(&table)
-            || EXECUTE_STATIC_PREFIXES.iter().any(|p| table.starts_with(p))
-        {
+        let execute = self.lineage(table).any(|t| {
+            EXECUTE_STATIC_TABLES.contains(&t)
+                || EXECUTE_STATIC_PREFIXES.iter().any(|p| t.starts_with(p))
+                || self.execute_tables.contains(t)
+        });
+        if execute {
             return TableClass::ExecuteBearing;
         }
-        if self.admin_tables.contains(table) {
-            return TableClass::Admin;
+        if !self.complete || !self.known_tables.contains(table) {
+            return TableClass::Unknown;
         }
         TableClass::Ordinary
     }
 
     /// Table-level rule (§3.1 steps 4–5): any write to an execute-class or unknown
-    /// table is Execute; any write to an admin table is AdminWrite. Reads keep their
-    /// requested action.
+    /// table is Execute; any write to an admin table is AdminWrite (admin outranks
+    /// execute; policy must treat AdminWrite as at least as privileged as Execute).
+    /// Reads keep their requested action.
     pub fn classify_write(&self, table: &str, requested: Action) -> (Action, TableClass) {
         let class = self.classify(table);
         if !requested.is_mutation() {
@@ -375,5 +557,104 @@ mod tests {
             failed.classify_write("incident", Action::Update),
             (Action::Execute, TableClass::Unknown)
         );
+    }
+
+    /// D-05 rule 7 static admin baseline, per table class. The snapshot knows none
+    /// of these tables and has no derived admin set: the static list still applies.
+    #[test]
+    fn static_admin_baseline_per_table_class() {
+        let mut s = ClassificationSnapshot {
+            complete: true,
+            ..Default::default()
+        };
+        s.known_tables.insert("incident".into());
+        s.parent.insert(
+            "sys_generated_security_acl".into(),
+            "sys_security_acl".into(),
+        );
+        s.parent
+            .insert("var_dictionary".into(), "sys_dictionary".into());
+        s.parent.insert("u_my_users".into(), "sys_user".into());
+        // Script-bearing per the instance dictionary, but admin wins.
+        s.execute_tables.insert("sys_security_acl".into());
+        s.execute_tables.insert("user_criteria".into());
+        let rows: &[(&str, TableClass)] = &[
+            // exact list
+            ("sys_user_has_role", TableClass::Admin),
+            ("sys_properties", TableClass::Admin),
+            ("sys_store_app", TableClass::Admin),
+            // admin ∧ execute ⇒ admin
+            ("sys_security_acl", TableClass::Admin),
+            ("user_criteria", TableClass::Admin),
+            // propagation to descendants
+            ("sys_generated_security_acl", TableClass::Admin),
+            ("u_my_users", TableClass::Admin),
+            // prefixes
+            ("sys_auth_policy_x", TableClass::Admin),
+            ("oauth_jwt", TableClass::Admin),
+            // exact-only: no propagation
+            ("sys_dictionary", TableClass::Admin),
+            ("sys_db_object", TableClass::Admin),
+            ("var_dictionary", TableClass::Unknown),
+            // static execute applies before the known-table check
+            ("sys_script_include", TableClass::ExecuteBearing),
+            ("ecc_queue", TableClass::ExecuteBearing),
+            // non-privilege sys_user_* tables are not admin by prefix
+            ("sys_user_preference", TableClass::Unknown),
+            ("incident", TableClass::Ordinary),
+        ];
+        for &(table, class) in rows {
+            assert_eq!(s.classify(table), class, "{table}");
+        }
+        assert_eq!(
+            s.classify_write("sys_security_acl", Action::Update),
+            (Action::AdminWrite, TableClass::Admin)
+        );
+        // A failed load keeps the static baselines.
+        s.complete = false;
+        assert_eq!(s.classify("oauth_credential"), TableClass::Admin);
+        assert_eq!(s.classify("sys_trigger"), TableClass::Unknown);
+        assert_eq!(s.classify("sysauto_script"), TableClass::ExecuteBearing);
+        assert_eq!(s.classify("incident"), TableClass::Unknown);
+    }
+
+    #[test]
+    fn written_script_values_escalate_to_execute() {
+        for v in [
+            "javascript:new MyQual().get()",
+            "  JavaScript:x",
+            "<j><g:evaluate>x</g:evaluate></j>",
+            "a ${x} b",
+        ] {
+            assert!(is_script_value(v), "{v}");
+        }
+        for v in ["java", "active=true", "javascript", "$ {x}"] {
+            assert!(!is_script_value(v), "{v}");
+        }
+        let s = snapshot();
+        let mut set = OperationSet(vec![
+            Operation::new(Subject::Tool("T"), Action::Update)
+                .on_table("incident", &s)
+                .written_script_fields(vec!["reference_qual".into()]),
+            Operation::new(Subject::Tool("T"), Action::Create)
+                .on_table("sys_user_has_role", &s)
+                .written_script_fields(vec!["x".into()]),
+            Operation::new(Subject::Tool("T"), Action::Read)
+                .on_table("incident", &s)
+                .written_script_fields(vec!["x".into()]),
+            Operation::new(Subject::Tool("T"), Action::Create).on_table("incident", &s),
+        ]);
+        set.escalate_written_scripts();
+        let actions: Vec<_> = set.0.iter().map(|o| o.action).collect();
+        assert_eq!(
+            actions,
+            [
+                Action::Execute,
+                Action::AdminWrite,
+                Action::Read,
+                Action::Create
+            ]
+        );
+        assert!(set.0[0].query_script_operands.is_empty());
     }
 }

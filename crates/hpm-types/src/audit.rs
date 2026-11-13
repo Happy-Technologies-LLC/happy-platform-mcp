@@ -36,6 +36,7 @@ impl From<&Operation> for OpSummary {
 
 /// Written durably (commit) BEFORE any mutation is sent.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AttemptRecord {
     pub call_id: CallId,
     /// Correlation only.
@@ -44,6 +45,26 @@ pub struct AttemptRecord {
     pub ops: Vec<OpSummary>,
     pub policy_version: u64,
     pub protection_version: u64,
+}
+
+impl AttemptRecord {
+    pub fn new(
+        call_id: CallId,
+        mcp_request_id: String,
+        principal: Principal,
+        ops: Vec<OpSummary>,
+        policy_version: u64,
+        protection_version: u64,
+    ) -> Self {
+        Self {
+            call_id,
+            mcp_request_id,
+            principal,
+            ops,
+            policy_version,
+            protection_version,
+        }
+    }
 }
 
 /// Handle to a durable pending row. Every one gets a terminal outcome or stays

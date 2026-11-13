@@ -6,6 +6,7 @@
 //! root (review edits 3, 4, 6).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
@@ -21,6 +22,12 @@ pub enum Principal {
     /// Single-user stdio only, created by the explicit stdio adapter. Never inferred
     /// from a missing HTTP extension.
     LocalOperator,
+    /// Single-user HTTP (Streamable HTTP or legacy SSE) authenticated by the static
+    /// bearer token. Distinct from `LocalOperator` so audit separates stdio from HTTP;
+    /// sessions bind to `token_fingerprint` (SHA-256 of the token, threat model
+    /// T-B01). Lead decision 2026-11-13 (RFC §14), pending owner review.
+    LocalBearer { token_fingerprint: [u8; 32] },
+    /// Multi-user HTTP only.
     Federated {
         org: String,
         iss: String,
@@ -197,10 +204,21 @@ impl RequestContext {
 /// Identity verified by the Tower auth layer (JWT/introspection), read back from
 /// `http::request::Parts` extensions by the HTTP adapters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct VerifiedHttpIdentity {
     pub principal: Principal,
     pub client: ClientIdentity,
     pub scopes: Arc<[String]>,
+}
+
+impl VerifiedHttpIdentity {
+    pub fn new(principal: Principal, client: ClientIdentity, scopes: Arc<[String]>) -> Self {
+        Self {
+            principal,
+            client,
+            scopes,
+        }
+    }
 }
 
 /// Per-request inputs the adapter extracts from the transport. None of them can
@@ -227,6 +245,16 @@ pub enum AdmissionError {
     MissingVerifiedIdentity,
     #[error("stdio adapter received an HTTP identity")]
     UnexpectedIdentity,
+    /// The verified principal does not fit the listener: `LocalOperator` on HTTP,
+    /// `LocalBearer` outside single-user HTTP, or `Federated` outside multi-user HTTP.
+    #[error("principal not allowed on this listener")]
+    PrincipalNotAllowed,
+}
+
+/// One-shot latch. True only for the first caller in the process.
+#[cfg_attr(not(feature = "trusted-root"), allow(dead_code))]
+fn first_take(flag: &AtomicBool) -> bool {
+    !flag.swap(true, Ordering::SeqCst)
 }
 
 /// Capability to attach admission products ([`RequestContext::admitted`]). Only the
@@ -235,10 +263,17 @@ pub enum AdmissionError {
 #[derive(Clone, Copy, Debug)]
 pub struct AdmissionKey(());
 
+#[cfg(feature = "trusted-root")]
+static KEY_MINTED: AtomicBool = AtomicBool::new(false);
+
 impl AdmissionKey {
+    /// Succeeds at most once per process (runtime backstop to the feature gate and
+    /// the `xtask check-trusted-root` CI gate): a forged second mint returns `None`.
+    /// Test binaries that build several dispatchers share one key through a
+    /// `static KEY: LazyLock<AdmissionKey>`.
     #[cfg(feature = "trusted-root")]
-    pub fn mint() -> Self {
-        Self(())
+    pub fn mint() -> Option<Self> {
+        first_take(&KEY_MINTED).then_some(Self(()))
     }
 }
 
@@ -252,6 +287,9 @@ pub struct TrustedRoot {
     transport: TransportKind,
 }
 
+/// Not latched: tests (lane E) build several roots per process, and a root grants
+/// no authority to attach admission products without the single-mint
+/// [`AdmissionKey`]. The feature gate and the CI gate keep them in hpm-cli.
 #[cfg(feature = "trusted-root")]
 impl TrustedRoot {
     /// The only path to `Principal::LocalOperator`. Single-user by construction.
@@ -300,7 +338,18 @@ impl TrustedRoot {
                 Arc::from(Vec::<String>::new()),
             ),
             (TransportKind::Stdio, Some(_)) => return Err(AdmissionError::UnexpectedIdentity),
-            (_, Some(id)) => (id.principal, id.client, id.scopes),
+            // HTTP: the principal must match the deployment mode (never LocalOperator).
+            (_, Some(id)) => {
+                let allowed = matches!(
+                    (&id.principal, self.mode),
+                    (Principal::LocalBearer { .. }, DeploymentMode::SingleUser)
+                        | (Principal::Federated { .. }, DeploymentMode::MultiUser)
+                );
+                if !allowed {
+                    return Err(AdmissionError::PrincipalNotAllowed);
+                }
+                (id.principal, id.client, id.scopes)
+            }
             (_, None) => return Err(AdmissionError::MissingVerifiedIdentity),
         };
         Ok(RequestContext {
@@ -320,5 +369,98 @@ impl TrustedRoot {
             credential: None,
             protection: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoProgress;
+    impl ProgressSink for NoProgress {
+        fn emit(&self, _: f64, _: Option<f64>, _: Option<String>) -> BoxFut<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    fn input() -> AdmissionInput {
+        AdmissionInput {
+            mcp_request_id: "1".into(),
+            protocol_version: ProtocolVersion::new("2025-06-18"),
+            client_capabilities: serde_json::Value::Null,
+            client_name: "t".into(),
+            instance: None,
+            cancel: CancellationToken::new(),
+            deadline: Instant::now(),
+            progress: Arc::new(NoProgress),
+        }
+    }
+
+    fn id(principal: Principal) -> Option<VerifiedHttpIdentity> {
+        Some(VerifiedHttpIdentity::new(
+            principal,
+            ClientIdentity {
+                client_id: "c".into(),
+                verified: true,
+            },
+            Arc::from(Vec::<String>::new()),
+        ))
+    }
+
+    #[test]
+    fn mint_latch_succeeds_once() {
+        let flag = AtomicBool::new(false);
+        assert!(first_take(&flag));
+        assert!(!first_take(&flag));
+        assert!(!first_take(&flag));
+    }
+
+    #[test]
+    fn admit_binds_principal_to_transport_and_mode() {
+        use DeploymentMode::{MultiUser, SingleUser};
+        use TransportKind::{LegacySse, Stdio, StreamableHttp};
+        let local = || Principal::LocalOperator;
+        let bearer = || Principal::LocalBearer {
+            token_fingerprint: [7; 32],
+        };
+        let fed = || Principal::Federated {
+            org: "o".into(),
+            iss: "i".into(),
+            sub: "s".into(),
+        };
+        type Case = (
+            TransportKind,
+            DeploymentMode,
+            Option<Principal>,
+            Option<Principal>,
+        );
+        let cases: Vec<Case> = vec![
+            // stdio: only LocalOperator, and only without an HTTP identity.
+            (Stdio, SingleUser, None, Some(local())),
+            (Stdio, SingleUser, Some(local()), None),
+            (Stdio, SingleUser, Some(bearer()), None),
+            // single-user HTTP: only LocalBearer.
+            (StreamableHttp, SingleUser, Some(bearer()), Some(bearer())),
+            (LegacySse, SingleUser, Some(bearer()), Some(bearer())),
+            (StreamableHttp, SingleUser, Some(local()), None),
+            (LegacySse, SingleUser, Some(local()), None),
+            (StreamableHttp, SingleUser, Some(fed()), None),
+            // multi-user HTTP: only Federated.
+            (StreamableHttp, MultiUser, Some(fed()), Some(fed())),
+            (LegacySse, MultiUser, Some(fed()), Some(fed())),
+            (StreamableHttp, MultiUser, Some(local()), None),
+            (StreamableHttp, MultiUser, Some(bearer()), None),
+            // HTTP without verified identity fails closed.
+            (StreamableHttp, SingleUser, None, None),
+            (StreamableHttp, MultiUser, None, None),
+        ];
+        for (transport, mode, given, expected) in cases {
+            let root = TrustedRoot { mode, transport };
+            let got = root
+                .admit(input(), given.clone().and_then(id))
+                .ok()
+                .map(|c| c.principal().clone());
+            assert_eq!(got, expected, "{transport:?} {mode:?} {given:?}");
+        }
     }
 }
