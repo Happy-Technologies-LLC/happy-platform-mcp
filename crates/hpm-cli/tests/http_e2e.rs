@@ -756,6 +756,14 @@ async fn streamable_http_front_rules() {
     .await;
     assert_eq!(r.status, 400);
     assert_eq!(r.json()["error"]["code"], -32022);
+    assert_eq!(r.json()["error"]["data"]["requested"], "1999-01-01");
+    assert!(
+        r.json()["error"]["data"]["supported"]
+            .as_array()
+            .is_some_and(|v| v.contains(&json!("2026-07-28"))),
+        "{}",
+        r.body
+    );
     assert_eq!(r.json()["id"], 4);
     let r = authed(
         s.addr,
@@ -910,6 +918,18 @@ async fn streamable_stateless_2026_07_28() {
     .await;
     assert_tool_round_trip(&list, &call);
     assert_eq!(s.app.streamable_session_count(), 0);
+    // C9 / SEP-2575: `prompts` is not declared, so a modern prompts/list is an
+    // unknown method rather than an empty list.
+    let mut body = json!({"jsonrpc":"2.0","id":4,"method":"prompts/list","params":{}});
+    body["params"]["_meta"] = modern_meta();
+    let h = [
+        JSON_CT,
+        ACCEPT_BOTH,
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "prompts/list"),
+    ];
+    let r = authed(s.addr, "POST", "/mcp", &h, body.to_string().as_bytes()).await;
+    assert_eq!(rpc_reply(&r, 4)["error"]["code"], -32601, "{}", r.body);
 }
 
 // Review M2: Streamable sessions count against the shared live-session cap.
@@ -933,6 +953,55 @@ async fn streamable_sessions_share_the_session_cap() {
         panic!("SSE session admitted over the shared cap")
     };
     assert_eq!(r.status, 429);
+}
+
+// Review F2: an initialize whose `_meta` names 2026-07-28 still opens an rmcp
+// session, so it is counted against the cap and bound like any other.
+#[tokio::test]
+async fn modern_meta_initialize_is_counted_and_bound() {
+    let limits = HttpLimits {
+        max_active_sessions: 1,
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion": "2025-11-25", "capabilities": {},
+        "clientInfo": {"name":"e2e","version":"1"},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}});
+    let first = authed(
+        s.addr,
+        "POST",
+        "/mcp",
+        &[JSON_CT, ACCEPT_BOTH],
+        init.to_string().as_bytes(),
+    )
+    .await;
+    assert_eq!(first.status, 200);
+    if first.header("mcp-session-id").is_some() {
+        assert_eq!(s.app.streamable_session_count(), 1);
+    }
+    let r = streamable_initialize(s.addr, "2025-11-25").await;
+    assert_eq!(
+        (r.status, r.json()),
+        (429, json!({"error": "Too many sessions"}))
+    );
+}
+
+// Review F2: a session id the adapter never bound is refused before rmcp.
+#[tokio::test]
+async fn unbound_session_id_is_refused() {
+    let s = start(HttpLimits::default()).await;
+    let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
+    let r = authed(
+        s.addr,
+        "POST",
+        "/mcp",
+        &[JSON_CT, ACCEPT_BOTH, ("Mcp-Session-Id", "never-bound")],
+        list.to_string().as_bytes(),
+    )
+    .await;
+    assert_eq!(r.status, 404);
+    assert_eq!(r.json(), json!({"error": "Invalid or missing session ID"}));
 }
 
 // Review M3: messages rmcp would reject never reserve an outstanding slot.
@@ -1025,7 +1094,48 @@ async fn slow_body_is_timed_out() {
     );
 }
 
-// Review M1: connections beyond `max_connections` are closed at accept.
+/// Opens a keep-alive connection and authenticates it with one `/health` call.
+async fn authed_keepalive(addr: SocketAddr) -> TcpStream {
+    let mut c = TcpStream::connect(addr).await.expect("connect");
+    let head = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: {}\r\n\r\n",
+        addr.port(),
+        bearer()
+    );
+    c.write_all(head.as_bytes()).await.expect("write");
+    let mut buf = [0u8; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
+        .await
+        .expect("reply in time")
+        .expect("read");
+    assert!(
+        buf[..n].starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&buf[..n])
+    );
+    c
+}
+
+/// True when the server closes `c` without answering a request.
+async fn refused(addr: SocketAddr, mut c: TcpStream) -> bool {
+    let _ = c
+        .write_all(&request_bytes(
+            addr,
+            "GET",
+            "/health",
+            &[("Authorization", &bearer())],
+            b"",
+        ))
+        .await;
+    let mut raw = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(5), c.read_to_end(&mut raw))
+        .await
+        .expect("closed in time");
+    read.is_err() || raw.is_empty()
+}
+
+// Review M1: once every slot holds an authenticated connection, further
+// connections are closed at accept.
 #[tokio::test]
 async fn connection_cap_closes_excess_connections() {
     let limits = HttpLimits {
@@ -1033,21 +1143,82 @@ async fn connection_cap_closes_excess_connections() {
         ..HttpLimits::default()
     };
     let s = start(limits).await;
-    let _a = TcpStream::connect(s.addr).await.expect("a");
-    let _b = TcpStream::connect(s.addr).await.expect("b");
-    // Let the server accept both before the third arrives.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let mut c = TcpStream::connect(s.addr).await.expect("c");
-    let _ = c
-        .write_all(&request_bytes(s.addr, "GET", "/health", &[], b""))
+    let _a = authed_keepalive(s.addr).await;
+    let _b = authed_keepalive(s.addr).await;
+    let c = TcpStream::connect(s.addr).await.expect("c");
+    assert!(refused(s.addr, c).await);
+}
+
+// Review F1: silent sockets from one address, filling the per-peer
+// unauthenticated cap or the global cap, do not lock out an authenticated
+// client from that address.
+#[tokio::test]
+async fn silent_sockets_do_not_lock_out_authenticated_client() {
+    for limits in [
+        HttpLimits {
+            max_unauthenticated_per_peer: 4,
+            ..HttpLimits::default()
+        },
+        HttpLimits {
+            max_connections: 4,
+            ..HttpLimits::default()
+        },
+    ] {
+        let s = start(limits).await;
+        let mut silent = Vec::new();
+        for _ in 0..8 {
+            silent.push(TcpStream::connect(s.addr).await.expect("silent"));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let r = send(
+            s.addr,
+            "GET",
+            "/health",
+            &[("Authorization", &bearer())],
+            b"",
+        )
         .await;
+        assert_eq!(r.status, 200);
+    }
+}
+
+// Review F1: authenticated connections from one address (a reverse proxy's
+// keep-alive pool) are not limited by the per-peer unauthenticated cap.
+#[tokio::test]
+async fn per_peer_cap_spares_authenticated_connections() {
+    let limits = HttpLimits {
+        max_unauthenticated_per_peer: 1,
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    let mut pool = Vec::new();
+    for _ in 0..3 {
+        pool.push(authed_keepalive(s.addr).await);
+    }
+    let r = send(
+        s.addr,
+        "GET",
+        "/health",
+        &[("Authorization", &bearer())],
+        b"",
+    )
+    .await;
+    assert_eq!(r.status, 200);
+}
+
+// Review F1: a connection that never authenticates is closed after
+// `preauth_timeout`, well before the header timeout.
+#[tokio::test]
+async fn unauthenticated_connection_is_closed_after_preauth_timeout() {
+    let limits = HttpLimits {
+        preauth_timeout: Duration::from_millis(300),
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    let mut c = TcpStream::connect(s.addr).await.expect("connect");
     let mut raw = Vec::new();
     let read = tokio::time::timeout(Duration::from_secs(5), c.read_to_end(&mut raw))
         .await
-        .expect("closed in time");
-    assert!(
-        read.is_err() || raw.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&raw)
-    );
+        .expect("closed by the pre-auth deadline");
+    assert!(read.is_err() || raw.is_empty());
 }

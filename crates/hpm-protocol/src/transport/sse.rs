@@ -5,8 +5,9 @@
 //! - `POST /mcp?sessionId=<id>` forwards one JSON-RPC message and answers `202`.
 //! - Pending sessions (opened, not initialized) and live sessions are capped; idle,
 //!   lifetime and setup timers close sessions; per-session and global POST queues
-//!   and outstanding-request caps bound work; a cancelled request's late response is
-//!   discarded (owner decision: the handler is not cancelled).
+//!   and outstanding-request caps bound work. `notifications/cancelled` reaches
+//!   rmcp, which cancels the handler (C7, review F3), and the late response is
+//!   discarded; a stream disconnect alone does not cancel (see `handler.rs`).
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
@@ -312,7 +313,7 @@ impl SseSessions {
         }
 
         // Session lifecycle: setup (initialize) deadline, then idle and lifetime.
-        let handler = self.handler.for_session(identity);
+        let handler = self.handler.for_session(identity, session.closed.clone());
         let sessions = self.clone();
         let s = session.clone();
         tokio::spawn(async move {
@@ -465,6 +466,10 @@ impl SseSessions {
             return json_error(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
         }
         line.push(b'\n');
+        // F3/C7: the notification reaches rmcp, which cancels the handler and drops
+        // its response, so the slot is released now. A response rmcp sent before
+        // it saw the cancel is discarded via `cancelled`; that set is bounded and
+        // forgets an id once the client reuses it.
         if let Some(key) = cancelled_request_key(message)
             && session
                 .outstanding
@@ -472,9 +477,12 @@ impl SseSessions {
                 .is_ok_and(|o| o.keys.contains(&key))
         {
             if let Ok(mut c) = session.cancelled.lock() {
-                c.insert(key);
+                if c.len() >= self.limits.max_outstanding_requests_per_session {
+                    c.clear();
+                }
+                c.insert(key.clone());
             }
-            return (StatusCode::ACCEPTED, "Accepted").into_response();
+            self.release_outstanding(session, &key);
         }
         let request_key = json_rpc_request_key(message);
         if let Some(key) = &request_key {
@@ -499,6 +507,9 @@ impl SseSessions {
                 );
             }
             o.keys.insert(key.clone());
+            if let Ok(mut c) = session.cancelled.lock() {
+                c.remove(key);
+            }
         }
         if session.writer.lock().await.write_all(&line).await.is_err() {
             if let Some(key) = &request_key {

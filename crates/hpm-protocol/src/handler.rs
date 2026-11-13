@@ -19,14 +19,16 @@ use hpm_types::registry::RegistryStore;
 use hpm_types::tool::{ToolDescriptor, ToolError};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    DiscoverResult, Implementation, InitializeResult, JsonObject, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProgressToken,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+    DiscoverResult, Implementation, InitializeResult, JsonObject, ListPromptsRequestMethod,
+    ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProgressNotificationParam, ProgressToken, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::continuation::{
     self, CONTINUATION_TTL, MemoryContinuationStore, args_digest, redeem_error,
@@ -52,6 +54,8 @@ pub struct McpHandler {
     /// Identity verified when a legacy SSE session was opened. The SSE adapter has
     /// no per-message `Parts`; every message on the session inherits it.
     session_identity: Option<VerifiedHttpIdentity>,
+    /// Teardown token of that SSE session (see `until_cancelled`).
+    session_closed: Option<CancellationToken>,
 }
 
 /// Builds an [`McpHandler`]. Optional services are set here, before the handler
@@ -88,6 +92,7 @@ impl McpHandlerBuilder {
                 registry: self.registry,
             }),
             session_identity: None,
+            session_closed: None,
         }
     }
 }
@@ -107,10 +112,17 @@ impl McpHandler {
         Self::builder(root, dispatcher).build()
     }
 
-    pub(crate) fn for_session(&self, identity: VerifiedHttpIdentity) -> Self {
+    /// `closed` is the SSE session's teardown token: a call whose cancellation
+    /// comes from teardown (disconnect, idle, lifetime) keeps running (C7).
+    pub(crate) fn for_session(
+        &self,
+        identity: VerifiedHttpIdentity,
+        closed: CancellationToken,
+    ) -> Self {
         Self {
             inner: self.inner.clone(),
             session_identity: Some(identity),
+            session_closed: Some(closed),
         }
     }
 
@@ -279,6 +291,32 @@ fn http_identity(context: &RequestContext<RoleServer>) -> Option<VerifiedHttpIde
         .cloned()
 }
 
+/// C7: once rmcp cancels the request (`notifications/cancelled` on stdio, legacy
+/// SSE and `2025-*` Streamable sessions, or the `2026-07-28` request stream
+/// closing), the dispatch future is dropped, which aborts in-flight outbound
+/// ServiceNow calls. Nothing is retried: a mutation already sent keeps its
+/// pending audit attempt, which stays `Unknown` (audit.rs `PendingAttempt`).
+///
+/// rmcp also cancels every request when a session's service stops. For a legacy
+/// SSE session that happens on a stream disconnect, which is not a cancel: when
+/// `session_closed` fired first, the work runs to completion.
+async fn until_cancelled<T>(
+    session_closed: Option<&CancellationToken>,
+    context: &RequestContext<RoleServer>,
+    work: impl Future<Output = T>,
+) -> Result<T, ErrorData> {
+    let mut work = std::pin::pin!(work);
+    tokio::select! {
+        biased;
+        () = context.ct.cancelled() => {}
+        out = &mut work => return Ok(out),
+    }
+    if session_closed.is_some_and(CancellationToken::is_cancelled) {
+        return Ok(work.await);
+    }
+    Err(ErrorData::internal_error("Request cancelled", None))
+}
+
 impl ServerHandler for McpHandler {
     fn get_info(&self) -> ServerConfig {
         // C9: tools and resources; no logging/prompts/sampling/roots.
@@ -332,6 +370,20 @@ impl ServerHandler for McpHandler {
         self.inner.dispatcher.get_tool(name).map(to_rmcp_tool)
     }
 
+    /// No prompts capability is declared (C9). `2026-07-28` discovery requires the
+    /// handlers to match it, so modern requests get `-32601` (as 6.2.0 always
+    /// did); legacy peers keep the 7.0 empty list (surface deviation).
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        if context.meta.protocol_version().is_some() {
+            return Err(ErrorData::method_not_found::<ListPromptsRequestMethod>());
+        }
+        Ok(ListPromptsResult::default())
+    }
+
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -366,12 +418,13 @@ impl ServerHandler for McpHandler {
             .map(|r| r.mime_type.to_owned());
         // 6.2.0: every failure, unknown URI included, is a JSON-RPC internal error
         // carrying the message (`Unknown resource: ${uri}`).
-        let body = self
-            .inner
-            .dispatcher
-            .read_resource(&ctx, &request.uri)
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let body = until_cancelled(
+            self.session_closed.as_ref(),
+            &context,
+            self.inner.dispatcher.read_resource(&ctx, &request.uri),
+        )
+        .await?
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         let text = serde_json::to_string_pretty(&body)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(
@@ -420,10 +473,14 @@ impl ServerHandler for McpHandler {
                 .map_err(|e| redeem_error(&e))?;
         }
 
-        match inner
-            .dispatcher
-            .call_tool(&ctx, &request.name, args.clone())
-            .await
+        match until_cancelled(
+            self.session_closed.as_ref(),
+            &context,
+            inner
+                .dispatcher
+                .call_tool(&ctx, &request.name, args.clone()),
+        )
+        .await?
         {
             Ok(DispatchOutcome::Rendered(r)) => Ok(rendered_result(r).into()),
             Ok(DispatchOutcome::ConnectRequired { connect_url }) => {
