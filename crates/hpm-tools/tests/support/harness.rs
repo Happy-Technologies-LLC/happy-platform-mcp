@@ -521,6 +521,11 @@ fn comparable_outbound(list: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// A step's outbound requests as the harness compares them.
+pub fn outbound_of(step: &Value) -> Vec<Value> {
+    comparable_outbound(&step["outbound"])
+}
+
 /// Intentional 7.0 difference (RFC §4 per-operation UI logout): Rust ends every
 /// cookie UI session with `GET /logout.do` as the operation's last request; 6.2.0
 /// never logged out, so the goldens do not record it. Only that exact request,
@@ -682,6 +687,13 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
     let mut problems = Vec::new();
     for (i, (got, want)) in got_steps.iter().zip(&steps).enumerate() {
         let got = fold_tmp(scrubber.deep(got));
+        if let Some(dev) = super::deviations::lookup(id, i) {
+            let outbound = comparable_outbound(&got["outbound"]);
+            for p in dev.expected.check(&got, &outbound) {
+                problems.push(format!("step {i} deviation ({}): {p}", dev.reason));
+            }
+            continue;
+        }
         for field in ["response", "notifications", "files"] {
             if let Some(diff) = first_difference(&got[field], &want[field], String::new()) {
                 problems.push(format!("step {i} {field} {diff}"));
