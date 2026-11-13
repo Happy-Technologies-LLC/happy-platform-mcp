@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-hpm-contracts = { workspace = true, features = ["trusted-root"] }
+hpm-types = { workspace = true, features = ["trusted-root"] }
 rmcp.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

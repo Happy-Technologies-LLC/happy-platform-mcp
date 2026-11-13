@@ -279,7 +279,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
-name = "hpm-contracts"
+name = "hpm-server"
+version = "7.0.0-alpha.0"
+dependencies = [
+ "hpm-types",
+ "rmcp",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "hpm-types"
 version = "7.0.0-alpha.0"
 dependencies = [
  "serde",
@@ -288,16 +298,6 @@ dependencies = [
  "tokio-util",
  "uuid",
  "zeroize",
-]
-
-[[package]]
-name = "hpm-server"
-version = "7.0.0-alpha.0"
-dependencies = [
- "hpm-contracts",
- "rmcp",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

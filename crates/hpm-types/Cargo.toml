@@ -1,5 +1,5 @@
 [package]
-name = "hpm-contracts"
+name = "hpm-types"
 description = "Transport-agnostic contracts (types and traits) of happy-platform-mcp: plan §5.2, contract RFC v0.2."
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 
 [features]
 # Only the composition root enables this. Tool and handler crates depend on
-# hpm-contracts WITHOUT it, so they cannot build a RequestContext, manufacture a
+# hpm-types WITHOUT it, so they cannot build a RequestContext, manufacture a
 # principal or attach admission products (RFC v0.2 §2.1, review edit 6).
 trusted-root = ["dep:uuid"]
 

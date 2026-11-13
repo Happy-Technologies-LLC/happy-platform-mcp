@@ -14,7 +14,7 @@ authors = ["Happy Technologies LLC"]
 
 [workspace.dependencies]
 # Internal crates carry BOTH path and exact version so `cargo publish` works (D-07 §1.6).
-hpm-contracts = { path = "crates/hpm-contracts", version = "=7.0.0-alpha.0" }
+hpm-types = { path = "crates/hpm-types", version = "=7.0.0-alpha.0" }
 # External dependencies are declared here only (lead-owned); crates use `x.workspace = true`.
 rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }

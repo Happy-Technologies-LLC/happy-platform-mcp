@@ -1,4 +1,4 @@
-//! Composition root (plan §5.1). The only crate that enables `hpm-contracts/trusted-root`.
+//! Composition root (plan §5.1). The only crate that enables `hpm-types/trusted-root`.
 //!
 //! Baseline: single-user stdio transport, trusted admission wired, zero tools. Tool
 //! lanes register descriptors through the dispatcher; HTTP listeners and enterprise
@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hpm_contracts::BoxFut;
-use hpm_contracts::context::{AdmissionInput, ProgressSink, ProtocolVersion, TrustedRoot};
+use hpm_types::BoxFut;
+use hpm_types::context::{AdmissionInput, ProgressSink, ProtocolVersion, TrustedRoot};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, Implementation, InitializeResult, ListToolsResult,
     PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ServerCapabilities,
