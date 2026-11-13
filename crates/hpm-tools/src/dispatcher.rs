@@ -323,10 +323,16 @@ impl Dispatcher {
                 ops.escalate_written_scripts();
                 Arc::new(ops)
             }
-            Err(_) => {
+            Err(e) => {
                 // Pre-admission errors render fixed safe text (no echoed values).
+                // A normalizer's `InvalidParams` text is fixed and names only the
+                // argument (CO-2/TF-1), so it passes through; anything else is
+                // reduced to "Invalid arguments".
                 self.exceptional(ctx, &subject, "normalize_failed").await;
-                return Err(ToolError::InvalidParams("Invalid arguments".into()));
+                return Err(match e {
+                    ToolError::InvalidParams(msg) => ToolError::InvalidParams(msg),
+                    _ => ToolError::InvalidParams("Invalid arguments".into()),
+                });
             }
         };
         if !tool.access.floor_satisfied(&ops) {

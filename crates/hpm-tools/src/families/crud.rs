@@ -272,6 +272,10 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
                 .output(class.output)
                 .side_effect(class.side_effect)
                 .retry(class.retry)
+                // TF-2: 6.2.0 calls `resolveClient(args?.instance)` before its tool
+                // switch for every non-instance, non-docs tool, the local-only
+                // SN-List-Available-Tables included, so an unknown `instance`
+                // fails it there too (mcp-server-consolidated.js:1566).
                 .needs_instance(true)
                 .credentials(class.credentials),
         )?;
