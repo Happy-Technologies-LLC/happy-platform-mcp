@@ -53,8 +53,13 @@ async fn docs_only_instance_resource_counts_the_docs_tools() {
             None,
         )
         .expect("stdio admission");
+    let resource = dispatcher
+        .resources()
+        .iter()
+        .find(|r| r.uri == "servicenow://instance")
+        .expect("instance resource listed");
     let payload = dispatcher
-        .read_resource(&ctx, "servicenow://instance")
+        .read_resource(&ctx, resource)
         .await
         .expect("resource read");
     // What the dispatcher lists (every docs-only tool the registered families provide),

@@ -146,7 +146,9 @@ impl ScriptSession {
 
     /// A pre-POST request (user token, CSRF lookup): fails closed before
     /// sending once the generation has moved, so nothing goes to the old host
-    /// with the old credential (review CO-8). The logout is exempt.
+    /// with the old credential (review CO-8). The logout is exempt. Raced
+    /// against the call's cancel: these requests change nothing, and the
+    /// caller checks the cancel again before the script POST.
     async fn request(&self, req: HttpRequest) -> Result<HttpResponse, super::http::TransportError> {
         if self.client.assert_current(&self.state).is_err() {
             return Err(super::http::TransportError::new(
@@ -154,7 +156,17 @@ impl ScriptSession {
                 "The ServiceNow instance changed before the request was sent",
             ));
         }
-        self.send_raw(req).await
+        let cancelled =
+            || super::http::TransportError::new("REQUEST_CANCELLED", "Request cancelled");
+        match &self.client.cancel {
+            None => self.send_raw(req).await,
+            Some(cancel) if cancel.is_cancelled() => Err(cancelled()),
+            Some(cancel) => tokio::select! {
+                biased;
+                () = cancel.cancelled() => Err(cancelled()),
+                r = self.send_raw(req) => r,
+            },
+        }
     }
 
     /// Sends `req` in this session (auth, user agent, cookie jar) without a
@@ -399,10 +411,16 @@ impl ServiceNowClient {
             form.push(("record_for_rollback", "on"));
         }
         // Every exit ends the session in line (never left to `Drop`), so the
-        // logout is deterministically the operation's last request.
+        // logout is deterministically the operation's last request. A cancel
+        // before the POST means the script was not sent. The POST itself is
+        // not raced: once sent, only its answer says whether the script ran.
         if let Err(e) = self.assert_current(&state) {
             session.end().await;
             return Err(e);
+        }
+        if self.is_cancelled() {
+            session.end().await;
+            return Err(ClientError::cancelled());
         }
         let mut req = HttpRequest::new(Method::Post, session.url(SCRIPT_PROCESSOR_PATH));
         req.set_header(

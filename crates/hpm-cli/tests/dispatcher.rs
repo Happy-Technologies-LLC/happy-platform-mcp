@@ -566,17 +566,6 @@ async fn unknown_per_call_instance_is_a_tool_error() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
-async fn unknown_resource_uses_6_2_0_text() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let d = dispatcher(&calls);
-    let out = d.read_resource(&ctx(), "servicenow://unknown").await;
-    assert!(
-        matches!(&out, Err(ToolError::Message(m)) if m == "Unknown resource: servicenow://unknown"),
-        "{out:?}"
-    );
-}
-
 #[test]
 fn registration_rejects_duplicates_and_bad_schemas() {
     let calls = Arc::new(AtomicUsize::new(0));

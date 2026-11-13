@@ -434,18 +434,15 @@ impl Dispatcher {
         render(tool.render, outcome, visible)
     }
 
-    /// `resources/read` through the same admission path (edit 9).
+    /// `resources/read` through the same admission path (edit 9). The caller
+    /// resolves the URI against [`Self::resources`] first, and answers an
+    /// unknown one itself (SEP-2164 `-32602`).
     pub async fn read_resource(
         &self,
         ctx: &RequestContext,
-        uri: &str,
+        res: &ResourceDescriptor,
     ) -> Result<serde_json::Value, ToolError> {
         let s = &self.services;
-        let res = self
-            .resources
-            .iter()
-            .find(|r| r.uri == uri)
-            .ok_or_else(|| ToolError::Message(format!("Unknown resource: {uri}")))?;
         let subject = Subject::Resource(res.uri.to_owned());
         let ops = Arc::new(OperationSet(vec![
             Operation::new(subject.clone(), Action::Read)
