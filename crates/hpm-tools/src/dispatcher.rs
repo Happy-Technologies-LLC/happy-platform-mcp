@@ -297,7 +297,11 @@ impl Dispatcher {
             usage.record(tool.name);
         }
 
-        if let Err(msg) = s.validator.validate(tool, &args) {
+        // A tool flagged `handler_validates_input` refuses bad input itself with
+        // 6.2.0's text, so a schema failure does not pre-empt it.
+        if let Err(msg) = s.validator.validate(tool, &args)
+            && !tool.handler_validates_input
+        {
             self.exceptional(ctx, &subject, "invalid_params").await;
             return Err(ToolError::InvalidParams(msg));
         }

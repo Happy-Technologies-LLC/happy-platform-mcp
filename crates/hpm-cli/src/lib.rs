@@ -146,6 +146,7 @@ impl SingleUser {
         family_deps.docs_base_url = self.docs_base_url;
         family_deps.working_dir = self.working_dir;
         family_deps.docs_cache_dir = self.docs_cache_dir;
+        family_deps.docs_only = self.docs_only;
         let mut registry = ToolRegistry::new()
             .and_then(|mut r| families::register_all(&mut r, &family_deps).map(|()| r))
             .and_then(|mut r| {
@@ -158,6 +159,8 @@ impl SingleUser {
         if self.docs_only {
             registry.retain_docs_only();
         }
+        // Read by resources at request time; set only after docs-only filtering.
+        let _ = family_deps.tool_count.set(registry.tools().len());
         let credentials = Arc::new(SingleUserCredentialProvider::new(clients));
         let services = single_user_services(&registry, credentials).map_err(|e| e.to_string())?;
         Ok(Arc::new(Dispatcher::new(registry, services, key)))
