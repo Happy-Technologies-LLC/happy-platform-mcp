@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::error::{ClientError, RawError};
+use super::error::{self, ClientError, RawError};
 use super::http::{
     HttpRequest, HttpResponse, Method, axios_query, form_encode, format_utc_datetime,
 };
@@ -542,6 +542,7 @@ impl ServiceNowClient {
                 let mut wrapped =
                     ClientError::plain(format!("Failed to create script trigger: {}", e.message));
                 wrapped.status = e.status;
+                wrapped.code = e.code;
                 wrapped
             })
     }
@@ -553,6 +554,12 @@ impl ServiceNowClient {
         auto_delete: bool,
         options: &TriggerOptions,
     ) -> Result<Value, ClientError> {
+        // Once the trigger row exists the script may run regardless of what
+        // fails next, so every later error is tagged "result unknown".
+        let inserted = |mut e: ClientError| {
+            e.code = Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
+            e
+        };
         let now = self.now_ms();
         let next_action = format_utc_datetime(now + 1000);
         let marker = generate_script_execution_marker(self.now_ms());
@@ -586,7 +593,8 @@ impl ServiceNowClient {
                 .to_owned();
             let wrapped = build_background_script_wrapper(script, &marker, true, Some(&sys_id));
             self.update_record("sys_trigger", &sys_id, &json!({"script": wrapped}))
-                .await?;
+                .await
+                .map_err(inserted)?;
             trigger
         } else {
             let wrapped = build_background_script_wrapper(script, &marker, false, None);
@@ -644,7 +652,8 @@ impl ServiceNowClient {
                         ..RecordQuery::default()
                     },
                 )
-                .await?;
+                .await
+                .map_err(inserted)?;
             if let Some(first) = records.as_array().and_then(|r| r.first()).cloned() {
                 break Some(first);
             }
@@ -677,7 +686,8 @@ impl ServiceNowClient {
             .to_owned();
         let (logs, truncated, unverified) = self
             .collect_background_script_logs(&end_marker, &next_action, &until)
-            .await?;
+            .await
+            .map_err(inserted)?;
         let mut o = match &outcome {
             MarkerOutcome::Completed(output) => {
                 let mut o = with(
