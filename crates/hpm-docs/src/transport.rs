@@ -18,7 +18,17 @@ impl ReqwestTransport {
     /// The client always builds URLs on [`DOCS_RAW_ORIGIN`]; `origin` only substitutes the
     /// scheme and authority actually dialled. Production uses the pinned origin; tests point
     /// it at a loopback server.
-    pub(crate) fn with_origin(origin: &str) -> Result<Self, DocsError> {
+    pub fn with_origin(origin: &str) -> Result<Self, DocsError> {
+        let scheme_ok = ["http://", "https://"].iter().any(|scheme| {
+            origin
+                .get(..scheme.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+        });
+        if !scheme_ok {
+            return Err(DocsError::plain(
+                "The ServiceNow docs origin must be an http(s) URL",
+            ));
+        }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             // 6.2.0's fetch ignored HTTP(S)_PROXY/ALL_PROXY; keep docs traffic direct.
@@ -361,5 +371,24 @@ mod tests {
 
         assert_eq!(error.code(), Some(DocsErrorCode::Network));
         assert!(!error.message().contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn with_origin_accepts_only_http_and_https() {
+        for ok in [
+            "https://raw.githubusercontent.com",
+            "http://127.0.0.1:9",
+            "HTTP://localhost:9",
+        ] {
+            assert!(ReqwestTransport::with_origin(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "ftp://127.0.0.1",
+            "file:///tmp",
+            "raw.githubusercontent.com",
+            "",
+        ] {
+            assert!(ReqwestTransport::with_origin(bad).is_err(), "{bad}");
+        }
     }
 }

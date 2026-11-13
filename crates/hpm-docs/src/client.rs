@@ -14,8 +14,9 @@ use crate::config::{assert_docs_family_name, normalize_docs_document_path};
 use crate::error::{DocsError, DocsErrorCode};
 use crate::text::{encode_uri_component, js_trim, js_trim_start};
 
-/// Production origin pin: every request goes to this exact repository on the raw GitHub
-/// origin. There is intentionally no base-URL override.
+/// Production origin pin: every request URL is built on this exact repository on the raw
+/// GitHub origin. [`crate::ReqwestTransport::with_origin`] only changes which `http(s)` scheme
+/// and authority is dialled (loopback servers in tests); production never sets it.
 pub const DOCS_RAW_ORIGIN: &str = "https://raw.githubusercontent.com";
 pub const DOCS_REPO_RAW_BASE: &str = "https://raw.githubusercontent.com/ServiceNow/ServiceNowDocs/";
 pub const DOCS_INDEX_REF: &str = "main";

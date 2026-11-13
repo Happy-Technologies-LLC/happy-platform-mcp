@@ -904,6 +904,7 @@ name = "hpm-tools"
 version = "7.0.0-alpha.0"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.4.3",
  "hpm-cli",
  "hpm-core",
  "hpm-docs",
