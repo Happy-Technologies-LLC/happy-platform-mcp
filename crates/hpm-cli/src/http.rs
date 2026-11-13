@@ -3,7 +3,8 @@
 //! `/mcp` plus `/health` and `/instances`, every route behind the bearer guard.
 //!
 //! Like 6.2.0, progress goes to stdout and refusals to stderr; startup refusals
-//! exit 1, a signal-driven shutdown exits 0.
+//! exit 1, a signal-driven shutdown exits 0 (a second signal during the
+//! [`SHUTDOWN_GRACE`] window exits at once with 130 for SIGINT, 143 for SIGTERM).
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -13,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use hpm_core::config::{ConfigManager, Env, InstanceSummary};
 use hpm_protocol::McpHandler;
 use hpm_protocol::transport::limits::HttpSecurity;
-use hpm_protocol::transport::{HttpApp, HttpConfig};
+use hpm_protocol::transport::{HttpApp, HttpConfig, InstancesFn};
 use hpm_types::context::{DeploymentMode, TrustedRoot};
 use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
@@ -25,6 +26,10 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_KEEPALIVE_MS: u64 = 15_000;
 /// `Number.MAX_SAFE_INTEGER`.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+/// How long open connections may finish after the first SIGINT/SIGTERM, and the
+/// bound on runtime teardown (blocking tasks) after the serve loop ends. Kept
+/// well under Docker's 10 s stop timeout.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Process entry of `happy-platform-mcp-http`. Arguments are ignored, as `node
 /// src/server.js` ignores them.
@@ -41,7 +46,25 @@ pub fn main() -> ExitCode {
         Arc::new(hpm_core::registry::InstanceRegistry::new(env.clone())),
         env.clone(),
     ));
-    let code = runtime.block_on(run(&env, config, shutdown_signal()));
+    let (forced_tx, forced_rx) = tokio::sync::oneshot::channel();
+    let (code, forced) = runtime.block_on(async {
+        // Registered before serving, so no early signal is lost.
+        let shutdown = shutdown_signal(Signals::new(), forced_tx);
+        tokio::select! {
+            code = run(&env, config, shutdown) => (code, false),
+            Ok(signal) = forced_rx => {
+                eprintln!("Received {signal} again; exiting immediately");
+                (forced_exit_code(signal), true)
+            }
+        }
+    });
+    // Never wait unboundedly for `spawn_blocking` work (e.g. a hung keychain call);
+    // a forced exit does not wait at all.
+    runtime.shutdown_timeout(if forced {
+        Duration::ZERO
+    } else {
+        SHUTDOWN_GRACE
+    });
     ExitCode::from(code)
 }
 
@@ -142,32 +165,76 @@ fn summaries_json(list: &[InstanceSummary]) -> Value {
     )
 }
 
-/// Resolves on the first SIGINT or SIGTERM, returning its name.
-async fn wait_for_signal() -> &'static str {
+/// The two HTTP trusted roots, in `HttpApp::new` order: (Streamable HTTP, legacy SSE).
+pub fn http_roots() -> (TrustedRoot, TrustedRoot) {
+    (
+        TrustedRoot::streamable_http(DeploymentMode::SingleUser),
+        TrustedRoot::legacy_sse(DeploymentMode::SingleUser),
+    )
+}
+
+/// Process signal stream: SIGINT and SIGTERM (Ctrl-C only off unix).
+struct Signals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => tokio::select! {
-                _ = tokio::signal::ctrl_c() => "SIGINT",
-                _ = term.recv() => "SIGTERM",
-            },
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-                "SIGINT"
+    int: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    term: Option<tokio::signal::unix::Signal>,
+}
+
+impl Signals {
+    fn new() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Self {
+                int: signal(SignalKind::interrupt()).ok(),
+                term: signal(SignalKind::terminate()).ok(),
             }
         }
+        #[cfg(not(unix))]
+        Self {}
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        "SIGINT"
+
+    /// Resolves on the next SIGINT or SIGTERM, returning its name.
+    async fn next(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            async fn recv(s: &mut Option<tokio::signal::unix::Signal>) {
+                match s {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending().await,
+                }
+            }
+            tokio::select! {
+                () = recv(&mut self.int) => "SIGINT",
+                () = recv(&mut self.term) => "SIGTERM",
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            "SIGINT"
+        }
     }
 }
 
-async fn shutdown_signal() {
-    let signal = wait_for_signal().await;
+/// Exit code of a forced exit: 128 + signal number, as a shell reports it.
+fn forced_exit_code(signal: &str) -> u8 {
+    if signal == "SIGTERM" { 143 } else { 130 }
+}
+
+/// The first SIGINT/SIGTERM starts a graceful shutdown (exit 0 once sessions close,
+/// at most [`SHUTDOWN_GRACE`] later). A second signal during that window is sent
+/// on `forced`, and `main` exits immediately with 130 (SIGINT) or 143 (SIGTERM).
+async fn shutdown_signal(mut signals: Signals, forced: tokio::sync::oneshot::Sender<&'static str>) {
+    let signal = signals.next().await;
     say(&format!("Received {signal}; closing MCP sessions"));
+    tokio::spawn(async move {
+        let again = signals.next().await;
+        let _ = forced.send(again);
+    });
 }
 
 /// `server.js` start-up and serve loop; returns the exit code. `shutdown` ends the
@@ -221,37 +288,37 @@ pub async fn run(
         body.insert("timestamp".into(), json!(iso8601_millis(SystemTime::now())));
         Value::Object(body)
     });
-    // `/instances` cannot answer 500 through `JsonFn`; a failed re-read is logged
-    // and answered with the last list that loaded.
-    let last_listed = std::sync::Mutex::new(match config.list_instances() {
-        Ok(list) => summaries_json(&list),
-        Err(e) => {
-            eprintln!("{NAME}: {e}");
-            return 1;
-        }
-    });
+    // Startup fails if the registry cannot be listed; afterwards each request
+    // re-reads it off the runtime, and a failure answers 500 like 6.2.0's error
+    // boundary.
+    if let Err(e) = config.list_instances() {
+        eprintln!("{NAME}: {e}");
+        return 1;
+    }
     let listing = config.clone();
-    let instances = Arc::new(move || {
-        let mut last = last_listed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match listing.list_instances() {
-            Ok(list) => *last = summaries_json(&list),
-            Err(e) => eprintln!("HTTP request failed: {e}"),
-        }
-        last.clone()
+    let instances: InstancesFn = Arc::new(move || {
+        let listing = listing.clone();
+        Box::pin(async move {
+            match tokio::task::spawn_blocking(move || listing.list_instances()).await {
+                Ok(Ok(list)) => Ok(summaries_json(&list)),
+                Ok(Err(e)) => {
+                    eprintln!("HTTP request failed: {e}");
+                    Err(())
+                }
+                Err(e) => {
+                    eprintln!("HTTP request failed: {e}");
+                    Err(())
+                }
+            }
+        })
     });
     let mut http = HttpConfig::new(security, health, instances);
     http.keepalive = keepalive;
+    http.shutdown_grace = SHUTDOWN_GRACE;
+    let (streamable_root, sse_root) = http_roots();
     let app = HttpApp::new(
-        McpHandler::new(
-            TrustedRoot::streamable_http(DeploymentMode::SingleUser),
-            dispatcher.clone(),
-        ),
-        McpHandler::new(
-            TrustedRoot::legacy_sse(DeploymentMode::SingleUser),
-            dispatcher,
-        ),
+        McpHandler::new(streamable_root, dispatcher.clone()),
+        McpHandler::new(sse_root, dispatcher),
         http,
     );
 
@@ -333,6 +400,18 @@ mod tests {
         assert_eq!(bind_host(None), "127.0.0.1");
         assert_eq!(bind_host(s("")), "127.0.0.1");
         assert_eq!(bind_host(s("0.0.0.0")), "0.0.0.0");
+    }
+
+    #[test]
+    fn each_transport_gets_its_own_root() {
+        use hpm_types::context::TransportKind;
+        let (streamable, sse) = http_roots();
+        assert_eq!(streamable.transport(), TransportKind::StreamableHttp);
+        assert_eq!(sse.transport(), TransportKind::LegacySse);
+        assert_eq!(streamable.mode(), DeploymentMode::SingleUser);
+        assert_eq!(sse.mode(), DeploymentMode::SingleUser);
+        assert_eq!(forced_exit_code("SIGINT"), 130);
+        assert_eq!(forced_exit_code("SIGTERM"), 143);
     }
 
     #[test]

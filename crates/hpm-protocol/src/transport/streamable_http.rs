@@ -55,8 +55,14 @@ const MODERN: &str = "2026-07-28";
 /// How often a Streamable session's watcher checks that rmcp still holds it.
 const SESSION_POLL: Duration = Duration::from_secs(1);
 
-/// Body builders for the 6.2.0 `/health` and `/instances` routes.
+/// Body builder for the 6.2.0 `/health` route.
 pub type JsonFn = Arc<dyn Fn() -> Value + Send + Sync>;
+
+/// `/instances` list. `Err(())` means the list could not be loaded (the provider
+/// logs why); the route then answers the 6.2.0 error boundary's 500
+/// `{"error":"Internal server error"}`.
+pub type InstancesFn =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Value, ()>> + Send>> + Send + Sync>;
 
 pub struct HttpConfig {
     pub security: HttpSecurity,
@@ -67,11 +73,11 @@ pub struct HttpConfig {
     /// `/health` body (`status`, `servicenow_instance`, `instance_name`, `timestamp`).
     pub health: JsonFn,
     /// `/instances` list; wrapped as `{"instances": …}`.
-    pub instances: JsonFn,
+    pub instances: InstancesFn,
 }
 
 impl HttpConfig {
-    pub fn new(security: HttpSecurity, health: JsonFn, instances: JsonFn) -> Self {
+    pub fn new(security: HttpSecurity, health: JsonFn, instances: InstancesFn) -> Self {
         Self {
             security,
             limits: HttpLimits::default(),
@@ -119,7 +125,7 @@ struct AppState {
     global: Arc<GlobalLimits>,
     sse: Arc<SseSessions>,
     health: JsonFn,
-    instances: JsonFn,
+    instances: InstancesFn,
 }
 
 /// The HTTP application. `streamable` must come from
@@ -657,7 +663,14 @@ async fn health(State(st): State<Arc<AppState>>) -> Response {
 }
 
 async fn instances(State(st): State<Arc<AppState>>) -> Response {
-    Json(json!({ "instances": (st.instances)() })).into_response()
+    match (st.instances)().await {
+        Ok(list) => Json(json!({ "instances": list })).into_response(),
+        Err(()) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "Internal server error" })),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]

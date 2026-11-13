@@ -12,7 +12,7 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-pub use streamable_http::{HttpApp, HttpConfig, JsonFn, PeerAddrs};
+pub use streamable_http::{HttpApp, HttpConfig, InstancesFn, JsonFn, PeerAddrs};
 
 /// 6.2.0 `sendJson(res, status, { error })`.
 pub(crate) fn json_error(status: StatusCode, msg: &str) -> Response {
