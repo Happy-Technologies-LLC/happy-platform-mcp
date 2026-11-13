@@ -228,3 +228,23 @@ fn full_mode_prints_instance_startup_lines() {
     );
     assert!(!r.stderr.contains("docs-only"), "{}", r.stderr);
 }
+
+/// review-final L-6: a URL with a `user:password@` part is refused before any
+/// startup line prints it, and the refusal does not echo it either.
+#[test]
+fn url_with_userinfo_is_refused_without_echo() {
+    let r = run(
+        &[],
+        &[
+            (
+                "SERVICENOW_INSTANCE_URL",
+                "https://leakuser:leakpass@dev.example.invalid",
+            ),
+            ("SERVICENOW_USERNAME", "u"),
+            ("SERVICENOW_PASSWORD", "p"),
+        ],
+    );
+    assert_refused(&r, "URL must not include username or password");
+    assert!(!r.stderr.contains("leakpass"), "{}", r.stderr);
+    assert!(!r.stderr.contains("leakuser"), "{}", r.stderr);
+}
