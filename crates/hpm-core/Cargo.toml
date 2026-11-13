@@ -21,10 +21,9 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["time", "net", "sync", "io-util", "rt"] }
 zeroize.workspace = true
 url.workspace = true
-# Lane B additions (lead hoists into [workspace.dependencies] at merge).
-base64 = "=0.22.1"
-getrandom = "=0.4.3"
-regex = "=1.13.1"
+base64.workspace = true
+getrandom.workspace = true
+regex.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["user", "fs"] }
@@ -39,7 +38,7 @@ windows-native-keyring-store.workspace = true
 dbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]
-tempfile = "=3.27.0"
+tempfile.workspace = true
 tokio = { workspace = true }
 
 [lints]
