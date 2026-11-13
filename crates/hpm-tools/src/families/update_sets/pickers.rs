@@ -2,7 +2,9 @@
 //! SN-Set-Current-Application, SN-Inspect-Update-Set
 //! (6.2.0 `mcp-server-consolidated.js` 2053-2205, 2607-2622).
 
-use hpm_core::client::{ClientError, PinnedClient, RecordParams, RecordQuery};
+use hpm_core::client::{
+    ClientError, PICKER_CHANGE_NOT_SENT_CODE, PinnedClient, RecordParams, RecordQuery,
+};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
 use hpm_types::tool::{MutationOutcome, ToolError};
@@ -79,14 +81,31 @@ pub(super) fn set_update_set<'a>(
     })
 }
 
-/// Automated change failed or did not verify: fall back to a fix script.
+/// Automated change definitely failed (or was never sent): fall back to a
+/// fix script. When the picker write may have landed (`Unknown`), no fix
+/// script is written: the update set may already be current (review TF-10,
+/// P3 decision 12).
 async fn fix_script_fallback(
     deps: &FamilyDeps,
     client: &PinnedClient,
     sys_id: &str,
     error: ClientError,
 ) -> Done {
-    let outcome = failed_outcome(&error);
+    // A failure before the picker PUT left nothing changed (review TF-10).
+    let outcome = if error.code.as_deref() == Some(PICKER_CHANGE_NOT_SENT_CODE) {
+        MutationOutcome::NotSent
+    } else {
+        failed_outcome(&error)
+    };
+    if outcome == MutationOutcome::Unknown {
+        return done(
+            outcome,
+            Err(ToolError::Text(format!(
+                "⚠️ The update set change could not be confirmed: {}\n\nThe update set (sys_id {sys_id}) may already be your current update set. Check before trying again:\n- SN-Get-Current-Update-Set\n- or the update set picker in the ServiceNow UI (refresh the browser first)",
+                error.message
+            ))),
+        );
+    }
     let update_set = match client
         .get_record("sys_update_set", sys_id, &RecordParams::default())
         .await

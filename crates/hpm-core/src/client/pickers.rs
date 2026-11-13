@@ -15,6 +15,18 @@ use super::{RecordParams, RecordQuery, ServiceNowClient, State, UI_USER_AGENT};
 const UPDATE_SET_PICKER: &str = "/api/now/ui/concoursepicker/updateset";
 const APPLICATION_PICKER: &str = "/api/now/ui/concoursepicker/application";
 
+/// The update-set change failed before its picker `PUT` was sent: the current
+/// update set is certainly unchanged (review TF-10). Set only on errors that
+/// carried no code of their own.
+pub const PICKER_CHANGE_NOT_SENT_CODE: &str = "PICKER_CHANGE_NOT_SENT";
+
+fn before_change(mut e: ClientError) -> ClientError {
+    if e.code.is_none() {
+        e.code = Some(PICKER_CHANGE_NOT_SENT_CODE.to_owned());
+    }
+    e
+}
+
 /// `isSysId` (bulk-limits): 32 lowercase hex characters.
 pub fn is_sys_id(value: &str) -> bool {
     value.len() == 32
@@ -205,9 +217,16 @@ impl ServiceNowClient {
         }
         let update_set = self
             .get_record("sys_update_set", sys_id, &RecordParams::default())
-            .await?;
-        let session = self.open_ui_picker_session(slot).await?;
-        let previous = session.get(UPDATE_SET_PICKER).await?;
+            .await
+            .map_err(before_change)?;
+        let session = self
+            .open_ui_picker_session(slot)
+            .await
+            .map_err(before_change)?;
+        let previous = session
+            .get(UPDATE_SET_PICKER)
+            .await
+            .map_err(before_change)?;
         let previous = previous
             .pointer("/result/current")
             .filter(|v| !v.is_null())

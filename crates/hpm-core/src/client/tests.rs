@@ -1200,18 +1200,15 @@ async fn set_update_set_fails_when_write_is_ignored() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    let err = h
-        .client
-        .set_current_update_set(SET_A)
-        .await
-        .err()
-        .map(|e| e.message);
+    let err = h.client.set_current_update_set(SET_A).await.err();
     assert_eq!(
-        err,
+        err.as_ref().map(|e| e.message.clone()),
         Some(format!(
             "Update set verification failed: current is {SET_DEFAULT}, expected {SET_A}"
         ))
     );
+    // The PUT was sent: never marked as "change not sent" (review TF-10).
+    assert_eq!(err.and_then(|e| e.code), None);
     assert!(h.client.set_current_update_set("BAD").await.is_err());
 }
 
