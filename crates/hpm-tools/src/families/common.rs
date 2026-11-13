@@ -2,7 +2,8 @@
 
 use hpm_core::client::ClientError;
 use hpm_core::client::error::{
-    CREDENTIAL_ORIGIN_MISMATCH_CODE, INVALID_PATH_SEGMENT_CODE, is_credential_error_code,
+    CREDENTIAL_ORIGIN_MISMATCH_CODE, INVALID_PATH_SEGMENT_CODE,
+    TRIGGER_INSERTED_RESULT_UNKNOWN_CODE, is_credential_error_code,
 };
 use hpm_types::tool::MutationOutcome;
 
@@ -10,10 +11,11 @@ use hpm_types::tool::MutationOutcome;
 /// - `NotSent`: refused before the request left (stale generation before send,
 ///   credential errors incl. an origin-mismatched saved secret, a rejected table / sys_id path segment);
 /// - `Unknown`: it may have been acted on (stale generation after send,
-///   502/503/504 from a gateway that may have forwarded it, transport errors);
+///   502/503/504 from a gateway that may have forwarded it, transport errors,
+///   any failure after the `sys_trigger` fallback inserted its trigger);
 /// - `Failed`: any other HTTP status, i.e. ServiceNow answered and refused it.
 pub fn failed_outcome(e: &ClientError) -> MutationOutcome {
-    if e.is_stale_after_send() {
+    if e.is_stale_after_send() || e.code.as_deref() == Some(TRIGGER_INSERTED_RESULT_UNKNOWN_CODE) {
         return MutationOutcome::Unknown;
     }
     let not_sent = e.is_stale()
@@ -53,6 +55,9 @@ mod tests {
         );
         let path = path_segment("..", "table").expect_err("dot segment");
         assert_eq!(failed_outcome(&path), MutationOutcome::NotSent);
+        let mut polled = ClientError::plain("ACL").with_status(Some(403));
+        polled.code = Some(TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
+        assert_eq!(failed_outcome(&polled), MutationOutcome::Unknown);
         let moved = ClientError::new(
             "CredentialResolutionError",
             "m",

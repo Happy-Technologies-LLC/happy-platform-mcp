@@ -1457,6 +1457,55 @@ async fn trigger_errors_are_wrapped() {
     );
 }
 
+#[tokio::test]
+async fn trigger_errors_after_insert_are_tagged_result_unknown() {
+    // Insert refused: never inserted, no tag.
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(|_| Ok(HttpResponse::json(403, &json!({})))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let e = h
+        .client
+        .execute_script_via_trigger("x", "", true, &TriggerOptions::default())
+        .await
+        .expect_err("insert refused");
+    assert_ne!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+
+    // Inserted, then the wrap (auto_delete) or the syslog poll fails.
+    for (auto_delete, failing) in [(true, Method::Put), (false, Method::Get)] {
+        let h = harness(
+            basic(Some("pw")),
+            FakeTransport::new(move |r| {
+                if r.method == Method::Post {
+                    Ok(HttpResponse::json(
+                        201,
+                        &json!({"result": {"sys_id": "tid"}}),
+                    ))
+                } else if r.method == failing {
+                    Ok(HttpResponse::json(
+                        403,
+                        &json!({"error": {"message": "ACL"}}),
+                    ))
+                } else {
+                    Ok(HttpResponse::json(200, &json!({"result": {}})))
+                }
+            }),
+            FakePoster::new(vec![]),
+            Value::Null,
+        );
+        let e = h
+            .client
+            .execute_script_via_trigger("x", "", auto_delete, &TriggerOptions::default())
+            .await
+            .expect_err("post-insert failure");
+        assert_eq!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+        assert_eq!(e.status, Some(403));
+        assert_eq!(e.message, "Failed to create script trigger: 403 ACL");
+    }
+}
+
 // ---- url-bounds (tests/url-bounds.test.js:198-219) ----------------------------
 
 #[tokio::test]
