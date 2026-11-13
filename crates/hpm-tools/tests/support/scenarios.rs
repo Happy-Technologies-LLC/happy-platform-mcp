@@ -388,5 +388,56 @@ pub fn scenario(id: &str) -> Scenario {
         }
         _ => {}
     }
+    if s.requests.is_none() {
+        s.requests = insertion_order_args(id).map(|r| vec![r]);
+    }
     s
+}
+
+fn call(name: &str, arguments: Value) -> Value {
+    json!({"name": name, "arguments": arguments})
+}
+
+/// RH-1: the JS scenario's `arguments` in their original insertion order, for
+/// goldens whose arguments hold multi-key objects. The golden file records the
+/// keys sorted; a port that iterates an argument object (to build a body or a
+/// query) must see the order the 6.2.0 capture actually sent.
+fn insertion_order_args(id: &str) -> Option<Value> {
+    let (tool, _) = id.split_once('/')?;
+    let args = match id {
+        "SN-Create-Record/basic" => json!({"table_name": "incident",
+            "data": {"short_description": "golden create", "urgency": "2"}}),
+        "SN-Update-Record/basic" => json!({"table_name": "incident", "sys_id": u(1),
+            "data": {"state": "2", "work_notes": "golden update"}}),
+        "SN-Batch-Create/basic-with-refs" => json!({"operations": [
+            {"table": "incident", "data": {"short_description": "golden batch parent"}, "save_as": "parent"},
+            {"table": "incident", "data": {"short_description": "golden batch child", "parent_incident": "${parent}"}}
+        ], "transaction": true, "progress": true}),
+        "SN-Batch-Create/failure-rollback" => json!({"operations": [
+            {"table": "incident", "data": {"short_description": "golden ok"}},
+            {"table": "problem", "data": {"short_description": "golden fails"}}
+        ], "transaction": true}),
+        "SN-Batch-Update/basic" => json!({"updates": [
+            {"table": "incident", "sys_id": u(1), "data": {"state": "2"}},
+            {"table": "incident", "sys_id": u(2), "data": {"state": "3"}}
+        ], "stop_on_error": false, "progress": true}),
+        "SN-Batch-Update/stop-on-error" => json!({"updates": [
+            {"table": "incident", "sys_id": u(1), "data": {"state": "2"}},
+            {"table": "incident", "sys_id": u(3), "data": {"state": "3"}},
+            {"table": "incident", "sys_id": u(4), "data": {"state": "4"}}
+        ], "stop_on_error": true}),
+        "SN-Catalog-Submit/basic" => json!({"sys_id": u(30),
+            "variables": {"model": "golden-laptop", "justification": "golden"},
+            "quantity": 2, "requested_for": u(31)}),
+        "SN-Validate-Configuration/basic" => json!({"catalog_item": u(30),
+            "checks": {"variables": true, "ui_policies": true, "business_rules": true}}),
+        "SN-Create-Workflow/two-activities" => json!({"name": "Golden Workflow",
+            "table": "incident", "description": "golden", "condition": "active=true",
+            "activities": [{"name": "Start", "script": "answer = true;"},
+                {"name": "Finish", "script": "gs.info(\"done\");"}],
+            "transitions": [{"from": 0, "to": 1, "condition": "true"}],
+            "publish": true, "progress": true}),
+        _ => return None,
+    };
+    Some(call(tool, args))
 }

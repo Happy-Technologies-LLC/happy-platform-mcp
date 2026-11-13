@@ -312,12 +312,25 @@ mod selftest {
                 "{dev:?}"
             );
         }
-        let ok = json!({"response": {"error": {"code": -32602, "message": "m"}}});
-        assert!(
-            Expected::InvalidParamsNoOutbound
-                .check(&ok, &[], &ok, &[])
-                .is_empty()
-        );
+        // CO-2: the -32602 must name the deviating argument (as a whole word).
+        let invalid = Expected::InvalidParamsNoOutbound { arg: "transitions" };
+        let err = |m: &str| json!({"response": {"error": {"code": -32602, "message": m}}});
+        let ok = err("transitions[0].from: expected string");
+        assert!(invalid.check(&ok, &[], &ok, &[]).is_empty());
+        for unrelated in [
+            "Invalid arguments",
+            "activities: expected array",
+            "m",
+            "my_transitions: x",
+        ] {
+            let bad = err(unrelated);
+            assert!(
+                !invalid.check(&bad, &[], &bad, &[]).is_empty(),
+                "{unrelated}"
+            );
+        }
+        let out = [json!({"path": "/api/now/table/wf_workflow"})];
+        assert!(!invalid.check(&ok, &out, &ok, &[]).is_empty());
 
         let text = |t: &str| json!({"response": {"result": {"isError": true, "content": [{"type": "text", "text": t}]}}});
         let want = text("Error: Batch create failed at operation 1: 403 ACL");

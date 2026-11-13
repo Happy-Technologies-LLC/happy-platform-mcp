@@ -790,6 +790,19 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
     let mut problems = Vec::new();
     for (i, (got, want)) in got_steps.iter().zip(&steps).enumerate() {
         let got = fold_tmp(scrubber.deep(got));
+        // The host check runs for every step, deviated or not.
+        let expected = if sc.prod_steps.contains(&i) {
+            world.prod_host()
+        } else {
+            world.default_host()
+        };
+        if let Some(wrong) = hosts[i].iter().find(|h| **h != expected) {
+            problems.push(format!(
+                "step {i} instance: a ServiceNow request reached {}, expected {}",
+                scrubber.string(wrong),
+                scrubber.string(&expected)
+            ));
+        }
         if let Some(dev) = super::deviations::lookup(id, i) {
             let outbound = comparable_outbound(&got["outbound"]);
             let want_outbound = comparable_outbound(&want["outbound"]);
@@ -809,18 +822,6 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
             &comparable_outbound(&want["outbound"]),
             &mut problems,
         );
-        let expected = if sc.prod_steps.contains(&i) {
-            world.prod_host()
-        } else {
-            world.default_host()
-        };
-        if let Some(wrong) = hosts[i].iter().find(|h| **h != expected) {
-            problems.push(format!(
-                "step {i} instance: a ServiceNow request reached {}, expected {}",
-                scrubber.string(wrong),
-                scrubber.string(&expected)
-            ));
-        }
     }
     if problems.is_empty() {
         Ok(())
