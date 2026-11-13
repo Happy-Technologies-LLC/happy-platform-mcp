@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 
 use super::error::{ClientError, RawError};
 use super::http::{HttpRequest, Method, format_iso};
@@ -13,6 +14,31 @@ use super::{RecordParams, RecordQuery, ServiceNowClient, State, UI_USER_AGENT};
 
 const UPDATE_SET_PICKER: &str = "/api/now/ui/concoursepicker/updateset";
 const APPLICATION_PICKER: &str = "/api/now/ui/concoursepicker/application";
+
+/// What a failed `set_current_update_set` did to the current update set
+/// (review TF-10, P3 decision 12): decided by the phase that failed, never by
+/// the error's code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerChange {
+    /// Failed before the picker `PUT` was sent: certainly unchanged.
+    NotSent,
+    /// The instance definitely did not apply it: the `PUT` got a non-408 4xx,
+    /// or the verification read named a different current update set.
+    Refused,
+    /// The `PUT` was sent and may have landed (its 408/5xx/transport error,
+    /// or any failure of the verification read).
+    Unknown,
+}
+
+fn put_failure(e: &ClientError) -> PickerChange {
+    if e.is_stale() && !e.is_stale_after_send() {
+        return PickerChange::NotSent;
+    }
+    match e.status {
+        Some(s) if (400..500).contains(&s) && s != 408 => PickerChange::Refused,
+        _ => PickerChange::Unknown,
+    }
+}
 
 /// `isSysId` (bulk-limits): 32 lowercase hex characters.
 pub fn is_sys_id(value: &str) -> bool {
@@ -26,7 +52,9 @@ pub(crate) struct PickerSession {
     client: ServiceNowClient,
     state: Arc<State>,
     pub auth_header: String,
-    cookie: String,
+    /// The UI session cookie (`JSESSIONID`, `glide_session_store`): zeroized
+    /// on drop like the processor's `CookieJar` (review CR-9).
+    cookie: Zeroizing<String>,
     /// Set once `/logout.do` was sent (RFC §4 per-operation UI logout).
     ended: bool,
 }
@@ -43,7 +71,7 @@ impl PickerSession {
     fn logout(&self) -> HttpRequest {
         let mut req = logout_request(&self.state.url, &self.auth_header);
         if !self.cookie.is_empty() {
-            req.set_header("Cookie", self.cookie.clone());
+            req.set_header("Cookie", self.cookie.as_str());
         }
         req
     }
@@ -63,7 +91,7 @@ impl PickerSession {
         req.set_header("Accept", "application/json");
         req.set_header("User-Agent", UI_USER_AGENT);
         if !self.cookie.is_empty() {
-            req.set_header("Cookie", self.cookie.clone());
+            req.set_header("Cookie", self.cookie.as_str());
         }
         req.max_redirects = 5;
         req
@@ -75,7 +103,10 @@ impl PickerSession {
         raw.into_safe_servicenow(redactor)
     }
 
+    /// Fails closed (stale) before sending when the generation has moved, so
+    /// no request goes to the old host with the old credential (review CO-8).
     async fn exchange(&self, req: HttpRequest) -> Result<Value, ClientError> {
+        self.client.assert_current(&self.state)?;
         let response = self.client.send(&self.state, req).await?;
         if (200..300).contains(&response.status) {
             Ok(response.data())
@@ -121,20 +152,39 @@ impl ServiceNowClient {
             client: self.clone(),
             state,
             auth_header,
-            cookie: String::new(),
+            cookie: Zeroizing::new(String::new()),
             ended: false,
         });
         let mut landing = session.request(Method::Get, "/");
         landing.set_header("Accept", "text/html");
-        let response = self.send(&session.state, landing).await?;
-        // Captured before the status check so the logout can end a session
-        // the landing page opened even when it answered non-2xx (review L-2).
-        session.cookie = response
-            .header_all("set-cookie")
-            .map(|e| e.split(';').next().unwrap_or(""))
-            .filter(|p| !p.is_empty())
-            .collect::<Vec<_>>()
-            .join("; ");
+        self.assert_current(&session.state)?;
+        let response = self.deps().transport.send(landing).await;
+        // Captured before the generation and status checks so the logout can
+        // end a session the landing page opened even when it answered non-2xx
+        // (review L-2) or the generation moved while it was in flight (CR-1).
+        if let Ok(response) = &response {
+            session.cookie = Zeroizing::new(
+                response
+                    .header_all("set-cookie")
+                    .map(|e| e.split(';').next().unwrap_or(""))
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+        }
+        if self.assert_current(&session.state).is_err() {
+            return Err(ClientError::stale_after_send());
+        }
+        let response = response.map_err(|e| {
+            self.sanitize(
+                &session.state,
+                RawError {
+                    message: e.message,
+                    code: e.code,
+                    ..RawError::default()
+                },
+            )
+        })?;
         if !(200..300).contains(&response.status) {
             return Err(session.fail(RawError::http(response.status, response.data())));
         }
@@ -143,26 +193,30 @@ impl ServiceNowClient {
 
     /// `setCurrentUpdateSet`.
     pub async fn set_current_update_set(&self, sys_id: &str) -> Result<Value, ClientError> {
-        self.set_current_update_set_or(sys_id, |e| async { e })
+        self.set_current_update_set_or(sys_id, |e, _| async { e })
             .await
     }
 
     /// [`Self::set_current_update_set`], running `on_failure` while the UI
     /// session is still open, so the session's `/logout.do` is the
     /// operation's last request (after e.g. the tool's fix-script lookup).
+    /// `on_failure` also gets what the failure means for the change.
     pub async fn set_current_update_set_or<T, F, Fut>(
         &self,
         sys_id: &str,
         on_failure: F,
     ) -> Result<Value, T>
     where
-        F: FnOnce(ClientError) -> Fut,
+        F: FnOnce(ClientError, PickerChange) -> Fut,
         Fut: Future<Output = T>,
     {
         let mut slot = None;
         let result = match self.set_current_update_set_in(sys_id, &mut slot).await {
             Ok(v) => Ok(v),
-            Err(e) => Err(on_failure(e).await),
+            Err(failure) => {
+                let (e, change) = *failure;
+                Err(on_failure(e, change).await)
+            }
         };
         end_slot(slot).await;
         result
@@ -172,17 +226,19 @@ impl ServiceNowClient {
         &self,
         sys_id: &str,
         slot: &mut Option<PickerSession>,
-    ) -> Result<Value, ClientError> {
+    ) -> Result<Value, Box<(ClientError, PickerChange)>> {
+        let not_sent = |e| Box::new((e, PickerChange::NotSent));
         if !is_sys_id(sys_id) {
-            return Err(ClientError::plain(
+            return Err(not_sent(ClientError::plain(
                 "update_set_sys_id must be a 32-character lowercase hexadecimal sys_id",
-            ));
+            )));
         }
         let update_set = self
             .get_record("sys_update_set", sys_id, &RecordParams::default())
-            .await?;
-        let session = self.open_ui_picker_session(slot).await?;
-        let previous = session.get(UPDATE_SET_PICKER).await?;
+            .await
+            .map_err(not_sent)?;
+        let session = self.open_ui_picker_session(slot).await.map_err(not_sent)?;
+        let previous = session.get(UPDATE_SET_PICKER).await.map_err(not_sent)?;
         let previous = previous
             .pointer("/result/current")
             .filter(|v| !v.is_null())
@@ -190,14 +246,31 @@ impl ServiceNowClient {
         let name = update_set.get("name").cloned().unwrap_or(Value::Null);
         let response = session
             .put(UPDATE_SET_PICKER, &json!({"name": name, "sysId": sys_id}))
-            .await?;
+            .await
+            .map_err(|e| {
+                let change = put_failure(&e);
+                Box::new((e, change))
+            })?;
         self.sleep_ms(500).await;
-        let current = session.get(UPDATE_SET_PICKER).await?;
-        let current_id = str_at(&current, &["result", "current", "sysId"]);
+        let current = session
+            .get(UPDATE_SET_PICKER)
+            .await
+            .map_err(|e| Box::new((e, PickerChange::Unknown)))?;
+        let current_id =
+            str_at(&current, &["result", "current", "sysId"]).filter(|s| !s.is_empty());
         if current_id != Some(sys_id) {
-            return Err(ClientError::plain(format!(
-                "Update set verification failed: current is {}, expected {sys_id}",
-                current_id.filter(|s| !s.is_empty()).unwrap_or("unknown")
+            // A named other set is a definite answer; no answer is not.
+            let change = if current_id.is_some() {
+                PickerChange::Refused
+            } else {
+                PickerChange::Unknown
+            };
+            return Err(Box::new((
+                ClientError::plain(format!(
+                    "Update set verification failed: current is {}, expected {sys_id}",
+                    current_id.unwrap_or("unknown")
+                )),
+                change,
             )));
         }
         let prev = previous.map_or(Value::Null, |p| {

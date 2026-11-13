@@ -1200,18 +1200,15 @@ async fn set_update_set_fails_when_write_is_ignored() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    let err = h
-        .client
-        .set_current_update_set(SET_A)
-        .await
-        .err()
-        .map(|e| e.message);
+    let err = h.client.set_current_update_set(SET_A).await.err();
     assert_eq!(
-        err,
+        err.as_ref().map(|e| e.message.clone()),
         Some(format!(
             "Update set verification failed: current is {SET_DEFAULT}, expected {SET_A}"
         ))
     );
+    // The PUT was sent: never marked as "change not sent" (review TF-10).
+    assert_eq!(err.and_then(|e| e.code), None);
     assert!(h.client.set_current_update_set("BAD").await.is_err());
 }
 
@@ -1429,15 +1426,43 @@ async fn processor_not_run_and_unknown_outcomes() {
     );
 }
 
+const TID: &str = "0123456789abcdef0123456789abcdef";
+
+/// TF-8: only this run's prefixed lines are captured, in order, prefix
+/// stripped; other sessions' and other runs' lines are dropped.
+#[test]
+fn run_log_lines_keep_only_this_run() {
+    let messages = [
+        "MCP_1_ab:START",
+        "MCP_1_ab:LOG mine 1",
+        "someone else's gs.info",
+        "MCP_9_ff:LOG other run",
+        "MCP_1_abc:LOG longer marker",
+        "MCP_1_ab:LOG mine 2",
+        "MCP_1_ab:END{\"ok\":true}",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (lines, verified) = scripts::run_log_lines(messages, "MCP_1_ab");
+    assert_eq!(lines, vec!["mine 1".to_owned(), "mine 2".to_owned()]);
+    assert!(verified);
+}
+
 #[test]
 fn wrapper_and_marker_parsing() {
-    let w = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", true, Some("tid"));
+    let w = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", Some(TID));
     assert!(w.contains("gs.info('MCP_1_ab:START');"));
     assert!(w.contains("} catch (e) {"));
-    assert!(w.contains("triggerGR.get('tid')"));
-    let w2 = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", false, None);
+    assert!(w.contains(&format!("triggerGR.get('{TID}')")));
+    // The script's own logging is prefixed with the run marker (TF-8).
+    assert!(w.contains("(function (gs) {\n  doIt();\n  }).call(this, "));
+    assert!(w.contains("})(gs, 'MCP_1_ab:LOG '));\n"));
+    let w2 = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", None);
     assert!(!w2.contains("triggerGR"));
     assert!(w2.ends_with("} finally {\n}"));
+    // CO-9: a malformed server-supplied sys_id never reaches the source.
+    let w3 = scripts::build_background_script_wrapper("doIt();", "MCP_1_ab", Some("x');evil('"));
+    assert!(!w3.contains("triggerGR") && !w3.contains("evil"));
     use scripts::{MarkerOutcome, parse_background_script_marker as parse};
     assert_eq!(
         parse(
@@ -1481,9 +1506,9 @@ fn trigger_fake(marker_message: Option<&'static str>, logs: Value) -> Arc<FakeTr
         match (r.method, path.as_str()) {
             (Method::Post, "/api/now/table/sys_trigger") => Ok(HttpResponse::json(
                 201,
-                &json!({"result": {"sys_id": "tid", "name": "MCP_Script"}}),
+                &json!({"result": {"sys_id": TID, "name": "MCP_Script"}}),
             )),
-            (Method::Put, "/api/now/table/sys_trigger/tid") => {
+            (Method::Put, p) if p == format!("/api/now/table/sys_trigger/{TID}") => {
                 Ok(HttpResponse::json(200, &json!({"result": {}})))
             }
             (Method::Get, "/api/now/table/syslog") if q.contains("messageLIKE") => {
@@ -1510,7 +1535,14 @@ fn trigger_fake(marker_message: Option<&'static str>, logs: Value) -> Arc<FakeTr
 
 #[tokio::test]
 async fn trigger_completed_with_logs_and_utc_times() {
-    let logs = json!([{"message": "MCP_1_ab:START"}, {"message": "user line"}, {"message": "MCP_9_ff:END{}"}]);
+    // Interleaved foreign lines (other sessions' gs.info, other runs' markers
+    // and logs) never enter the result (TF-8).
+    let logs = json!([
+        {"message": "MCP_1_ab:START"},
+        {"message": "other session line"},
+        {"message": "MCP_9_ff:LOG foreign run"},
+        {"message": "MCP_9_ff:END{}"}
+    ]);
     let h = harness(
         basic(Some("pw")),
         trigger_fake(Some("{\"ok\":true}"), logs),
@@ -1524,8 +1556,15 @@ async fn trigger_completed_with_logs_and_utc_times() {
         .unwrap_or_default();
     assert_eq!(r["status"], "completed");
     assert_eq!(r["success"], true);
-    assert_eq!(r["logs"], json!(["user line"]));
+    assert_eq!(r["logs"], json!([]));
     assert_eq!(r["logsWindowUnverified"], true);
+    assert!(
+        h.transport
+            .requests()
+            .iter()
+            .any(|q| q.url.contains("messageSTARTSWITHMCP_")),
+        "the log query is bounded to this run's marker"
+    );
     // FakeClock starts at 2026-08-28T12:00:00Z; next_action is +1s in UTC.
     assert_eq!(r["next_action"], "2026-08-28 12:00:01");
     let create = &h.transport.requests()[0];
@@ -1657,10 +1696,7 @@ async fn trigger_errors_after_insert_are_tagged_result_unknown() {
             basic(Some("pw")),
             FakeTransport::new(move |r| {
                 if r.method == Method::Post {
-                    Ok(HttpResponse::json(
-                        201,
-                        &json!({"result": {"sys_id": "tid"}}),
-                    ))
+                    Ok(HttpResponse::json(201, &json!({"result": {"sys_id": TID}})))
                 } else if r.method == failing {
                     Ok(HttpResponse::json(
                         403,
@@ -1680,8 +1716,11 @@ async fn trigger_errors_after_insert_are_tagged_result_unknown() {
             .expect_err("post-insert failure");
         assert_eq!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
         assert_eq!(e.status, Some(403));
-        assert_eq!(e.message, "Failed to create script trigger: 403 ACL");
-        assert_eq!(e.reason.as_deref(), Some("sys_id tid"));
+        assert_eq!(
+            e.message,
+            "The sys_trigger record was created, but a later step failed: 403 ACL"
+        );
+        assert_eq!(e.reason.as_deref(), Some(format!("sys_id {TID}").as_str()));
     }
 }
 
@@ -1909,4 +1948,199 @@ async fn progress_is_per_call_and_monotonic() {
     assert_eq!(got(&b), vec![(1.0, Some("b1".into()))]);
 }
 
+/// CO-1: a handler that calls `client(ctx)` twice gets two clones for the
+/// same call sink; they share one counter, so progress never goes backwards.
+#[tokio::test]
+async fn progress_is_shared_by_clones_of_one_call() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let sink = Arc::new(Sink::default());
+    let first = h.client.with_progress(sink.clone());
+    first.notify_progress("a", Some(5), None).await;
+    let second = h.client.with_progress(sink.clone());
+    second.notify_progress("b", None, None).await;
+    first.notify_progress("c", Some(1), None).await;
+    drop((first, second));
+    let got = sink.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        got,
+        vec![
+            (5.0, Some("a".into())),
+            (6.0, Some("b".into())),
+            (7.0, Some("c".into()))
+        ]
+    );
+}
+
 mod atf;
+
+/// Review M-1/M-2 (TF-10): what a failed update-set change means is decided
+/// by the phase that failed. `fault` answers the request it wants to fail
+/// (method, path, nth picker GET); everything else follows the happy path.
+fn picker_phase_fake(
+    fault: fn(Method, &str, usize) -> Option<Result<HttpResponse, TransportError>>,
+) -> Arc<FakeTransport> {
+    let picker_gets = Arc::new(Mutex::new(0usize));
+    FakeTransport::new(move |r| {
+        let path = r
+            .url
+            .trim_start_matches(URL)
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        let nth = if r.method == Method::Get && path == "/api/now/ui/concoursepicker/updateset" {
+            let mut n = picker_gets.lock().unwrap_or_else(|e| e.into_inner());
+            *n += 1;
+            *n
+        } else {
+            0
+        };
+        if let Some(answer) = fault(r.method, &path, nth) {
+            return answer;
+        }
+        let j = |s: u16, v: Value| Ok(HttpResponse::json(s, &v));
+        match (r.method, path.as_str()) {
+            (Method::Get, "/") => Ok(HttpResponse::new(200, "<html></html>")
+                .with_header("set-cookie", "JSESSIONID=s1; Path=/")),
+            (Method::Get, "/api/now/ui/concoursepicker/updateset") => j(
+                200,
+                json!({"result": {"current": {"sysId": SET_A, "name": "Story set"}}}),
+            ),
+            (Method::Put, "/api/now/ui/concoursepicker/updateset") => {
+                j(200, json!({"result": {"success": true}}))
+            }
+            (Method::Get, p) if p == format!("/api/now/table/sys_update_set/{SET_A}") => j(
+                200,
+                json!({"result": {"sys_id": SET_A, "name": "Story set"}}),
+            ),
+            _ => j(200, json!({})),
+        }
+    })
+}
+
+async fn picker_change(
+    fault: fn(Method, &str, usize) -> Option<Result<HttpResponse, TransportError>>,
+) -> Option<PickerChange> {
+    let h = harness(
+        basic(Some("inert")),
+        picker_phase_fake(fault),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    h.client
+        .set_current_update_set_or(SET_A, |_, change| async move { change })
+        .await
+        .err()
+}
+
+#[tokio::test]
+async fn picker_change_phase_classification() {
+    // M-1: transport errors before the PUT (record read, landing, first
+    // picker read) carry a code but are still "not sent".
+    assert_eq!(
+        picker_change(|m, p, _| (m == Method::Get
+            && p.starts_with("/api/now/table/sys_update_set"))
+        .then(|| Err(TransportError::new("ECONNREFUSED", "connect ECONNREFUSED"))))
+        .await,
+        Some(PickerChange::NotSent)
+    );
+    assert_eq!(
+        picker_change(|m, p, _| (m == Method::Get && p == "/")
+            .then(|| Err(TransportError::new("ETIMEDOUT", "timeout"))))
+        .await,
+        Some(PickerChange::NotSent)
+    );
+    assert_eq!(
+        picker_change(|_, _, nth| (nth == 1)
+            .then(|| Err(TransportError::new("ECONNREFUSED", "connect ECONNREFUSED"))))
+        .await,
+        Some(PickerChange::NotSent)
+    );
+    // The PUT itself: a definite 4xx is refused; 5xx/408/transport unknown.
+    assert_eq!(
+        picker_change(|m, _, _| (m == Method::Put).then(|| Ok(HttpResponse::json(
+            403,
+            &json!({"error": {"message": "ACL"}})
+        ))))
+        .await,
+        Some(PickerChange::Refused)
+    );
+    assert_eq!(
+        picker_change(|m, _, _| (m == Method::Put)
+            .then(|| Ok(HttpResponse::json(408, &json!({})))))
+        .await,
+        Some(PickerChange::Unknown)
+    );
+    assert_eq!(
+        picker_change(
+            |m, _, _| (m == Method::Put).then(|| Err(TransportError::new("ECONNRESET", "reset")))
+        )
+        .await,
+        Some(PickerChange::Unknown)
+    );
+    // M-2: any failure of the verification read after a 2xx PUT is unknown.
+    assert_eq!(
+        picker_change(|_, _, nth| (nth == 2).then(|| Ok(HttpResponse::json(
+            403,
+            &json!({"error": {"message": "ACL"}})
+        ))))
+        .await,
+        Some(PickerChange::Unknown)
+    );
+    // A verification read naming another set is a definite answer.
+    assert_eq!(
+        picker_change(|_, _, nth| (nth == 2).then(|| Ok(HttpResponse::json(
+            200,
+            &json!({"result": {"current": {"sysId": SET_DEFAULT, "name": "Default"}}})
+        ))))
+        .await,
+        Some(PickerChange::Refused)
+    );
+    // No current set reported: unknown.
+    assert_eq!(
+        picker_change(
+            |_, _, nth| (nth == 2).then(|| Ok(HttpResponse::json(200, &json!({"result": {}}))))
+        )
+        .await,
+        Some(PickerChange::Unknown)
+    );
+}
+
+/// Review L-1 (owner decision P4-1, CO-3): a run reported in another scope
+/// than the one requested fails and names both scopes.
+#[tokio::test]
+async fn processor_scope_mismatch_fails_and_names_both_scopes() {
+    let body = format!(
+        "<a href=\"sys_script_execution_history.do?sys_id={HISTORY}\">h</a>Script completed in scope x_other: script<pre>*** Script: hi<BR/></pre>"
+    );
+    let h = harness(
+        basic(Some("pw")),
+        processor_fake(body),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let r = h
+        .client
+        .execute_script_via_processor(
+            "gs.info('hi')",
+            &ProcessorOptions {
+                scope: Some("global".into()),
+                ..ProcessorOptions::default()
+            },
+        )
+        .await
+        .unwrap_or_default();
+    assert_eq!(r["ok"], false);
+    assert_eq!(r["status"], "scope_mismatch");
+    assert_eq!(r["scope"], "x_other");
+    assert_eq!(r["scopeId"], Value::Null);
+    assert_eq!(
+        r["scopeMismatch"],
+        json!({"requested": "global", "ran": "x_other"})
+    );
+}

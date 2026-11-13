@@ -20,6 +20,15 @@ pub enum Expected {
     /// whole batch.` naming `operation_0..operation_{created-1}` (full text
     /// compared; the sys_ids come from the stub).
     RecordedTextThenNotRolledBack { created: usize },
+    /// Exactly the first `requests` recorded outbound requests (the golden must
+    /// record more than `requests`), then only cookie-session `GET` requests to
+    /// the `then` paths (in order), no written files, then an `isError: true`
+    /// single text that contains `contains`.
+    OutboundPrefixThenErrorText {
+        requests: usize,
+        then: &'static [&'static str],
+        contains: &'static str,
+    },
 }
 
 #[derive(Debug)]
@@ -55,6 +64,20 @@ pub const DEVIATIONS: &[Deviation] = &[
         reason: "hardening (TF-1, review lane A L2): 6.2.0 sent `bad table!` to \
                  ServiceNow; 7.0 applies the 6.2.0 table-name pattern before \
                  classification and rejects it with -32602, sending nothing",
+    },
+    Deviation {
+        golden: "SN-Execute-Background-Script/processor-unauthorized-trigger-fallback",
+        step: 0,
+        expected: Expected::OutboundPrefixThenErrorText {
+            requests: 4,
+            then: &["/logout.do"],
+            contains: "allow_trigger_fallback: true",
+        },
+        reason: "owner decision P4-2: the sys_trigger fallback (runs the script \
+                 outside record_for_rollback, in the Default update set) is opt-in in \
+                 7.0; without consent the call stops after /sys.scripts.do refused, \
+                 ends the cookie session it opened, and names the opt-in instead of \
+                 inserting a sys_trigger",
     },
 ];
 
@@ -142,6 +165,44 @@ impl Expected {
                 if !keys_ok {
                     problems.push(format!(
                         "expected {recorded:?} + {NOT_ROLLED_BACK:?} + {{operation_0..{created}}} + {DO_NOT_RERUN:?}, got {text:?}"
+                    ));
+                }
+            }
+            Self::OutboundPrefixThenErrorText {
+                requests,
+                then,
+                contains,
+            } => {
+                if want_outbound.len() <= requests {
+                    problems.push(format!(
+                        "the golden records {} outbound requests; the deviation keeps {requests}, so it is not a strict prefix",
+                        want_outbound.len()
+                    ));
+                    return problems;
+                }
+                let prefix = &want_outbound[..requests];
+                let tail_ok = outbound.get(..requests) == Some(prefix)
+                    && outbound.len() == requests + then.len()
+                    && outbound[requests..].iter().zip(then).all(|(r, path)| {
+                        r["method"] == "GET"
+                            && r["path"] == *path
+                            && r["credentials"]["sessionCookie"] == true
+                    });
+                if !tail_ok {
+                    problems.push(format!(
+                        "outbound differs: got {outbound:?}, want the first {requests} recorded {prefix:?} then cookie-session GET {then:?}"
+                    ));
+                }
+                if got["files"] != serde_json::json!({}) {
+                    problems.push(format!("expected no written files, got {}", got["files"]));
+                }
+                if got["response"]["result"]["isError"] != true {
+                    problems.push(format!("expected isError: true, got {}", got["response"]));
+                }
+                if !single_text(&got["response"]).is_some_and(|t| t.contains(contains)) {
+                    problems.push(format!(
+                        "expected one text item containing {contains:?}, got {}",
+                        got["response"]
                     ));
                 }
             }

@@ -44,6 +44,7 @@ use oauth_policy::{
     MAX_URL_LENGTH, TRUSTED_OAUTH_ORIGINS_ENV, assert_approved_oauth_endpoint,
     resolve_oauth_endpoints, trim_trailing_slashes,
 };
+pub use pickers::PickerChange;
 pub use pinned::PinnedClient;
 pub use scripts::{ProcessorOptions, ProcessorRun, TriggerOptions};
 
@@ -676,6 +677,10 @@ fn record_path(table: &str, sys_id: &str, params: &RecordParams) -> Result<Strin
 pub(crate) struct Inner {
     deps: ClientDeps,
     current: RwLock<Arc<State>>,
+    /// Live per-call progress routes, keyed by the call's sink, so every
+    /// clone made for one call (e.g. two `client(ctx)` calls) shares one
+    /// counter (review CO-1). Weak: a route ends with its call's clones.
+    progress_routes: Mutex<Vec<(usize, std::sync::Weak<CallProgress>)>>,
 }
 
 /// Cheap to clone; clones share one instance state. A pinned clone
@@ -696,6 +701,7 @@ impl ServiceNowClient {
             inner: Arc::new(Inner {
                 deps,
                 current: RwLock::new(Arc::new(state)),
+                progress_routes: Mutex::new(Vec::new()),
             }),
             pin: None,
             progress: None,
@@ -785,14 +791,38 @@ impl ServiceNowClient {
         }
     }
 
-    /// A clone that reports progress to one call's sink. Other clones (other
-    /// calls) are unaffected.
+    /// A clone that reports progress to one call's sink. Clones made for the
+    /// same sink (the same call) share one monotonic counter; other clones
+    /// (other calls) are unaffected.
     pub fn with_progress(&self, sink: Arc<dyn hpm_types::context::ProgressSink>) -> Self {
+        // The sink's data address identifies the call while any route to it
+        // is alive (the route holds the sink, so the address cannot be reused).
+        let key = Arc::as_ptr(&sink).cast::<()>() as usize;
+        let route = {
+            let mut routes = self
+                .inner
+                .progress_routes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            routes.retain(|(_, w)| w.strong_count() > 0);
+            match routes
+                .iter()
+                .find(|(k, _)| *k == key)
+                .and_then(|(_, w)| w.upgrade())
+            {
+                Some(route) => route,
+                None => {
+                    let route = Arc::new(CallProgress {
+                        sink,
+                        last: Mutex::new(0.0),
+                    });
+                    routes.push((key, Arc::downgrade(&route)));
+                    route
+                }
+            }
+        };
         Self {
-            progress: Some(Arc::new(CallProgress {
-                sink,
-                last: Mutex::new(0.0),
-            })),
+            progress: Some(route),
             ..self.clone()
         }
     }

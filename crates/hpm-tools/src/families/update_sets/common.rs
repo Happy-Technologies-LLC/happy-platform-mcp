@@ -1,7 +1,7 @@
 //! Shared handler plumbing for lane C: pinned client acquisition, outcome
 //! facts, error texts, progress counter and fix-script files.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use hpm_core::client::{ClientError, PinnedClient};
 use hpm_types::context::RequestContext;
@@ -133,16 +133,25 @@ impl<'a> Progress<'a> {
     }
 }
 
-/// `path.resolve(process.cwd(), 'scripts')`, with the working directory from deps.
-///
-/// When `deps.working_dir` is `None` the relative `scripts` path is resolved
-/// against the process working directory (6.2.0 parity, see
-/// `generated_scripts::write_fix_script_file`). The composition root should
-/// always set `working_dir` so fix scripts never land in an arbitrary cwd.
-fn scripts_dir(deps: &FamilyDeps) -> PathBuf {
-    deps.working_dir
-        .as_ref()
-        .map_or_else(|| PathBuf::from("scripts"), |d| d.join("scripts"))
+/// `path.resolve(process.cwd(), 'scripts')`, with the working directory from
+/// deps. When `working_dir` is `None` the current directory is read now, at
+/// write time (review L-5: an unreadable cwd must not stop startup).
+fn scripts_dir(
+    working_dir: Option<&Path>,
+    current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> std::io::Result<PathBuf> {
+    match working_dir {
+        Some(d) => Ok(d.join("scripts")),
+        None => current_dir().map(|d| d.join("scripts")),
+    }
+}
+
+/// The script could not be written because its directory is unknown: the
+/// error carries the script itself so it can still be run manually.
+fn unresolved_dir_message(error: &std::io::Error, content: &str) -> String {
+    format!(
+        "Cannot resolve the fix-script directory (the server's current directory is unavailable: {error}). Run this fix script manually:\n\n{content}"
+    )
 }
 
 /// `new Date().toISOString()`.
@@ -158,7 +167,8 @@ pub(super) async fn write_fix_script(
     file: &FixScriptFile<'_>,
 ) -> Result<String, String> {
     let content = generated_scripts::build_fix_script_file_content(file);
-    let dir = scripts_dir(deps);
+    let dir = scripts_dir(deps.working_dir.as_deref(), std::env::current_dir)
+        .map_err(|e| unresolved_dir_message(&e, &content))?;
     tokio::task::spawn_blocking(move || {
         generated_scripts::write_fix_script_file(&dir, &file_name, &content)
     })
@@ -175,4 +185,26 @@ pub(super) fn metadata(pairs: &[(&str, Option<&Value>)]) -> Value {
         super::js_text::put(&mut map, key, *value);
     }
     Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L-5: the directory is resolved at write time, and an unreadable cwd
+    /// yields an error that still carries the script.
+    #[test]
+    fn scripts_dir_is_resolved_lazily_and_failure_keeps_the_script() {
+        let fixed = scripts_dir(Some(Path::new("/srv/app")), || {
+            panic!("cwd must not be read when working_dir is set")
+        });
+        assert_eq!(fixed.unwrap(), PathBuf::from("/srv/app/scripts"));
+        let lazy = scripts_dir(None, || Ok(PathBuf::from("/later")));
+        assert_eq!(lazy.unwrap(), PathBuf::from("/later/scripts"));
+        let err = scripts_dir(None, || Err(std::io::Error::other("cwd deleted")))
+            .expect_err("unreadable cwd");
+        let text = unresolved_dir_message(&err, "gs.info('fix');");
+        assert!(text.contains("cwd deleted"), "{text}");
+        assert!(text.ends_with("gs.info('fix');"), "{text}");
+    }
 }
