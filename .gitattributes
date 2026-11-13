@@ -1,0 +1,2 @@
+# rustfmt.toml sets newline_style = "Unix"; keep Rust sources LF on Windows checkouts.
+*.rs text eol=lf

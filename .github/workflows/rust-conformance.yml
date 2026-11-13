@@ -43,6 +43,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # The Linux Secret Service keyring backend links libdbus.
+      - name: Install libdbus
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+
       - name: Format
         run: cargo fmt --all --check
 
@@ -64,6 +69,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Install libdbus
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
 
       - name: Build every non-cli crate alone
         shell: bash
@@ -98,6 +106,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
+
+      - name: Install libdbus
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
 
       - name: Build the HTTP binary
         run: cargo build -p hpm-cli --bin happy-platform-mcp-http --locked
