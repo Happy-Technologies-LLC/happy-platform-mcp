@@ -1908,5 +1908,95 @@ async fn progress_is_per_call_and_monotonic() {
     );
     assert_eq!(got(&b), vec![(1.0, Some("b1".into()))]);
 }
+// ---- cancellation (C7 / review M2) ---------------------------------------------
+
+#[tokio::test]
+async fn cancel_before_send_makes_no_request() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel();
+    let call = h.client.with_cancel(token);
+    let e = call
+        .update_record("incident", "abc", &json!({"state": "2"}))
+        .await
+        .expect_err("cancelled");
+    assert_eq!(e.code.as_deref(), Some(error::CANCELLED_BEFORE_SEND_CODE));
+    assert!(h.transport.requests().is_empty(), "a request left");
+    // Other calls (no token) are unaffected.
+    h.client
+        .update_record("incident", "abc", &json!({"state": "2"}))
+        .await
+        .expect("uncancelled call");
+    assert_eq!(h.transport.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn cancel_in_flight_is_unknown_and_never_resent() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    *h.transport.stall.lock().unwrap_or_else(|e| e.into_inner()) = Some("/incident/");
+    let token = tokio_util::sync::CancellationToken::new();
+    let call = h.client.with_cancel(token.clone());
+    let pending = tokio::spawn(async move {
+        call.update_record("incident", "abc", &json!({"state": "2"}))
+            .await
+    });
+    while h.transport.requests().is_empty() {
+        tokio::task::yield_now().await;
+    }
+    token.cancel();
+    let e = tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .expect("prompt")
+        .expect("join")
+        .expect_err("cancelled");
+    assert_eq!(e.code.as_deref(), Some(error::CANCELLED_AFTER_SEND_CODE));
+    assert!(matches!(
+        hpm_types::tool::ToolError::from(e),
+        hpm_types::tool::ToolError::Cancelled
+    ));
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(h.transport.requests().len(), 1, "mutation re-sent");
+}
+
+#[tokio::test]
+async fn cancelled_poll_sleep_ends_at_once() {
+    struct Forever;
+    impl Clock for Forever {
+        fn now_ms(&self) -> i64 {
+            0
+        }
+        fn sleep(&self, _: u64) -> BoxFut<'_, ()> {
+            Box::pin(std::future::pending())
+        }
+    }
+    let mut h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(ok_result(json!({}))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    Arc::get_mut(&mut h.client.inner)
+        .expect("sole owner")
+        .deps
+        .clock = Arc::new(Forever);
+    let token = tokio_util::sync::CancellationToken::new();
+    let call = h.client.with_cancel(token.clone());
+    token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(5), call.sleep_ms(60_000))
+        .await
+        .expect("poll sleep ended on cancel");
+}
 
 mod atf;

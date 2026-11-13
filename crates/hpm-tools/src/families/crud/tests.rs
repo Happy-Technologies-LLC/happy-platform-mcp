@@ -199,6 +199,14 @@ async fn create_and_update_name_the_record_by_key_field() {
     let fake = Fake::new(vec![Err(http(503, "503 unavailable"))]);
     let done = handlers::create_record(&fake, &json!({"table_name": "u_x", "data": {}})).await;
     assert_eq!(done.outcome, MutationOutcome::Unknown);
+    // C7: a cancel while the write was in flight is recorded Unknown; one
+    // before it left is NotSent.
+    let fake = Fake::new(vec![Err(ClientError::cancelled_after_send())]);
+    let done = handlers::create_record(&fake, &json!({"table_name": "u_x", "data": {}})).await;
+    assert_eq!(done.outcome, MutationOutcome::Unknown);
+    let fake = Fake::new(vec![Err(ClientError::cancelled())]);
+    let done = handlers::create_record(&fake, &json!({"table_name": "u_x", "data": {}})).await;
+    assert_eq!(done.outcome, MutationOutcome::NotSent);
 }
 
 #[tokio::test]

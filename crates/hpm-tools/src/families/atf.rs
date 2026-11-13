@@ -215,10 +215,10 @@ fn tool_text(response: &Value) -> (String, bool) {
 /// - input, bulk-limit and name-resolution errors: before the dispatch POST;
 /// - an sn_cicd 4xx (except 408): the instance refused the dispatch;
 /// - `CICD_NO_PROGRESS_ID`: the dispatch POST succeeded;
-/// - 5xx, 408, a 2xx with a non-JSON body, a stale generation or a transport
-///   failure without a status: the run may have started, so unknown.
+/// - 5xx, 408, a 2xx with a non-JSON body, a stale generation, a cancel or a
+///   transport failure without a status: the run may have started, so unknown.
 fn run_error_outcome(e: &ClientError) -> MutationOutcome {
-    if e.is_stale() {
+    if e.is_stale() || e.is_cancelled() {
         return MutationOutcome::Unknown;
     }
     if e.name != "CicdApiError" {

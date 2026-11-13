@@ -16,7 +16,7 @@
 //! - a `tools/call` of a golden tool no family registers: lane-pending, must be
 //!   `-32602 Unknown tool`;
 //! - resources while the composition serves none (lane E pending): `resources/list`
-//!   must be empty and `resources/read` `-32603 Unknown resource`.
+//!   must be empty and `resources/read` `-32602 Unknown resource` + `data.uri` (SEP-2164).
 
 #[allow(dead_code, reason = "support is shared with golden_tools.rs")]
 mod support;
@@ -117,6 +117,17 @@ const DEVIATIONS: &[Deviation] = &[
         name: None,
         expected: |m| json!({"error": {"code": -32601, "message": m}}),
         reason: "7.0 protocol stack: -32601 message names the method (6.2.0: `Method not found`)",
+    },
+    Deviation {
+        at: Some(("surface/full-default", 7)),
+        method: "resources/read",
+        name: None,
+        expected: |_| {
+            json!({"error": {"code": -32602, "message": "Unknown resource: servicenow://unknown",
+                "data": {"uri": "servicenow://unknown"}}})
+        },
+        reason: "owner decision SEP-2164: an unknown resource URI is -32602 with data.uri \
+                 on every era (6.2.0: -32603)",
     },
 ];
 
@@ -289,7 +300,8 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
                     &mut problems,
                     format!("{at} lane-pending"),
                     &got["response"],
-                    &json!({"error": {"code": -32603, "message": format!("Unknown resource: {uri}")}}),
+                    &json!({"error": {"code": -32602, "message": format!("Unknown resource: {uri}"),
+                        "data": {"uri": uri}}}),
                 );
                 continue;
             }
