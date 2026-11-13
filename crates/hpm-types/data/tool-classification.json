@@ -1,0 +1,1948 @@
+{
+  "meta": {
+    "generated": "2026-11-13",
+    "revision": 2,
+    "change_log": [
+      "r2 (2026-11-13): TABLE_RULE steps 3-4 replaced by the per-instance dictionary-derived table-level rule (fail closed for unknown / missing-from-sys_db_object / failed load); added cache_and_refresh. Execute: added sys_variable_value, moved sys_rest_message, sys_rest_message_fn, sys_soap_message to admin, downgraded sp_page and sys_report to write; prefixes: added sys_pd_*, dropped sys_ux_* and the sys_security_*_script placeholder. Admin: removed nonexistent sys_credentials, added privilege tables, password/password2 field rule, replaced the sys_user_* prefix with an exact list, sys_dictionary/sys_db_object exact-only, sys_properties all keys. Fixed SN-Create-Activity (script goes to wf_activity.input) and SN-Create-Workflow (condition is `conditions`; on_cancel is the script) notes. sys_ws_definition and ecc_agent left as OPEN owner questions. Per-tool access classes unchanged (29 read / 23 write / 6 execute / 2 admin).",
+      "r1 (2026-11-13): initial 60-tool classification (D05)."
+    ],
+    "lane": "D05ToolClassification",
+    "source_fixture": "/tmp/hpm-specs/happy-platform-mcp-tools-list-6.2.0.json (60 tools)",
+    "repo_baseline": "happy-platform-mcp 6.2.0",
+    "class_order": [
+      "read",
+      "write",
+      "execute",
+      "admin"
+    ],
+    "class_definitions": {
+      "read": "no state change on instance or server (picker/instance reads count as read)",
+      "write": "creates/updates instance data or config via the Table/UI APIs, or writes bounded local server files; cannot cause caller-chosen code to run",
+      "execute": "can run code on the instance: caller-supplied scripts, writes to script-bearing/scheduler tables or script-typed fields, activation of stored scripts, or dispatch of stored test code (ATF)",
+      "admin": "mutates MCP-server configuration or process-wide shared state, or (via TABLE_RULE) writes privilege/schema/credential tables"
+    },
+    "side_effect_values": [
+      "none",
+      "local-disk",
+      "instance-config",
+      "instance-data",
+      "instance-code",
+      "session-state"
+    ],
+    "output_values": [
+      "record-data",
+      "metadata",
+      "static-public",
+      "none"
+    ],
+    "output_definitions": {
+      "record-data": "anything derived from instance row content or caller-chosen queries (incl. free text, user-authored rows, script output) - subject to DataProtector",
+      "metadata": "schema, definitions, configuration, status of instance/server; no business-row content",
+      "static-public": "content from public docs or packaged static files only; no instance data",
+      "none": "no instance data at all"
+    },
+    "hints_note": "readOnlyHint/destructiveHint/idempotentHint/openWorldHint are advisory MCP annotations (spec 2026-07-28 tool annotations). NEVER used for policy; policy uses access/escalation. Fixture 6.2.0 carries no annotations at all, so these are all new.",
+    "hints_derivation": "readOnly = access read AND side_effect none. destructive = tool overwrites existing values (updates/state changes/script execution) vs purely additive. idempotent = repeated call with same args leaves same state (value-wise; side effects like notifications ignored). openWorld = contacts ServiceNow or GitHub (any external system); false for local-only.",
+    "output_values_dp_canonical": [
+      "none",
+      "schema",
+      "records",
+      "opaque"
+    ],
+    "output_class_note": "`output_class` is the legacy D05 vocabulary (record-data|metadata|static-public|none) kept only for its justification text. `dp_output_class` (none|schema|records|opaque) is canonical; see output-class-vocabulary.md.",
+    "dp_output_class_derivation": "record-data -> records, except script output / logs / CI-CD / ATF JSON -> opaque; metadata -> schema; static-public and none -> none. `none` applies to successful results only; error, progress and log channels are never none (DP schema N4)."
+  },
+  "table_rule": {
+    "id": "TABLE_RULE",
+    "applies_to": [
+      "SN-Create-Record",
+      "SN-Update-Record",
+      "SN-Batch-Create",
+      "SN-Batch-Update",
+      "SN-Move-Records-To-Update-Set"
+    ],
+    "statement": "effective_class = max(base_class, class(table), class(fields written), class(values written)); order read < write < execute < admin. Batch tools take the max over every operation. Mismatch with the principal's granted class => deny before any HTTP call.",
+    "steps": [
+      "1. Normalize table: trim, lowercase; reject anything not matching ^[a-z][a-z0-9_]{0,79}$ (Node accepts arbitrary strings for Query-Table/Create-Record/Update-Record; SN-Update-Record builds /api/now/table/${table}/${sysId} unvalidated, src/mcp-server-consolidated.js:1686). sys_id must match ^[0-9a-f]{32}$.",
+      "2. Resolve ancestors via sys_db_object.super_class chain (cached per instance; see \"Cache and refresh\"). class(table) = max over the table and all ancestors, except admin tables listed as exact-only below. FAIL CLOSED to execute if resolution fails, the table is unknown, or the table is missing from sys_db_object (e.g. var__m_* variable tables, which are not registered there; evidence: exec-table-verification.md section 2b and Unknowns).",
+      "3. Per-instance dictionary-derived execute class (replaces the former static-lookup and field-rule steps; evidence and rationale: exec-table-verification.md sections 2d, 3, 4). At connect, build exec_tables for the instance as the closure over the sys_db_object.super_class chain of (a) every table with a sys_dictionary field whose internal_type is in {script, script_plain, script_server, script_client, html_script, email_script, condition, condition_string, expression, formula, xml, html_template, workflow_conditions, glide_var, data_object} and (b) every table with a string-typed field named script, onclick, calculation, function_definition, dynamic_creation_script or ending _script (always applied, not only as a fallback). glide_script and javascript are kept only as forward aliases (0 fields on PDI dev451274). The rule is TABLE-level: ANY write to a table in exec_tables is execute, whichever field is written, because non-script fields (active, advanced, when, order, run_as) change which code runs.",
+      "4. Static union and fail-closed: execute also applies to the static carriers/containers and prefixes listed below. Unknown table, table missing from sys_db_object, or a failed/unavailable dictionary load => every table outside the static lists is execute (FAIL CLOSED); a field-name filter is never trusted as a substitute because it cannot find unknown names. Expected false positives (XML-only tables such as sys_soap_message_test, logs such as sys_script_execution_history, runtime glide_var holders) are accepted; business-data tables (task, cmdb_ci, ...) stay write.",
+      "5. Value rule: any written string value whose trimmed text starts with \"javascript:\" (reference qualifiers, dynamic defaults, dynamic filters) or contains \"<g:evaluate\" / \"${\" Jelly/script markers => execute.",
+      "6. sys_update_xml / sys_remote_update_set: writing payload/name/type/action/target_name => execute (committing/previewing applies arbitrary records incl. scripts); writing ONLY the update_set pointer (SN-Move-Records-To-Update-Set) => write.",
+      "7. Privilege/credential tables => admin (proposed; owner decision 3): the exact list and prefixes below, plus any table (own or inherited field) with a sys_dictionary internal_type of password or password2 (73 tables excluding var__m_* on PDI dev451274; exec-table-verification.md section 4). class = max over ancestors, except sys_dictionary and sys_db_object, which match exact-only (otherwise the 60 var_dictionary-derived variable tables would become admin; default applied, owner may override). sys_properties: every write is admin, with no key pattern matching.",
+      "8. Delete is not exposed by any of the 60 tools; if added later it must carry its own rule."
+    ],
+    "execute_tables_exact": [
+      "sys_trigger",
+      "sysauto",
+      "sysauto_script",
+      "sys_script",
+      "sys_script_include",
+      "sys_script_client",
+      "sys_script_ajax",
+      "sys_script_email",
+      "sys_script_fix",
+      "sys_script_validator",
+      "sys_ui_script",
+      "sys_ui_action",
+      "sys_ui_policy",
+      "sys_ui_page",
+      "sys_ui_macro",
+      "sys_ui_context_menu",
+      "sys_ws_definition (OPEN owner question: container routing to sys_ws_operation scripts; keep execute or downgrade to write)",
+      "sys_ws_operation",
+      "sys_web_service",
+      "sys_transform_script",
+      "sys_transform_map",
+      "sys_transform_entry",
+      "sys_processor",
+      "sysevent_script_action",
+      "sysevent_in_email_action",
+      "sysevent_email_action",
+      "sys_installation_exit",
+      "sys_remote_update_set",
+      "sys_update_xml (payload fields; see step 6)",
+      "sys_variable_value",
+      "wf_workflow",
+      "wf_workflow_version",
+      "wf_activity",
+      "wf_condition",
+      "wf_transition",
+      "sp_widget",
+      "sp_angular_provider",
+      "sys_atf_test",
+      "sys_atf_step",
+      "sys_atf_step_config",
+      "sys_atf_test_suite",
+      "sc_cat_item_producer",
+      "catalog_script_client",
+      "catalog_ui_policy",
+      "item_option_new (default/qualifier scripts; also covered by field+value rules)",
+      "ecc_queue (Command/JavascriptProbe topics execute on a MID server)",
+      "ecc_agent (OPEN owner question: MID metadata only; execute, admin or write)",
+      "sys_data_source (also has password2, so resolves to admin via the credential rule)"
+    ],
+    "execute_prefixes": [
+      "sys_script*",
+      "sysauto*",
+      "wf_*",
+      "sys_hub_*",
+      "sys_flow_*",
+      "sys_pd_*",
+      "sys_atf_*"
+    ],
+    "admin_tables_exact": [
+      "sys_user",
+      "sys_user_role",
+      "sys_user_has_role",
+      "sys_user_grmember",
+      "sys_user_group",
+      "sys_group_has_role",
+      "sys_user_role_contains",
+      "sys_user_has_role_time_limited",
+      "sys_user_delegate",
+      "sys_security_acl",
+      "sys_security_acl_role",
+      "sys_security_attribute",
+      "sys_security_data_filter",
+      "sys_security_restricted_list",
+      "sys_security_type",
+      "sys_security_operation",
+      "sys_security_obj_oper",
+      "sys_properties (all keys; no key pattern matching)",
+      "sys_auth_profile",
+      "sys_auth_profile_basic",
+      "sys_auth_profile_oauth2",
+      "oauth_entity",
+      "oauth_credential",
+      "oauth_entity_profile",
+      "sys_certificate",
+      "discovery_credentials",
+      "sys_alias",
+      "sys_connection",
+      "sys_rest_message",
+      "sys_rest_message_fn",
+      "sys_soap_message",
+      "sys_scope_privilege",
+      "sys_restricted_caller_access",
+      "sys_api_access_policy",
+      "sys_soap_api_access_policy",
+      "ip_access",
+      "sys_cors_rule",
+      "sys_dictionary_override",
+      "user_criteria (also script-bearing; admin wins)",
+      "sys_db_object",
+      "sys_dictionary",
+      "sys_glide_object",
+      "sys_scope",
+      "sys_app",
+      "sys_store_app"
+    ],
+    "admin_tables_exact_only": [
+      "sys_dictionary",
+      "sys_db_object"
+    ],
+    "admin_prefixes": [
+      "sys_auth_*",
+      "oauth_*"
+    ],
+    "admin_field_rule": "internal_type `password` or `password2` => admin (any table, own or inherited field). Covers credential tables absent from the exact list (for example sys_email_account, ldap_server_config, sys_soap_message_function, sys_wss_profile, gen_ai_service_secret; full list: exec-table-verification.md section 4). `sys_generated_security_acl` and the other sys_security_acl descendants are admin by propagation, `sys_auth_policy_*` by the `sys_auth_*` prefix. `sys_credentials` does not exist on the PDI and was removed; the `sys_user_*` prefix (36 tables, mostly non-privilege such as sys_user_preference, sys_user_session, sys_user_login_history) was replaced by the exact list.",
+    "cache_and_refresh": [
+      "Cache per instance, never the full dictionary (about 15 MB, about 17 requests, about 2.7 min). Cache only the sys_dictionary subset (the step 3 type set, password/password2 fields, and the string-name heuristic) plus the sys_db_object name/super_class parent map: about 1.1 MB, 4 requests, roughly 15 s cold on the PDI (the string-name query dominates).",
+      "Key the cache by instance + glide.war + the max sys_updated_on of sys_dictionary and sys_db_object.",
+      "Refresh on miss: an unknown table triggers a re-query of sys_db_object name=<t> and sys_dictionary name=<t>; the result is cached. Also apply a TTL (default 24 h).",
+      "Failed load, or a table still unknown after a refresh, fails closed to execute (step 4). On the PDI, 37 sys_db_object rows are invisible to admin over REST (cause unknown); tables among them would fail closed."
+    ],
+    "cache_and_refresh_evidence": "exec-table-verification.md section 5",
+    "open_owner_questions": [
+      {
+        "table": "sys_ws_definition",
+        "current_class": "execute",
+        "question": "Container that routes inbound calls to sys_ws_operation scripts; it has no script field itself. Keep execute or downgrade to write?",
+        "evidence": "exec-table-verification.md section 2a"
+      },
+      {
+        "table": "ecc_agent",
+        "current_class": "execute",
+        "question": "Holds MID metadata only (no script field). Options: admin if MID trust/validation is the concern, otherwise write. How validation is performed is [INFERENCE].",
+        "evidence": "exec-table-verification.md section 2a"
+      }
+    ],
+    "verification_status": "Table lists VERIFIED read-only against PDI dev451274 (Australia patch 3) on 2026-11-13: exec-table-verification.md (564 script-bearing tables found; the former static execute list covered only 129 of them, which is why steps 3-4 are dictionary-derived). Not yet verified on a customer instance. Two claims remain [INFERENCE] and need a docs check: ecc_queue output-topic semantics and how ecc_agent validation is performed.",
+    "read_side_note": "Read class never escalates by table, but reading sensitive tables (sys_user, sys_properties password2, any table matching the admin field rule, oauth_credential, ecc_queue, sys_update_xml payload, sys_email, syslog) must hand off to DataProtector (D06) as record-data."
+  },
+  "data_channels": {
+    "result": "MCP content[].text returned by the handler (src/mcp-server-consolidated.js dispatch)",
+    "errors": "catch -> `Error: ${message}` (src/mcp-server-consolidated.js:3339-3347). message for ServiceNow failures = status + SN error.message + error.detail (src/servicenow-client.js:578-590); credential strings redacted (:305-428) but instance-derived text (record names, ACL denial reasons, field values echoed by SN) is NOT redacted. Treat as instance-data channel.",
+    "progress": "notifications/progress messages (progressContext, :106-165): emitted only by Batch-Create, Batch-Update, Create-Workflow, Move-Records-To-Update-Set, Clone-Update-Set, and ATF wait polling (cicd-atf.js:432). Some carry error.message or status_message.",
+    "logs": "Two senses: (a) MCP-visible log text = Execute-Background-Script script output lines and SN-Get-ATF-Test-Logs; (b) server stderr console.error lines (table names, ids, counts) are server-local, not sent to clients, but appear in hosted-mode log aggregation."
+  },
+  "rows": [
+    {
+      "name": "SN-Add-Change-Comment",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes caller comment + record number/sys_id read back from change_request; treat as record-derived",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "comment is appended to a journal field; a retry duplicates it",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3046"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Add-Comment",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes caller comment + record number/sys_id read back from incident; treat as record-derived",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "comment is appended to a journal field; a retry duplicates it",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2815"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Add-Problem-Comment",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes caller comment + record number/sys_id read back from problem; treat as record-derived",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "comment is appended to a journal field; a retry duplicates it",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3196"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Add-Work-Notes",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes caller comment + record number/sys_id read back from incident; treat as record-derived",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "work note is appended to a journal field; a retry duplicates it",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2850"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Approve-Change",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes updated change_request fields / caller text",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "approval PUT sets absolute field values, so a repeat is value-idempotent, but business rules/notifications/work-notes fire again and state guards may reject; retry only after a read-back (Get-Record) shows the target state NOT applied",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3153",
+        "src/servicenow-client.js:1306"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Assign-Change",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes updated change_request fields / caller text",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "assignment PUT sets absolute field values, so a repeat is value-idempotent, but business rules/notifications/work-notes fire again and state guards may reject; retry only after a read-back (Get-Record) shows the target state NOT applied",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3081",
+        "src/servicenow-client.js:1306"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate; user/group resolved by name via unescaped query concat (:3099)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Assign-Incident",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes updated incident fields / caller text",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "assignment PUT sets absolute field values, so a repeat is value-idempotent, but business rules/notifications/work-notes fire again and state guards may reject; retry only after a read-back (Get-Record) shows the target state NOT applied",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2885",
+        "src/servicenow-client.js:1306"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate; user/group resolved by name via unescaped query concat (:2903)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Batch-Create",
+      "access_class": "write",
+      "table_escalation": "TABLE_RULE (max over every operations[].table and its fields; F1)",
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "per-operation created sys_ids/results; progress messages and error text carry record fields",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "\"transaction\" only stops at first failure; there is NO rollback, so partial creates persist and a retry duplicates them",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (error.message in progress msgs, :2544)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2549",
+        "src/servicenow-client.js:2493",
+        "src/bulk-limits.js (table-name pattern only; no class check)"
+      ],
+      "notes": "class = max over ops; ${var} references let later ops reuse earlier sys_ids",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Batch-Update",
+      "access_class": "write",
+      "table_escalation": "TABLE_RULE (max over every updates[].table and fields)",
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "per-update results; progress carries error.message (:2613)",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "only for the failed/unprocessed subset, after read-back, and only if every update sets absolute non-journal values; never replay the whole batch",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (error.message, :2613)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2564",
+        "src/servicenow-client.js:2572"
+      ],
+      "notes": "stop_on_error default false => partial application by default",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Catalog-Get-Categories",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "sc_category definitions (title/description/hierarchy); no business records",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3318"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Catalog-Get-Item",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "catalog item config: variables, defaults, help text, UI-policy conditions, client-script NAMES (not bodies) from item_option_new/question_choice/catalog_ui_policy*/catalog_script_client",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3275",
+        "src/servicenow-client.js:1721"
+      ],
+      "notes": "",
+      "uncertain": "default values / help text are admin-authored free text and could embed instance-specific data; classified metadata"
+    },
+    {
+      "name": "SN-Catalog-Search-Items",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "sc_cat_item/producer definitions",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3289",
+        "src/servicenow-client.js:1850"
+      ],
+      "notes": "keyword/category concatenated unescaped into encoded query (:1850)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Catalog-Submit",
+      "access_class": "write",
+      "table_escalation": "catalog item can trigger flows/workflows/business rules; not table-resolvable (POST sn_sc order_now)",
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "request number/sys_id and submitted variable echo",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "creates sc_request/sc_req_item each call; ambiguous timeout may already have created one",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3303",
+        "src/servicenow-client.js:1920"
+      ],
+      "notes": "record producers run server scripts on submit (stored code, not caller-supplied)",
+      "uncertain": "write vs execute: submitting a record producer runs stored scripts/flows; classified write because every insert can fire business rules (same as Create-Record). Owner may want an item/producer allowlist"
+    },
+    {
+      "name": "SN-Clone-Update-Set",
+      "access_class": "write",
+      "table_escalation": "creates sys_update_set + copies sys_update_xml rows INCLUDING payload (may contain scripts); see TABLE_RULE sys_update_xml payload note",
+      "side_effect": "instance-config",
+      "output_class": "metadata",
+      "output_justification": "returns new update-set id/name and copied/failed counts; no payload",
+      "dp_output_class": "schema",
+      "retry": "never",
+      "retry_condition": "each call creates another update set; partial copy failures are counted silently (no rollback)",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (counts/names)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3031",
+        "src/servicenow-client.js:2789"
+      ],
+      "notes": "",
+      "uncertain": "write vs execute: copied payload rows can carry code that runs when the clone is committed/previewed elsewhere; classified write because code already exists in the source set"
+    },
+    {
+      "name": "SN-Close-Incident",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes updated incident fields / caller text",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "close PUT sets absolute field values, so a repeat is value-idempotent, but business rules/notifications/work-notes fire again and state guards may reject; retry only after a read-back (Get-Record) shows the target state NOT applied",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3001",
+        "src/servicenow-client.js:1306"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Close-Problem",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes updated problem fields / caller text",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "close PUT sets absolute field values, so a repeat is value-idempotent, but business rules/notifications/work-notes fire again and state guards may reject; retry only after a read-back (Get-Record) shows the target state NOT applied",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:3231",
+        "src/servicenow-client.js:1306"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Create-Activity",
+      "access_class": "execute",
+      "table_escalation": "static: writes wf_activity.input (activityData.script is mapped into input; wf_activity has no script column) + vars; wf_activity is a carrier table (input:data_object, vars:glide_var)",
+      "side_effect": "instance-code",
+      "output_class": "record-data",
+      "output_justification": "created activity sys_id + echoed script/vars",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "creates a new activity row each call",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2665",
+        "src/servicenow-client.js:2678"
+      ],
+      "notes": "Activity scripts execute when the workflow runs. activityData.script is written to wf_activity.input (src/servicenow-client.js:2678-2691), not to a wf_activity.script column (none exists on the PDI); wf_activity stays execute as a carrier table (exec-table-verification.md section 2a)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Create-Fix-Script",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "local-disk",
+      "output_class": "none",
+      "output_justification": "no instance contact at all; returns the server-side file path plus first 200 chars of the CALLER-SUPPLIED script (self-echo). Path is server cwd/scripts, which is operator-visible in hosted mode",
+      "dp_output_class": "none",
+      "retry": "safe",
+      "retry_condition": "file name carries a timestamp (fileTimestamp), so a repeat writes another file; no overwrite",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "data_channels": {
+        "result": "yes (path + echo of input)",
+        "errors": "local (fs/validation)",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2465"
+      ],
+      "notes": "script_name validated (validateFixScriptName); content is not executed by the server",
+      "uncertain": "class: writes caller-controlled code to the server filesystem. write vs admin vs disabled in hosted multi-user mode; output \"none\" holds only because the preview is the caller's own input"
+    },
+    {
+      "name": "SN-Create-Incident",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "created incident number/sys_id/fields",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "creates a new incident per call",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1827"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Create-Record",
+      "access_class": "write",
+      "table_escalation": "TABLE_RULE (target table + written fields -> write|execute|admin; F1)",
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "created record echoed",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "creates a new row each call",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1654"
+      ],
+      "notes": "table_name is unvalidated in the Node schema; base class write, effective class from TABLE_RULE",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Create-Transition",
+      "access_class": "write",
+      "table_escalation": "execute when condition is supplied (wf_condition.condition is a script); else write (wf_transition row)",
+      "side_effect": "instance-code",
+      "output_class": "record-data",
+      "output_justification": "created transition/condition ids and echo",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "creates new rows each call",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2696",
+        "src/servicenow-client.js:2678"
+      ],
+      "notes": "dynamic class by argument",
+      "uncertain": "dynamic execute-vs-write split by presence of condition; owner may prefer static execute"
+    },
+    {
+      "name": "SN-Create-Workflow",
+      "access_class": "execute",
+      "table_escalation": "static: wf_workflow_version.condition is type `conditions` (not a script; <=256KiB; value rule still applies, the script field on that table is on_cancel, not written by this tool), wf_activity.input script/vars (carrier), wf_condition.condition script",
+      "side_effect": "instance-code",
+      "output_class": "record-data",
+      "output_justification": "created workflow/version/activity ids; progress messages include activity names",
+      "dp_output_class": "records",
+      "retry": "never",
+      "retry_condition": "multi-row create with no rollback; ambiguous failure leaves orphans, retry duplicates",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (activity names)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2624",
+        "src/servicenow-client.js:2749",
+        "src/bulk-limits.js validateWorkflowSpec"
+      ],
+      "notes": "publish:true also activates the version. wf_workflow_version.condition is type `conditions` (max_length 1000), not a script; the script field is on_cancel, which this tool does not write (exec-table-verification.md section 2d). The javascript: value rule still covers condition",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Discover-Table-Schema",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "sys_db_object/sys_dictionary/sys_choice/sys_ui_policy and business-rule NAMES + when; no row data",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2520",
+        "src/servicenow-client.js:3114"
+      ],
+      "notes": "tableName concatenated unvalidated into encoded query",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Docs-Families",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "static-public",
+      "output_justification": "family list from the public ServiceNowDocs GitHub repo; no instance data, no caller echo",
+      "dp_output_class": "none",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local/network (GitHub)",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/docs/tool-handlers.js:38"
+      ],
+      "notes": "no instance parameter (not instance-bound)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Docs-Get",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "static-public",
+      "output_justification": "markdown from local cache or GitHub raw of the public docs repo; path validated (config.js ~80-100) so it cannot read arbitrary files",
+      "dp_output_class": "none",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local/network",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/docs/tool-handlers.js:116"
+      ],
+      "notes": "",
+      "uncertain": "static-public relies on path validation keeping reads inside the docs cache; verify in Rust"
+    },
+    {
+      "name": "SN-Docs-Search",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "static-public",
+      "output_justification": "local SQLite FTS over public docs; query echoed back is caller input; embeddings are local-only (vector-index.js:52-60)",
+      "dp_output_class": "none",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/docs/tool-handlers.js:88"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Docs-Status",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "reports local cache directory path and index status: server-local config, not instance data, not public docs; kept out of static-public because the path leaks host layout",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/docs/tool-handlers.js:43"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Docs-Sync",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "local-disk",
+      "output_class": "metadata",
+      "output_justification": "sync counts/paths of public docs; no instance data",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": "idempotent cache refresh; no-op unless docs.localIndexEnabled (:71)",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local/network",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/docs/tool-handlers.js:70",
+        "src/docs/tool-handlers.js:140-169"
+      ],
+      "notes": "network GitHub fetch + writes cache files + SQLite",
+      "uncertain": "write on a process-wide shared cache; hosted multi-user mode may want admin-only"
+    },
+    {
+      "name": "SN-Execute-Background-Script",
+      "access_class": "execute",
+      "table_escalation": "static: caller-supplied server-side JavaScript; no table rule applies (cannot be bounded by table)",
+      "side_effect": "instance-code",
+      "output_class": "record-data",
+      "output_justification": "returns script stdout + log lines + errors, i.e. arbitrary instance data chosen by the caller",
+      "dp_output_class": "opaque",
+      "retry": "never",
+      "retry_condition": "tool itself emits \"do not re-run\" on unknown outcome (:2412-2421); script can mutate anything; fallback may run via sys_trigger (:2397-2410)",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes (script output)",
+        "errors": "sn-error-text + script errors",
+        "progress": "no",
+        "logs": "yes (script gs.info lines)"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2207-2463",
+        "src/servicenow-client.js:2075",
+        "src/servicenow-client.js:2295",
+        "src/mcp-server-consolidated.js:2338-2380"
+      ],
+      "notes": "default wait:true POST /sys.scripts.do; NOT_RUN falls back to sys_trigger create+update (:2327-2333); wait:false uses runViaTrigger (:2384); trigger failure writes a fix-script file to disk (local-disk side effect)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Explain-Field",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "sys_dictionary comments/help/choices",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2579",
+        "src/servicenow-client.js:3243"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-ATF-Results",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "test output / sys_atf_test_result rows including step output (truncated)",
+      "dp_output_class": "opaque",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/cicd-atf.js:709",
+        "src/cicd-atf.js:465",
+        "src/cicd-atf.js:519"
+      ],
+      "notes": "output truncated but not redacted",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-ATF-Test-Logs",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "captured test log text (capped); instance-derived free text",
+      "dp_output_class": "opaque",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "yes (instance test logs)"
+      },
+      "cites": [
+        "src/cicd-atf.js:717",
+        "src/cicd-atf.js:245"
+      ],
+      "notes": "regex validated (:245); logs 404 unless capture_node_logs",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-CICD-Progress",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "status_message/status_detail/error text from the instance tracker",
+      "dp_output_class": "opaque",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (wait:true polling messages carry status_message, :432)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/cicd-atf.js:697",
+        "src/cicd-atf.js:395"
+      ],
+      "notes": "wait:true only polls; never starts work",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-Current-Instance",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "instance name/url/authType of the active client",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1617"
+      ],
+      "notes": "reads process-wide shared client state",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-Current-Update-Set",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "picker GET: current update-set name/sys_id for the integration user",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2135",
+        "src/servicenow-client.js:1379"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-Incident",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "full incident record",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1838"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-Record",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "full record of any table by sys_id",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1670"
+      ],
+      "notes": "read-class is table-independent, but sensitive-table reads (sys_user, credentials, sys_properties password2, ecc_queue, sys_update_xml payload, sys_email) must route through DataProtector (D06)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Get-Table-Schema",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "static packaged schema cache; API fallback reads sys_db_object/sys_dictionary (:1707-1737, client :3114); echoes table_name",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1702"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Inspect-Update-Set",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "sys_update_set + sys_update_xml type/name/target_name; target_name is a record display name (can contain data)",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2607",
+        "src/servicenow-client.js:3418"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-List-Available-Tables",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "static-public",
+      "output_justification": "packaged src/config table metadata JSON; no instance contact (:1758)",
+      "dp_output_class": "none",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1758"
+      ],
+      "notes": "",
+      "uncertain": "static-public only if the packaged JSON stays free of customer-specific tables (spot-checked: generic OOB names)"
+    },
+    {
+      "name": "SN-List-ChangeRequests",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "change_request rows",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1920"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-List-CmdbCis",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "cmdb_ci rows",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1872"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-List-Incidents",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "incident rows",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1795"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-List-Problems",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "problem rows",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1952"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-List-SysUserGroups",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "sys_user_group rows",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1896"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-List-SysUsers",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "sys_user rows (PII: names, emails, phone) - top DataProtector candidate",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1848"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-List-Update-Sets",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "sys_update_set rows incl. free-text description and created_by",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2146"
+      ],
+      "notes": "",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Move-Records-To-Update-Set",
+      "access_class": "write",
+      "table_escalation": "TABLE_RULE on `table` (default sys_update_xml); only the update_set pointer is changed, so no payload/script is written",
+      "side_effect": "instance-config",
+      "output_class": "metadata",
+      "output_justification": "moved/failed counts and ids; progress carries error.message (:3011)",
+      "dp_output_class": "schema",
+      "retry": "conditional",
+      "retry_condition": "safe when record_sys_ids explicit and same target update_set (idempotent pointer set); never for time_range/source_update_set selectors (selection set changes between calls)",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (error.message, :3011)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2758",
+        "src/servicenow-client.js:2933"
+      ],
+      "notes": "table param validated by name only",
+      "uncertain": "moves change capture for code-bearing updates; write chosen because no payload is modified"
+    },
+    {
+      "name": "SN-Natural-Language-Search",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "rows from caller-chosen table (arbitrary); parsed query echoed",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1976"
+      ],
+      "notes": "table param arbitrary: same sensitive-table read concerns as Query-Table",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Publish-Workflow",
+      "access_class": "execute",
+      "table_escalation": "static: flips wf_workflow_version.published/active, activating stored scripts",
+      "side_effect": "instance-code",
+      "output_class": "record-data",
+      "output_justification": "version record echo",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "publish is a state set; safe after read-back shows version not published",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2737",
+        "src/servicenow-client.js:2735"
+      ],
+      "notes": "",
+      "uncertain": "execute vs write: only a flag flip, but it activates previously authored scripts"
+    },
+    {
+      "name": "SN-Query-Table",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "record-data",
+      "output_justification": "arbitrary table rows",
+      "dp_output_class": "records",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1630"
+      ],
+      "notes": "table_name unvalidated, no pattern in schema; query unescaped; sensitive-table reads must route through DataProtector (D06)",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Register-Instance",
+      "access_class": "admin",
+      "table_escalation": null,
+      "side_effect": "local-disk",
+      "output_class": "metadata",
+      "output_justification": "registry metadata fields only (instance-tools.js:169-181); errors sanitized (:217-281)",
+      "dp_output_class": "schema",
+      "retry": "conditional",
+      "retry_condition": "idempotent only when re-registering identical metadata; check registry via SN-Set-Instance (no args) first; handler rolls back on failure (:296/:472)",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local (sanitized)",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/instance-tools.js:392-513",
+        "src/instance-tools.js:354",
+        "src/instance-tools.js:483-487",
+        "src/instance-registry.js:717-731"
+      ],
+      "notes": "persists ~/.config registry atomically; requires credentials already in keychain; reloads config and clears instanceClients; not instance-bound; docsOnly mode => restartRequired (:502)",
+      "uncertain": "side_effect local-disk (registry file) is MCP-server configuration, not ServiceNow config; admin here means MCP-server administration"
+    },
+    {
+      "name": "SN-Resolve-Incident",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "echoes updated incident fields / caller text",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "resolve PUT sets absolute field values, so a repeat is value-idempotent, but business rules/notifications/work-notes fire again and state guards may reject; retry only after a read-back (Get-Record) shows the target state NOT applied",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2957",
+        "src/servicenow-client.js:1306"
+      ],
+      "notes": "number= lookup concatenates caller input unescaped into encoded query (encoded-query injection, e.g. \"^OR\"); Rust must escape/validate",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Run-ATF-Suite",
+      "access_class": "execute",
+      "table_escalation": "static: runs stored ATF suite (steps may include server-script steps)",
+      "side_effect": "instance-code",
+      "output_class": "record-data",
+      "output_justification": "pass/fail counts, per-test status, status_message; failure text may quote instance data",
+      "dp_output_class": "opaque",
+      "retry": "conditional",
+      "retry_condition": "only on a definitive pre-dispatch 4xx; tool emits \"Do not re-run\" on unknown outcome (:614); wait timeout leaves run going server-side",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (status_message, :432)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/cicd-atf.js:669",
+        "src/cicd-atf.js:585",
+        "src/cicd-atf.js:614"
+      ],
+      "notes": "sn_atf.runner.enabled=false by default on PDI -> 400",
+      "uncertain": "execute vs write: code is stored, not caller-supplied, but the tool exists to run it"
+    },
+    {
+      "name": "SN-Run-ATF-Test",
+      "access_class": "execute",
+      "table_escalation": "static: runs a stored ATF test (resolves name via sys_atf_test :565)",
+      "side_effect": "instance-code",
+      "output_class": "record-data",
+      "output_justification": "pass/fail + step status/message",
+      "dp_output_class": "opaque",
+      "retry": "conditional",
+      "retry_condition": "as SN-Run-ATF-Suite",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "yes (status_message, :432)",
+        "logs": "no"
+      },
+      "cites": [
+        "src/cicd-atf.js:647",
+        "src/cicd-atf.js:565",
+        "src/cicd-atf.js:585"
+      ],
+      "notes": "",
+      "uncertain": "same as SN-Run-ATF-Suite"
+    },
+    {
+      "name": "SN-Set-Current-Application",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "session-state",
+      "output_class": "metadata",
+      "output_justification": "previous/new application scope names",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": "idempotent picker set; tool marks isError if unverified (:2170)",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2170",
+        "src/servicenow-client.js:1395"
+      ],
+      "notes": "instance-side per-user preference of the SHARED integration account",
+      "uncertain": "picker state belongs to the single service account, so concurrent users clobber each other in hosted mode; may need admin or per-session emulation"
+    },
+    {
+      "name": "SN-Set-Instance",
+      "access_class": "admin",
+      "table_escalation": "arg-dependent: no instance_name -> read (lists instances); with instance_name -> admin",
+      "side_effect": "session-state",
+      "output_class": "metadata",
+      "output_justification": "instance names/URLs/auth type; no record data",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": "idempotent default switch",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "local",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1569-1615",
+        "src/mcp-server-consolidated.js:1591",
+        "src/mcp-server-consolidated.js:1573",
+        "src/mcp-server-consolidated.js:1566"
+      ],
+      "notes": "mutates the process-wide shared client (serviceNowClient.setInstance); per-call `instance` arg (:1566) is the safe alternative; plan F5",
+      "uncertain": "admin because it changes the default for every concurrent session; hosted mode should replace with per-session binding or disable"
+    },
+    {
+      "name": "SN-Set-Update-Set",
+      "access_class": "write",
+      "table_escalation": null,
+      "side_effect": "session-state",
+      "output_class": "metadata",
+      "output_justification": "update-set name/sys_id switched to",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": "idempotent picker set (UI picker PUT, client :1352)",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2053",
+        "src/servicenow-client.js:1352",
+        "src/mcp-server-consolidated.js:2074-2132"
+      ],
+      "notes": "on picker failure writes a fix-script file under cwd/scripts (secondary local-disk effect)",
+      "uncertain": "same shared-service-account concern as SN-Set-Current-Application"
+    },
+    {
+      "name": "SN-Update-Record",
+      "access_class": "write",
+      "table_escalation": "TABLE_RULE (target table + written fields -> write|execute|admin; F1)",
+      "side_effect": "instance-data",
+      "output_class": "record-data",
+      "output_justification": "updated record echoed",
+      "dp_output_class": "records",
+      "retry": "conditional",
+      "retry_condition": "PUT of absolute non-journal values with no side-effecting business rules; verify by read-back (Get-Record) first",
+      "annotation_hints": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:1686",
+        "src/servicenow-client.js:1306"
+      ],
+      "notes": "PUT /api/now/table/${table}/${sysId}: table and sys_id unvalidated in handler (schema pattern at :860 only) -> path injection; Rust must validate both",
+      "uncertain": null
+    },
+    {
+      "name": "SN-Validate-Configuration",
+      "access_class": "read",
+      "table_escalation": null,
+      "side_effect": "none",
+      "output_class": "metadata",
+      "output_justification": "catalog item config check from item_option_new/question_choice/catalog_ui_policy*",
+      "dp_output_class": "schema",
+      "retry": "safe",
+      "retry_condition": null,
+      "annotation_hints": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "data_channels": {
+        "result": "yes",
+        "errors": "sn-error-text",
+        "progress": "no",
+        "logs": "no"
+      },
+      "cites": [
+        "src/mcp-server-consolidated.js:2593",
+        "src/servicenow-client.js:3309"
+      ],
+      "notes": "",
+      "uncertain": null
+    }
+  ]
+}

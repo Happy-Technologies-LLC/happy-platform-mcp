@@ -1,0 +1,23 @@
+[package]
+name = "hpm-tools"
+description = "happy-platform-mcp tools: shared dispatcher pipeline, tool registration, single-user baseline services, pure-logic ports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# No `trusted-root`: the dispatcher attaches admission products only with the
+# `AdmissionKey` the composition root passes to `Dispatcher::new`.
+hpm-types.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+jsonschema.workspace = true # C6; root pin disables remote `$ref` fetching
+
+[dev-dependencies]
+tempfile.workspace = true # root pin =3.27.0; fix-script containment tests
+
+[lints]
+workspace = true

@@ -1,0 +1,43 @@
+name: Rust CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'rust-replatform/**'
+  pull_request:
+    branches:
+      - main
+      - 'rust-replatform/**'
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # The Linux Secret Service keyring backend links libdbus.
+      - name: Install libdbus
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # Review H1: each non-root crate must build without `hpm-types/trusted-root`,
+      # and no non-root src/ may name the trusted-root constructors or the feature.
+      - name: Trusted-root gate
+        run: cargo run -p xtask --locked -- check-trusted-root

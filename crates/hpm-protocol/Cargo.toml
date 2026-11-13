@@ -1,0 +1,34 @@
+[package]
+name = "hpm-protocol"
+description = "happy-platform-mcp MCP protocol adapters: stdio, Streamable HTTP and legacy SSE over rmcp."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# No `trusted-root`: adapters receive a built `TrustedRoot` from the composition root.
+hpm-types.workspace = true
+hpm-tools.workspace = true
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
+axum = { workspace = true, features = ["tokio", "http1", "json"] }
+tokio = { workspace = true, features = ["sync", "time", "io-util", "net", "macros"] }
+tokio-util.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+futures-core.workspace = true
+# Own accept loop with header read timeout, connection cap and graceful drain (review M1).
+hyper = { workspace = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio", "server", "server-graceful"] }
+tower = { workspace = true, features = ["util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

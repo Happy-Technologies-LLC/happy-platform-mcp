@@ -1,0 +1,45 @@
+[package]
+name = "hpm-cli"
+description = "happy-platform-mcp composition root and command line: wires the trusted root, services, tools and transports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "happy-platform-mcp"
+path = "src/main.rs"
+
+# 6.x alias (npm `bin` parity); same entry point.
+[[bin]]
+name = "servicenow-mcp-server"
+path = "src/bin/servicenow-mcp-server.rs"
+
+# `node src/server.js` (`npm start`): HTTP transport, configured from the environment.
+[[bin]]
+name = "happy-platform-mcp-http"
+path = "src/bin/happy-platform-mcp-http.rs"
+
+[dependencies]
+# The only crate that enables `trusted-root` (RFC §2.1).
+hpm-types = { workspace = true, features = ["trusted-root"] }
+hpm-core.workspace = true
+hpm-docs.workspace = true
+hpm-protocol.workspace = true
+hpm-tools.workspace = true
+tokio = { workspace = true, features = ["net", "signal"] }
+serde_json.workspace = true
+reqwest.workspace = true
+inquire.workspace = true
+zeroize.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,45 @@
+[package]
+name = "hpm-core"
+description = "happy-platform-mcp core: configuration, instance registry, keychain and token store, ServiceNow client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# No `trusted-root`: only the composition root (hpm-cli) enables it.
+hpm-types.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+keyring-core.workspace = true
+reqwest.workspace = true
+# Blocking pool for keychain / token-file I/O; timers, sockets and sync for the client.
+tokio = { workspace = true, features = ["time", "net", "sync", "io-util", "rt"] }
+zeroize.workspace = true
+url.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+regex.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["user", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store.workspace = true
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+dbus-secret-service-keyring-store.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true }
+
+[lints]
+workspace = true
