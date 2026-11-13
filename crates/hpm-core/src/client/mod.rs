@@ -393,8 +393,9 @@ pub fn resolve_instance_request(instance_url: &str, request: &str) -> Option<Str
 }
 
 /// One Table API path segment: `table` / `sys_id` values are percent-encoded
-/// (everything but `A-Za-z0-9_-`), and dot segments are rejected, so they
-/// cannot add query parameters, a fragment, an authority or `..` traversal.
+/// like JS `encodeURIComponent` (everything but `A-Za-z0-9-_.!~*'()`), and dot
+/// segments are rejected, so they cannot add query parameters, a fragment, an
+/// authority or `..` traversal.
 pub fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
     if value.is_empty() || value == "." || value == ".." {
         return Err(ClientError::plain(format!(
