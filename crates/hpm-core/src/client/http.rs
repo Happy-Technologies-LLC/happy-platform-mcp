@@ -237,7 +237,20 @@ fn map_reqwest_error(error: &reqwest::Error) -> TransportError {
     } else {
         "ECONNRESET"
     };
-    TransportError::new(code, error.to_string())
+    // reqwest's Display stops at "error sending request for url (...)"; the
+    // cause (DNS, TCP, TLS, timeout) lives in the source chain. 6.x (axios)
+    // showed it, e.g. `connect ETIMEDOUT 1.2.3.4:443`, so keep it and the code.
+    let mut message = format!("{code}: {error}");
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = cause.source();
+    }
+    TransportError::new(code, message)
 }
 
 impl HttpTransport for ReqwestTransport {
@@ -418,5 +431,36 @@ mod tests {
         assert_eq!(axios_param_encode("csrf_token,id"), "csrf_token,id");
         assert_eq!(axios_param_encode("id=ABC"), "id%3DABC");
         assert_eq!(axios_param_encode("a^b c"), "a%5Eb+c");
+    }
+
+    /// Live smoke N1: the tool text must carry the code and the OS cause,
+    /// not just reqwest's "error sending request for url (...)".
+    #[tokio::test]
+    async fn connect_failure_message_keeps_code_and_cause() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("free port")
+            .port();
+        let err = ReqwestTransport::new()
+            .expect("transport")
+            .send(HttpRequest {
+                method: Method::Get,
+                url: format!("http://127.0.0.1:{port}/api/now/table/sys_user"),
+                headers: vec![],
+                body: None,
+                timeout: Some(Duration::from_secs(5)),
+                max_redirects: 0,
+            })
+            .await
+            .expect_err("nothing listens on the port");
+        assert_eq!(err.code.as_deref(), Some("ECONNREFUSED"));
+        assert!(err.message.starts_with("ECONNREFUSED: "), "{}", err.message);
+        // The io::Error at the bottom of the chain ("Connection refused (os
+        // error 61)" on macOS, 111 on Linux, 10061 on Windows).
+        assert!(
+            err.message.contains("os error"),
+            "cause missing: {}",
+            err.message
+        );
     }
 }
