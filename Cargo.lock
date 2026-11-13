@@ -844,10 +844,14 @@ name = "hpm-core"
 version = "7.0.0-alpha.0"
 dependencies = [
  "apple-native-keyring-store",
+ "base64 0.22.1",
  "dbus-secret-service-keyring-store",
+ "getrandom 0.4.3",
  "hpm-types",
  "keyring-core",
  "nix",
+ "regex",
+ "reqwest",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",

@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod config;
+pub mod credential;
 pub mod keychain;
 pub mod registry;
 pub mod token_store;
