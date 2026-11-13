@@ -157,9 +157,21 @@ jobs:
           suite=@modelcontextprotocol/conformance@0.2.0-alpha.12
           for run in "--spec-version 2025-11-25" "--requirements 2026-07-28"; do
             version="${run##* }"
+            out="$RUNNER_TEMP/conformance-$version"
             # shellcheck disable=SC2086 # $run is two words on purpose.
             env -u HAPPY_MCP_API_TOKEN npm_config_ignore_scripts=true \
               npx -y "$suite" server $run \
               --url "http://127.0.0.1:$PROXY_PORT/mcp" \
-              --expected-failures ".github/conformance/server-baseline-$version.yml"
+              --expected-failures ".github/conformance/server-baseline-$version.yml" \
+              -o "$out"
+            # The baseline is per scenario: checks that pass inside a baselined
+            # scenario are pinned one by one (review L6).
+            pinned=".github/conformance/server-pinned-$version.txt"
+            [ -f "$pinned" ] || continue
+            grep -v '^#' "$pinned" | while read -r scenario check; do
+              [ -n "$scenario" ] || continue
+              jq -e --arg c "$check" 'any(.[]; .id == $c and .status == "SUCCESS")' \
+                "$out"/server-"$scenario"-20*/checks.json >/dev/null \
+                || { echo "pinned check regressed: $scenario $check"; exit 1; }
+            done
           done

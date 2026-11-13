@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -266,10 +266,10 @@ impl HttpApp {
             };
             let addrs = PeerAddrs { local, remote };
             let router = router.clone();
-            let authed = conn.authed.clone();
+            let auth = conn.state.clone();
             let service = service_fn(move |mut req: hyper::Request<Incoming>| {
                 req.extensions_mut().insert(ConnectInfo(addrs));
-                req.extensions_mut().insert(ConnAuth(authed.clone()));
+                req.extensions_mut().insert(ConnAuth(auth.clone()));
                 let mut router = router.clone();
                 async move { router.call(req).await }
             });
@@ -279,7 +279,7 @@ impl HttpApp {
             tasks.spawn(async move {
                 let deadline = async {
                     tokio::time::sleep(preauth).await;
-                    if !conn.authed.load(Ordering::Acquire) {
+                    if conn.state.load(Ordering::Acquire) != AUTHED {
                         return;
                     }
                     std::future::pending::<()>().await;
@@ -301,14 +301,18 @@ impl HttpApp {
     }
 }
 
-/// Set by the guard once a request on the connection authenticated (review F1).
+/// Connection auth state shared by the table and the guard (reviews F1, L2).
+const UNAUTH: u8 = 0;
+const AUTHED: u8 = 1;
+const EVICTED: u8 = 2;
+
 #[derive(Clone)]
-struct ConnAuth(Arc<AtomicBool>);
+struct ConnAuth(Arc<AtomicU8>);
 
 struct ConnEntry {
     id: u64,
     ip: String,
-    authed: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
     evict: CancellationToken,
 }
 
@@ -325,12 +329,12 @@ struct ConnTable {
 
 struct Admitted {
     id: u64,
-    authed: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
     evict: CancellationToken,
 }
 
 fn unauthenticated(c: &ConnEntry) -> bool {
-    !c.authed.load(Ordering::Acquire)
+    c.state.load(Ordering::Acquire) == UNAUTH
 }
 
 impl ConnTable {
@@ -360,12 +364,12 @@ impl ConnTable {
         let entry = ConnEntry {
             id: *next,
             ip,
-            authed: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(AtomicU8::new(UNAUTH)),
             evict: CancellationToken::new(),
         };
         let admitted = Admitted {
             id: entry.id,
-            authed: entry.authed.clone(),
+            state: entry.state.clone(),
             evict: entry.evict.clone(),
         };
         open.push(entry);
@@ -374,10 +378,14 @@ impl ConnTable {
 
     /// Evicts the oldest unauthenticated connection (from `ip` if given).
     fn evict_oldest(open: &mut Vec<ConnEntry>, ip: Option<&str>) -> bool {
-        let Some(pos) = open
-            .iter()
-            .position(|c| unauthenticated(c) && ip.is_none_or(|ip| c.ip == ip))
-        else {
+        // Review L2: claim the connection atomically; one that authenticated
+        // concurrently fails the swap and is skipped.
+        let Some(pos) = open.iter().position(|c| {
+            ip.is_none_or(|ip| c.ip == ip)
+                && c.state
+                    .compare_exchange(UNAUTH, EVICTED, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+        }) else {
             return false;
         };
         open.remove(pos).evict.cancel();
@@ -410,11 +418,23 @@ fn too_many_failures(retry_after: u64) -> Response {
     r
 }
 
+/// Rate-limit and connection-cap key: the socket peer address only. Forwarding
+/// headers (`X-Forwarded-For`, `Forwarded`) are never read, so they cannot be
+/// spoofed; behind a reverse proxy every client shares the proxy's key. IPv6
+/// is keyed by its /64, since one host routinely holds a whole /64 (review L3);
+/// loopback and v4-mapped addresses keep the exact address.
 fn peer_key(ip: std::net::IpAddr) -> String {
     match ip {
-        std::net::IpAddr::V6(v6) => v6
-            .to_ipv4_mapped()
-            .map_or_else(|| v6.to_string(), |v4| v4.to_string()),
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                v4.to_string()
+            } else if v6.is_loopback() {
+                v6.to_string()
+            } else {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        }
         v4 => v4.to_string(),
     }
 }
@@ -446,8 +466,15 @@ async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) ->
             .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
         return r;
     }
-    if let Some(ConnAuth(flag)) = req.extensions().get::<ConnAuth>() {
-        flag.store(true, Ordering::Release);
+    // Review L2: the flag moves Unauth → Authed only if eviction has not won.
+    if let Some(ConnAuth(state)) = req.extensions().get::<ConnAuth>()
+        && let Err(EVICTED) =
+            state.compare_exchange(UNAUTH, AUTHED, Ordering::AcqRel, Ordering::Acquire)
+    {
+        let mut r = json_error(StatusCode::SERVICE_UNAVAILABLE, "Connection evicted");
+        r.headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+        return r;
     }
     req.extensions_mut()
         .insert(operator_identity(&st.security.token));
@@ -831,5 +858,13 @@ mod tests {
         assert!(accepts_sse(&h));
         assert_eq!(peer_key("::ffff:10.0.0.1".parse().expect("ip")), "10.0.0.1");
         assert_eq!(peer_key("::1".parse().expect("ip")), "::1");
+        // Review L3: one /64 is one key.
+        let a = peer_key("2001:db8:1:2::1".parse().expect("ip"));
+        assert_eq!(a, "2001:db8:1:2::/64");
+        assert_eq!(
+            a,
+            peer_key("2001:db8:1:2:ffff:ffff:ffff:ffff".parse().expect("ip"))
+        );
+        assert_ne!(a, peer_key("2001:db8:1:3::1".parse().expect("ip")));
     }
 }

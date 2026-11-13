@@ -335,6 +335,9 @@ impl SseSessions {
                         () = s.closed.cancelled() => break,
                     }
                 }
+                // Close first, so in-flight calls see teardown (not a cancel)
+                // when rmcp cancels their request tokens (review L4).
+                sessions.close(&s);
                 let _ = running.cancel().await;
             }
             sessions.close(&s);
@@ -452,6 +455,15 @@ impl SseSessions {
         let Ok(message) = serde_json::from_slice::<Value>(&body) else {
             return json_error(StatusCode::BAD_REQUEST, "Invalid JSON body");
         };
+        // C11 (review L5): same JSON-RPC rejection as Streamable HTTP and stdio.
+        if message.is_array() {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {
+                    "code": -32600, "message": "Batch requests are not supported"}})),
+            )
+                .into_response();
+        }
         self.dispatch(&session, &message).await
     }
 

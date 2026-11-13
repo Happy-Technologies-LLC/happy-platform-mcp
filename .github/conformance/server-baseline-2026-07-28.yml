@@ -42,9 +42,9 @@ server:
   - tasks-mrtr-composition
   - json-schema-2020-12
   - http-custom-header-server-validation
-  # WARNING-only (the baseline counts warnings as failures):
-  # resources/read of an unknown URI keeps the 6.2.0 -32603 (SEP-2164 SHOULD -32602 + data.uri).
-  - sep-2164-resource-not-found
-  # Fixture tools absent, so the SHOULD re-request / ignore-extra-params paths cannot be exercised.
+  # WARNING-only (the baseline counts warnings as failures): fixture tools absent, so
+  # the SHOULD re-request / ignore-extra-params paths cannot be exercised.
   - input-required-result-missing-input-response
   - input-required-result-ignore-extra-params
+  # Passing checks inside the whole-scenario entries above are pinned in
+  # server-pinned-2026-07-28.txt (review L6).

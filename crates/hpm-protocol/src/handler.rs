@@ -27,7 +27,7 @@ use rmcp::model::{
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::continuation::{
@@ -141,6 +141,7 @@ impl McpHandler {
         &self,
         context: &RequestContext<RoleServer>,
         instance: Option<&Value>,
+        cancel: CancellationToken,
     ) -> Result<hpm_types::context::RequestContext, ErrorData> {
         let inner = &self.inner;
         // Modern requests carry version and capabilities per request (`_meta`);
@@ -176,7 +177,7 @@ impl McpHandler {
             client_name,
             instance: None,
             instance_miss: None,
-            cancel: context.ct.child_token(),
+            cancel,
             deadline: Instant::now() + CALL_DEADLINE,
             progress: Arc::new(PeerProgress {
                 peer: context.peer.clone(),
@@ -291,30 +292,33 @@ fn http_identity(context: &RequestContext<RoleServer>) -> Option<VerifiedHttpIde
         .cloned()
 }
 
-/// C7: once rmcp cancels the request (`notifications/cancelled` on stdio, legacy
-/// SSE and `2025-*` Streamable sessions, or the `2026-07-28` request stream
-/// closing), the dispatch future is dropped, which aborts in-flight outbound
-/// ServiceNow calls. Nothing is retried: a mutation already sent keeps its
-/// pending audit attempt, which stays `Unknown` (audit.rs `PendingAttempt`).
+/// C7: cancellation is cooperative so the dispatcher always finalizes its audit
+/// record (review M2). Once rmcp cancels the request (`notifications/cancelled`
+/// on stdio, legacy SSE and `2025-*` Streamable sessions, or the `2026-07-28`
+/// request stream closing), the call's own token `cancel` (handed to `admit`, so
+/// to every handler and outbound call) is cancelled and the work is still
+/// awaited: an op cut short reports `Unknown`, and nothing is replayed. rmcp
+/// drops the response of a cancelled request.
 ///
 /// rmcp also cancels every request when a session's service stops. For a legacy
-/// SSE session that happens on a stream disconnect, which is not a cancel: when
-/// `session_closed` fired first, the work runs to completion.
+/// SSE session that is teardown (disconnect, idle, lifetime), which is not a
+/// cancel: when `session_closed` fired, `cancel` stays live (review M1).
 async fn until_cancelled<T>(
     session_closed: Option<&CancellationToken>,
     context: &RequestContext<RoleServer>,
+    cancel: &CancellationToken,
     work: impl Future<Output = T>,
-) -> Result<T, ErrorData> {
+) -> T {
     let mut work = std::pin::pin!(work);
     tokio::select! {
         biased;
         () = context.ct.cancelled() => {}
-        out = &mut work => return Ok(out),
+        out = &mut work => return out,
     }
-    if session_closed.is_some_and(CancellationToken::is_cancelled) {
-        return Ok(work.await);
+    if !session_closed.is_some_and(CancellationToken::is_cancelled) {
+        cancel.cancel();
     }
-    Err(ErrorData::internal_error("Request cancelled", None))
+    work.await
 }
 
 impl ServerHandler for McpHandler {
@@ -408,29 +412,37 @@ impl ServerHandler for McpHandler {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        let ctx = self.admit(&context, None)?;
-        let mime_type = self
+        let cancel = CancellationToken::new();
+        let ctx = self.admit(&context, None, cancel.clone())?;
+        let Some(mime_type) = self
             .inner
             .dispatcher
             .resources()
             .iter()
             .find(|r| r.uri == request.uri)
-            .map(|r| r.mime_type.to_owned());
-        // 6.2.0: every failure, unknown URI included, is a JSON-RPC internal error
-        // carrying the message (`Unknown resource: ${uri}`).
+            .map(|r| r.mime_type.to_owned())
+        else {
+            // Owner decision (SEP-2164), every era: unknown URI is -32602 + data.uri.
+            return Err(ErrorData::invalid_params(
+                format!("Unknown resource: {}", request.uri),
+                Some(json!({ "uri": request.uri })),
+            ));
+        };
+        // 6.2.0: every other failure is a JSON-RPC internal error with the message.
         let body = until_cancelled(
             self.session_closed.as_ref(),
             &context,
+            &cancel,
             self.inner.dispatcher.read_resource(&ctx, &request.uri),
         )
-        .await?
+        .await
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         let text = serde_json::to_string_pretty(&body)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(
             ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                 uri: request.uri,
-                mime_type,
+                mime_type: Some(mime_type),
                 text,
                 meta: None,
             }])
@@ -445,7 +457,8 @@ impl ServerHandler for McpHandler {
     ) -> Result<CallToolResponse, ErrorData> {
         let inner = &self.inner;
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let ctx = self.admit(&context, args.get("instance"))?;
+        let cancel = CancellationToken::new();
+        let ctx = self.admit(&context, args.get("instance"), cancel.clone())?;
 
         let subject_name = inner.dispatcher.get_tool(&request.name).map(|d| d.name);
         let binding = |expires_at: SystemTime| {
@@ -476,11 +489,12 @@ impl ServerHandler for McpHandler {
         match until_cancelled(
             self.session_closed.as_ref(),
             &context,
+            &cancel,
             inner
                 .dispatcher
                 .call_tool(&ctx, &request.name, args.clone()),
         )
-        .await?
+        .await
         {
             Ok(DispatchOutcome::Rendered(r)) => Ok(rendered_result(r).into()),
             Ok(DispatchOutcome::ConnectRequired { connect_url }) => {

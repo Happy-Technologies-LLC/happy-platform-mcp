@@ -141,35 +141,65 @@ impl Stub {
     }
 }
 
-/// Sends one mutation line to the stub and waits for its answer.
-struct Outbound(SocketAddr);
+/// Sends one mutation line to the stub and waits for its answer, unless the
+/// call's token is cancelled first (review M1: the test sees exactly what the
+/// handler's own token sees). With `partial`, a first op committed before the
+/// outbound one (review M2).
+struct Outbound {
+    stub: SocketAddr,
+    partial: bool,
+}
 impl ToolHandler for Outbound {
-    fn call<'a>(&'a self, _: &'a RequestContext, _: Value) -> BoxFut<'a, HandlerCompletion> {
+    fn call<'a>(&'a self, ctx: &'a RequestContext, _: Value) -> BoxFut<'a, HandlerCompletion> {
         Box::pin(async move {
             let done = async {
-                let mut conn = TcpStream::connect(self.0).await?;
+                let mut conn = TcpStream::connect(self.stub).await?;
                 conn.write_all(b"PATCH incident\n").await?;
                 let mut reply = String::new();
                 BufReader::new(conn).read_line(&mut reply).await?;
                 Ok::<_, std::io::Error>(reply)
             };
-            match done.await {
-                Ok(r) if r == "ok\n" => HandlerCompletion::new(
-                    MutationOutcome::Committed,
-                    vec![OpCompletion {
-                        op_index: 0,
-                        outcome: MutationOutcome::Committed,
-                    }],
-                    Ok(ResultBody::Json(json!({"updated": true}))),
-                ),
-                _ => HandlerCompletion::new(
-                    MutationOutcome::Unknown,
-                    Vec::new(),
-                    Err(ToolError::Message("connection lost".into())),
-                ),
+            let reply = tokio::select! {
+                r = done => r.ok(),
+                () = ctx.cancel().cancelled() => None,
+            };
+            let mut ops = Vec::new();
+            if self.partial {
+                ops.push(OpCompletion {
+                    op_index: 0,
+                    outcome: MutationOutcome::Committed,
+                });
             }
+            let index = ops.len();
+            if reply.as_deref() == Some("ok\n") {
+                ops.push(OpCompletion {
+                    op_index: index,
+                    outcome: MutationOutcome::Committed,
+                });
+                return HandlerCompletion::new(
+                    MutationOutcome::Committed,
+                    ops,
+                    Ok(ResultBody::Json(json!({"updated": true}))),
+                );
+            }
+            let overall = if self.partial {
+                MutationOutcome::PartiallyCommitted
+            } else {
+                MutationOutcome::Unknown
+            };
+            HandlerCompletion::new(overall, ops, Err(ToolError::Message("cancelled".into())))
         })
     }
+}
+
+const PARTIAL_TOOL: &str = "SN-Batch-Update";
+
+fn normalize_two(_: &Value, input: &NormalizeInput<'_>) -> Result<OperationSet, ToolError> {
+    let op = || {
+        Operation::new(Subject::Tool(PARTIAL_TOOL), Action::Update)
+            .on_table("incident", input.classification)
+    };
+    Ok(OperationSet(vec![op(), op()]))
 }
 
 fn normalize(_: &Value, input: &NormalizeInput<'_>) -> Result<OperationSet, ToolError> {
@@ -232,11 +262,10 @@ impl AuditSink for Recorder {
 }
 
 impl Recorder {
-    /// (d): the attempt was begun and never completed, so it stays pending =
-    /// `Unknown` (audit.rs `PendingAttempt`).
-    fn left_unknown(&self) {
+    /// (d), review M2: the attempt is finalized, outcome unknown.
+    async fn completed_unknown(&self) {
+        self.completed_with(MutationOutcome::Unknown).await;
         assert_eq!(self.begun.load(Ordering::SeqCst), 1);
-        assert!(self.completed.lock().expect("lock").is_empty());
     }
 
     async fn completed_with(&self, outcome: MutationOutcome) {
@@ -266,23 +295,31 @@ async fn world() -> World {
     let (stub, stub_addr) = Stub::start().await;
     let audit = Arc::new(Recorder::default());
     let mut registry = ToolRegistry::new().expect("registry");
-    registry
-        .register_tool(
-            ToolDescriptor::new(
-                WRITE_TOOL,
-                "write",
-                r#"{"type":"object","properties":{}}"#,
-                normalize,
-                Arc::new(Outbound(stub_addr)),
-                render,
+    for (name, norm, partial) in [
+        (WRITE_TOOL, normalize as hpm_types::tool::Normalizer, false),
+        (PARTIAL_TOOL, normalize_two, true),
+    ] {
+        registry
+            .register_tool(
+                ToolDescriptor::new(
+                    name,
+                    "write",
+                    r#"{"type":"object","properties":{}}"#,
+                    norm,
+                    Arc::new(Outbound {
+                        stub: stub_addr,
+                        partial,
+                    }),
+                    render,
+                )
+                .access(AccessClass::Write)
+                .output(OutputClass::Records)
+                .side_effect(SideEffectClass::Remote)
+                .retry(RetryEligibility::BeforeSendOnly)
+                .credentials(CredentialNeed::None),
             )
-            .access(AccessClass::Write)
-            .output(OutputClass::Records)
-            .side_effect(SideEffectClass::Remote)
-            .retry(RetryEligibility::BeforeSendOnly)
-            .credentials(CredentialNeed::None),
-        )
-        .expect("register");
+            .expect("register");
+    }
     let services = Services {
         validator: Arc::new(RequiredPropertiesValidator),
         classification: Arc::new(KnownIncident),
@@ -482,7 +519,7 @@ async fn modern_http_disconnect_cancels_and_never_replays() {
     drop(conn);
     w.stub.closed_promptly().await;
     w.stub.never_replayed().await;
-    w.audit.left_unknown();
+    w.audit.completed_unknown().await;
 }
 
 // (b) + (d): `notifications/cancelled` on a `2025-11-25` Streamable session.
@@ -502,7 +539,7 @@ async fn legacy_session_cancelled_notification_cancels() {
     assert_eq!(status, 202, "{body}");
     w.stub.closed_promptly().await;
     w.stub.never_replayed().await;
-    w.audit.left_unknown();
+    w.audit.completed_unknown().await;
 }
 
 // (c): dropping a `2025-11-25` session POST stream alone does not cancel.
@@ -622,49 +659,136 @@ async fn legacy_sse_cancelled_notification_cancels() {
     );
     w.stub.closed_promptly().await;
     w.stub.never_replayed().await;
-    w.audit.left_unknown();
+    w.audit.completed_unknown().await;
 }
 
-// (b) + (d): stdio `notifications/cancelled`.
-#[tokio::test]
-async fn stdio_cancelled_notification_cancels() {
-    let w = world().await;
+/// An initialized stdio server; returns a sender and the reply lines.
+async fn stdio(
+    w: &World,
+) -> (
+    tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+) {
     let handler = McpHandler::new(TrustedRoot::single_user_stdio(), w.dispatcher.clone());
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
     let (server_read, server_write) = tokio::io::split(server_io);
-    let server = tokio::spawn(hpm_protocol::stdio::serve_io(
+    tokio::spawn(hpm_protocol::stdio::serve_io(
         handler,
         server_read,
         server_write,
     ));
     let (client_read, mut client_write) = tokio::io::split(client_io);
     let mut lines = BufReader::new(client_read).lines();
-    let mut send = async |m: Value| {
-        client_write
-            .write_all(format!("{m}\n").as_bytes())
-            .await
-            .expect("write");
-    };
-    send(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
+    send(&mut client_write, json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
         "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name":"c7","version":"1"}}}))
         .await;
-    let init = tokio::time::timeout(Duration::from_secs(10), lines.next_line())
-        .await
-        .expect("initialize reply")
-        .expect("read")
-        .expect("line");
+    let init = next_line(&mut lines).await;
     assert!(init.contains("\"id\":0"), "{init}");
-    send(json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
-    send(call(5)).await;
+    send(
+        &mut client_write,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    (client_write, lines)
+}
+
+async fn send(w: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, m: Value) {
+    w.write_all(format!("{m}\n").as_bytes())
+        .await
+        .expect("write");
+}
+
+async fn next_line(
+    lines: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(10), lines.next_line())
+        .await
+        .expect("reply in time")
+        .expect("read")
+        .expect("line")
+}
+
+// (b) + (d): stdio `notifications/cancelled`.
+#[tokio::test]
+async fn stdio_cancelled_notification_cancels() {
+    let w = world().await;
+    let (mut tx, _lines) = stdio(&w).await;
+    send(&mut tx, call(5)).await;
     w.stub.sent_once().await;
-    send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}))
-        .await;
+    send(
+        &mut tx,
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}),
+    )
+    .await;
     w.stub.closed_promptly().await;
     w.stub.never_replayed().await;
-    w.audit.left_unknown();
-    drop(client_write);
-    drop(lines);
-    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    w.audit.completed_unknown().await;
+}
+
+// Review M2: a cancel after a first op committed is finalized as
+// PartiallyCommitted, keeping the committed-write record.
+#[tokio::test]
+async fn cancel_after_committed_op_is_partially_committed() {
+    let w = world().await;
+    let (mut tx, _lines) = stdio(&w).await;
+    send(&mut tx, json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":PARTIAL_TOOL,"arguments":{}}}))
+        .await;
+    w.stub.sent_once().await;
+    send(
+        &mut tx,
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":8}}),
+    )
+    .await;
+    w.stub.closed_promptly().await;
+    w.audit
+        .completed_with(MutationOutcome::PartiallyCommitted)
+        .await;
+}
+
+// C11 (review L5): stdio rejects a batch with the same JSON-RPC error.
+#[tokio::test]
+async fn stdio_batch_rejected() {
+    let w = world().await;
+    let (mut tx, mut lines) = stdio(&w).await;
+    send(&mut tx, json!([{"jsonrpc":"2.0","id":11,"method":"ping"}])).await;
+    let reply: Value = serde_json::from_str(&next_line(&mut lines).await).expect("json");
+    assert_eq!(reply["error"]["code"], -32600, "{reply}");
+    assert_eq!(reply["id"], Value::Null, "{reply}");
+    send(&mut tx, json!({"jsonrpc":"2.0","id":12,"method":"ping"})).await;
+    let reply: Value = serde_json::from_str(&next_line(&mut lines).await).expect("json");
+    assert_eq!(reply["id"], 12, "{reply}");
+}
+
+// C11 (review L5): legacy HTTP+SSE rejects a batch the same way.
+#[tokio::test]
+async fn sse_batch_rejected() {
+    let w = world().await;
+    let addr = http(&w).await;
+    let (_sse, path) = sse_session(addr).await;
+    let batch = json!([{"jsonrpc":"2.0","id":11,"method":"ping"}]);
+    let raw = sse_post(addr, &path, batch).await;
+    assert!(raw.starts_with("HTTP/1.1 400"), "{raw}");
+    let body = raw.split_once("\r\n\r\n").expect("body").1;
+    assert_eq!(
+        serde_json::from_str::<Value>(body).expect("json"),
+        json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Batch requests are not supported"}})
+    );
+}
+
+// Owner decision (SEP-2164): an unknown resource URI is -32602 with `data.uri`.
+#[tokio::test]
+async fn unknown_resource_uri_is_invalid_params() {
+    let w = world().await;
+    let (mut tx, mut lines) = stdio(&w).await;
+    send(&mut tx, json!({"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"servicenow://nope"}}))
+        .await;
+    let reply: Value = serde_json::from_str(&next_line(&mut lines).await).expect("json");
+    assert_eq!(reply["error"]["code"], -32602, "{reply}");
+    assert_eq!(
+        reply["error"]["data"],
+        json!({"uri": "servicenow://nope"}),
+        "{reply}"
+    );
 }
 
 // C11: a `2025-03-26` client's JSON-RPC batch.

@@ -1,0 +1,31 @@
+# Checks that pass inside scenarios the 2026-07-28 baseline lists whole (review L6).
+# The suite's --expected-failures is per scenario, so each check here must still be
+# SUCCESS in the run's output; a regression fails the job. Format: <scenario> <check id>.
+caching sep-2549-cache-scope-valid
+caching sep-2549-resources-list-caching-hints
+caching sep-2549-resources-read-caching-hints
+caching sep-2549-resources-templates-list-caching-hints
+caching sep-2549-tools-list-caching-hints
+caching sep-2549-ttl-non-negative
+server-stateless sep-2575-discover-capabilities-match-handlers
+server-stateless sep-2575-http-server-error-jsonrpc-id
+server-stateless sep-2575-http-server-header-mismatch-400
+server-stateless sep-2575-http-server-meta-invalid-400
+server-stateless sep-2575-http-server-method-not-found-404
+server-stateless sep-2575-http-server-method-not-found-404-initialize
+server-stateless sep-2575-http-server-method-not-found-404-logging-setlevel
+server-stateless sep-2575-http-server-method-not-found-404-ping
+server-stateless sep-2575-http-server-method-not-found-404-resources-subscribe
+server-stateless sep-2575-http-server-method-not-found-404-resources-unsubscribe
+server-stateless sep-2575-http-server-unsupported-version-400
+server-stateless sep-2575-request-meta-client-info-optional
+server-stateless sep-2575-request-meta-invalid-missing-client-capabilities
+server-stateless sep-2575-request-meta-invalid-missing-meta
+server-stateless sep-2575-request-meta-invalid-missing-protocol-version
+server-stateless sep-2575-server-declares-prompts-in-discover
+server-stateless sep-2575-server-identifies-in-result-meta
+server-stateless sep-2575-server-implements-discover
+server-stateless sep-2575-server-unsupported-version-error
+tasks-dispatch-and-envelope sep-2663-tasks-result-removed-method-not-found
+tasks-dispatch-and-envelope tasks-removed-tasks-list
+tasks-request-headers tasks-headers-reject-mismatched-method

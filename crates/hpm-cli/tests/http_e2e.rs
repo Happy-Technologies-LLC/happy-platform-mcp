@@ -1204,6 +1204,51 @@ async fn per_peer_cap_spares_authenticated_connections() {
     )
     .await;
     assert_eq!(r.status, 200);
+    // Review L1: none of the pool was evicted to make room.
+    for c in &mut pool {
+        assert!(serves(s.addr, c).await, "pooled connection was evicted");
+    }
+}
+
+/// True when `c`, kept alive, still answers an authenticated request.
+async fn serves(addr: SocketAddr, c: &mut TcpStream) -> bool {
+    let head = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: {}\r\n\r\n",
+        addr.port(),
+        bearer()
+    );
+    if c.write_all(head.as_bytes()).await.is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 1024];
+    matches!(
+        tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf)).await,
+        Ok(Ok(n)) if buf[..n].starts_with(b"HTTP/1.1 200")
+    )
+}
+
+// Review L1: one peer's silent connections over its cap evict its oldest,
+// and only that one.
+#[tokio::test]
+async fn per_peer_cap_evicts_oldest_silent_connection() {
+    const CAP: usize = 4;
+    let limits = HttpLimits {
+        max_unauthenticated_per_peer: CAP,
+        ..HttpLimits::default()
+    };
+    let s = start(limits).await;
+    let mut silent = Vec::new();
+    for _ in 0..=CAP {
+        silent.push(TcpStream::connect(s.addr).await.expect("silent"));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut buf = [0u8; 16];
+    let first = tokio::time::timeout(Duration::from_secs(5), silent[0].read(&mut buf))
+        .await
+        .expect("oldest closed in time");
+    assert!(matches!(first, Ok(0) | Err(_)), "oldest not evicted");
+    let newest = tokio::time::timeout(Duration::from_millis(300), silent[CAP].read(&mut buf)).await;
+    assert!(newest.is_err(), "newest connection was closed");
 }
 
 // Review F1: a connection that never authenticates is closed after
