@@ -14,9 +14,10 @@ use hpm_types::credential::Secret;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
+use zeroize::Zeroizing;
 
 use crate::config::{CodedError, Env, Object, home_dir, trim_trailing_slashes};
-use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError};
+use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError, blocking};
 use crate::registry::resolve_oauth_endpoints;
 
 /// `^[A-Za-z0-9_@.-]{1,200}$`, not `.`, no `..`.
@@ -37,12 +38,15 @@ fn assert_account(account: &str) -> Result<(), CodedError> {
     }
 }
 
+/// A refresh token held in memory: cleared on drop.
+pub type RefreshToken = Zeroizing<String>;
+
 /// Persists one OAuth refresh token per account key.
 pub trait TokenStore: Send + Sync {
     fn get_refresh_token<'a>(
         &'a self,
         account: &'a str,
-    ) -> BoxFut<'a, Result<Option<String>, CodedError>>;
+    ) -> BoxFut<'a, Result<Option<RefreshToken>, CodedError>>;
     fn set_refresh_token<'a>(
         &'a self,
         account: &'a str,
@@ -68,10 +72,10 @@ impl TokenStore for InMemoryTokenStore {
     fn get_refresh_token<'a>(
         &'a self,
         account: &'a str,
-    ) -> BoxFut<'a, Result<Option<String>, CodedError>> {
+    ) -> BoxFut<'a, Result<Option<RefreshToken>, CodedError>> {
         Box::pin(async move {
             assert_account(account)?;
-            Ok(self.map().get(account).cloned())
+            Ok(self.map().get(account).cloned().map(Zeroizing::new))
         })
     }
     fn set_refresh_token<'a>(
@@ -117,12 +121,12 @@ impl TokenStore for KeychainTokenStore {
     fn get_refresh_token<'a>(
         &'a self,
         account: &'a str,
-    ) -> BoxFut<'a, Result<Option<String>, CodedError>> {
+    ) -> BoxFut<'a, Result<Option<RefreshToken>, CodedError>> {
         Box::pin(async move {
             assert_account(account)?;
             // A real fault must fail loud, never masquerade as "no token".
             match self.store.get(&self.service, account).await {
-                Ok(v) => Ok(v.map(|s| s.expose().to_owned())),
+                Ok(v) => Ok(v.map(|s| Zeroizing::new(s.expose().to_owned()))),
                 Err(e) => {
                     eprintln!("Keychain read failed");
                     Err(keychain_error(e))
@@ -166,6 +170,7 @@ pub fn default_token_dir(env: &Env) -> PathBuf {
 }
 
 /// Optional plaintext POSIX store: private permissions, atomic replacement.
+#[derive(Clone)]
 pub struct FileTokenStore {
     base_dir: PathBuf,
 }
@@ -471,22 +476,47 @@ impl FileTokenStore {
     }
 }
 
+impl FileTokenStore {
+    /// Runs a synchronous file operation off the async executor.
+    async fn off_executor<T: Send + 'static>(
+        &self,
+        op: impl FnOnce(&Self) -> Result<T, CodedError> + Send + 'static,
+    ) -> Result<T, CodedError> {
+        let store = self.clone();
+        blocking(
+            move || op(&store),
+            || CodedError::plain("token store task failed"),
+        )
+        .await
+    }
+}
+
 impl TokenStore for FileTokenStore {
     fn get_refresh_token<'a>(
         &'a self,
         account: &'a str,
-    ) -> BoxFut<'a, Result<Option<String>, CodedError>> {
-        Box::pin(async move { self.get_sync(account) })
+    ) -> BoxFut<'a, Result<Option<RefreshToken>, CodedError>> {
+        let account = account.to_owned();
+        Box::pin(async move {
+            self.off_executor(move |s| s.get_sync(&account).map(|v| v.map(Zeroizing::new)))
+                .await
+        })
     }
     fn set_refresh_token<'a>(
         &'a self,
         account: &'a str,
         token: &'a str,
     ) -> BoxFut<'a, Result<(), CodedError>> {
-        Box::pin(async move { self.set_sync(account, token) })
+        let account = account.to_owned();
+        let token = Zeroizing::new(token.to_owned());
+        Box::pin(async move {
+            self.off_executor(move |s| s.set_sync(&account, &token))
+                .await
+        })
     }
     fn clear_refresh_token<'a>(&'a self, account: &'a str) -> BoxFut<'a, Result<(), CodedError>> {
-        Box::pin(async move { self.clear_sync(account) })
+        let account = account.to_owned();
+        Box::pin(async move { self.off_executor(move |s| s.clear_sync(&account)).await })
     }
 }
 

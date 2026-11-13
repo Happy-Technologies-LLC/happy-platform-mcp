@@ -16,6 +16,9 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 keyring-core.workspace = true
+# Blocking pool for keychain / token-file I/O (review L4); zeroized tokens (L3).
+tokio.workspace = true
+zeroize.workspace = true
 # Lane A additions (exact versions; lead hoists at merge).
 url = "=2.5.8"
 

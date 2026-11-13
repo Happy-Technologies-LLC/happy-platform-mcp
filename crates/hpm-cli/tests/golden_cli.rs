@@ -349,7 +349,13 @@ async fn replay(file: &Path) -> Result<(), String> {
         }
     };
     check("exit", json!(code), &golden["exit"]["code"]);
-    check("stdout", json!(clean(&stdout)), &golden["stdout"]);
+    // Recorded deviation (review M2): `instance migrate` names its plaintext source
+    // before confirming; 6.2.0 did not. Only that one line is dropped.
+    let stdout_text: String = clean(&stdout)
+        .split_inclusive('\n')
+        .filter(|l| !l.starts_with(hpm_cli::instance_cli::MIGRATION_SOURCE_PREFIX))
+        .collect();
+    check("stdout", json!(stdout_text), &golden["stdout"]);
     check("stderr", json!(clean(&stderr)), &golden["stderr"]);
     let after = &golden["after"];
     let registry_json = match std::fs::read_to_string(&registry_path) {

@@ -9,7 +9,8 @@
 //! either string.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::fmt;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError};
 
 use hpm_types::BoxFut;
 use hpm_types::credential::Secret;
@@ -19,11 +20,12 @@ use crate::config::CodedError;
 /// Keychain service of every 6.x item (credential refs and OAuth refresh tokens).
 pub const SERVICE_NAME: &str = "happy-platform-mcp";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum SecretStoreError {
     /// The OS store is missing, locked or failed its health probe
     /// (JS `KeychainUnavailableError`). Fails closed; never falls back to a file.
+    /// The source never carries stored bytes (see `map_keyring_error`).
     #[error("keychain unavailable")]
     Unavailable(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The store accepted the call but did not perform it (JS
@@ -34,6 +36,39 @@ pub enum SecretStoreError {
     /// echoes the account.
     #[error("invalid keychain account")]
     InvalidAccount,
+}
+
+/// Hand-written so a `{:?}` (or `unwrap`) prints only the source's `Display`,
+/// never a nested `Debug` that could carry stored bytes.
+impl fmt::Debug for SecretStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(source) => write!(f, "Unavailable({source})"),
+            Self::Operation => f.write_str("Operation"),
+            Self::InvalidAccount => f.write_str("InvalidAccount"),
+        }
+    }
+}
+
+/// Runs blocking store/file I/O on tokio's blocking pool when a runtime is
+/// present (Keychain may wait on a user prompt, Secret Service on D-Bus), so an
+/// executor worker never stalls. Without a runtime it runs inline.
+pub(crate) async fn blocking<T, E>(
+    op: impl FnOnce() -> Result<T, E> + Send + 'static,
+    join_failed: impl FnOnce() -> E,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return op();
+    }
+    match tokio::task::spawn_blocking(op).await {
+        Ok(result) => result,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(_) => Err(join_failed()),
+    }
 }
 
 /// Generic password items addressed by `(service, account)`. Object-safe; used as
@@ -103,12 +138,30 @@ impl OsSecretStore {
     fn entry(service: &str, account: &str) -> Result<keyring_core::Entry, SecretStoreError> {
         keyring_core::Entry::new(service, account).map_err(map_keyring_error)
     }
+
+    async fn run<T: Send + 'static>(
+        service: &str,
+        account: &str,
+        op: impl FnOnce(keyring_core::Entry) -> Result<T, SecretStoreError> + Send + 'static,
+    ) -> Result<T, SecretStoreError> {
+        let (service, account) = (service.to_owned(), account.to_owned());
+        blocking(
+            move || op(Self::entry(&service, &account)?),
+            || SecretStoreError::Unavailable("keychain task failed".into()),
+        )
+        .await
+    }
 }
 
-fn map_keyring_error(e: keyring_core::Error) -> SecretStoreError {
+/// `BadEncoding`/`BadDataFormat` carry the stored item's raw bytes: they are
+/// replaced by an opaque message so no error path can ever print them.
+pub(crate) fn map_keyring_error(e: keyring_core::Error) -> SecretStoreError {
     use keyring_core::Error as E;
     match e {
         E::Invalid(..) | E::TooLong(..) => SecretStoreError::InvalidAccount,
+        E::BadEncoding(_) | E::BadDataFormat(..) => {
+            SecretStoreError::Unavailable("stored keychain item is not readable".into())
+        }
         other => SecretStoreError::Unavailable(Box::new(other)),
     }
 }
@@ -119,13 +172,13 @@ impl SecretStore for OsSecretStore {
         service: &'a str,
         account: &'a str,
     ) -> BoxFut<'a, Result<Option<Secret>, SecretStoreError>> {
-        Box::pin(async move {
-            match Self::entry(service, account)?.get_password() {
+        Box::pin(Self::run(service, account, |entry| {
+            match entry.get_password() {
                 Ok(v) => Ok(present(v)),
                 Err(keyring_core::Error::NoEntry) => Ok(None),
                 Err(e) => Err(map_keyring_error(e)),
             }
-        })
+        }))
     }
 
     fn set<'a>(
@@ -134,11 +187,11 @@ impl SecretStore for OsSecretStore {
         account: &'a str,
         value: Secret,
     ) -> BoxFut<'a, Result<(), SecretStoreError>> {
-        Box::pin(async move {
-            Self::entry(service, account)?
+        Box::pin(Self::run(service, account, move |entry| {
+            entry
                 .set_password(value.expose())
                 .map_err(map_keyring_error)
-        })
+        }))
     }
 
     fn delete<'a>(
@@ -146,13 +199,97 @@ impl SecretStore for OsSecretStore {
         service: &'a str,
         account: &'a str,
     ) -> BoxFut<'a, Result<bool, SecretStoreError>> {
-        Box::pin(async move {
-            match Self::entry(service, account)?.delete_credential() {
+        Box::pin(Self::run(service, account, |entry| {
+            match entry.delete_credential() {
                 Ok(()) => Ok(true),
                 Err(keyring_core::Error::NoEntry) => Ok(false),
                 Err(e) => Err(map_keyring_error(e)),
             }
-        })
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lazy store (CLI)
+
+/// Constructor of the inner store of a [`LazySecretStore`].
+pub type StoreFactory = Box<dyn FnOnce() -> Result<Arc<dyn SecretStore>, SecretStoreError> + Send>;
+
+/// Builds the inner store on first get/set/delete (6.2.0 imports the keyring
+/// module only when a credential operation runs). `instance --help`, `list`
+/// and usage errors therefore work without a keychain (headless Linux, Docker);
+/// an init failure surfaces from the operation that needed the store.
+pub struct LazySecretStore {
+    factory: Mutex<Option<StoreFactory>>,
+    store: OnceLock<Result<Arc<dyn SecretStore>, String>>,
+}
+
+impl LazySecretStore {
+    pub fn new(factory: StoreFactory) -> Self {
+        Self {
+            factory: Mutex::new(Some(factory)),
+            store: OnceLock::new(),
+        }
+    }
+
+    /// The OS store, opened on first use.
+    pub fn os() -> Self {
+        Self::new(Box::new(|| {
+            OsSecretStore::new().map(|s| Arc::new(s) as Arc<dyn SecretStore>)
+        }))
+    }
+
+    fn inner(&self) -> Result<&Arc<dyn SecretStore>, SecretStoreError> {
+        self.store
+            .get_or_init(|| {
+                let factory = self
+                    .factory
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                match factory {
+                    Some(f) => f().map_err(|e| e.to_string()),
+                    None => Err("keychain unavailable".to_owned()),
+                }
+            })
+            .as_ref()
+            .map_err(|e| SecretStoreError::Unavailable(e.clone().into()))
+    }
+}
+
+impl SecretStore for LazySecretStore {
+    fn get<'a>(
+        &'a self,
+        service: &'a str,
+        account: &'a str,
+    ) -> BoxFut<'a, Result<Option<Secret>, SecretStoreError>> {
+        match self.inner() {
+            Ok(s) => s.get(service, account),
+            Err(e) => Box::pin(async move { Err(e) }),
+        }
+    }
+
+    fn set<'a>(
+        &'a self,
+        service: &'a str,
+        account: &'a str,
+        value: Secret,
+    ) -> BoxFut<'a, Result<(), SecretStoreError>> {
+        match self.inner() {
+            Ok(s) => s.set(service, account, value),
+            Err(e) => Box::pin(async move { Err(e) }),
+        }
+    }
+
+    fn delete<'a>(
+        &'a self,
+        service: &'a str,
+        account: &'a str,
+    ) -> BoxFut<'a, Result<bool, SecretStoreError>> {
+        match self.inner() {
+            Ok(s) => s.delete(service, account),
+            Err(e) => Box::pin(async move { Err(e) }),
+        }
     }
 }
 

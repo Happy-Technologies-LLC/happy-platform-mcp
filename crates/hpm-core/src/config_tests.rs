@@ -396,3 +396,61 @@ async fn registry_store_view_and_cas() {
     .unwrap();
     assert_eq!(cm.snapshot_for(&principal).instances.len(), 1);
 }
+
+/// Review L1: concurrent `apply(expected = v)` calls are a true compare-and-swap:
+/// exactly one wins, every other one gets `Conflict`.
+#[test]
+fn concurrent_apply_with_the_same_version_admits_exactly_one() {
+    use hpm_types::registry::{RegistryChange, RegistryError, RegistryStore};
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("instances.json");
+    std::fs::write(
+        &file,
+        json!({"version": 1, "instances": [
+            {"name": "dev", "url": "https://dev.service-now.com", "authType": "oauth",
+             "grantType": "authorization_code", "clientId": "c", "default": true},
+            {"name": "prod", "url": "https://prod.service-now.com", "authType": "oauth",
+             "grantType": "authorization_code", "clientId": "c"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let env = Env::from_pairs(&[]);
+    let cm = Arc::new(ConfigManager::new(
+        Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+        env,
+    ));
+    let v = cm
+        .snapshot_for(&hpm_types::context::Principal::LocalOperator)
+        .registry_version;
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let (cm, barrier) = (cm.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+                barrier.wait();
+                let target = if i % 2 == 0 { "prod" } else { "dev" };
+                rt.block_on(cm.apply(
+                    v,
+                    RegistryChange::SetRegistryDefault {
+                        instance_id: target.into(),
+                    },
+                ))
+            })
+        })
+        .collect();
+    let mut won = 0;
+    for thread in threads {
+        match thread.join().unwrap() {
+            Ok(next) => {
+                assert_eq!(next, v + 1);
+                won += 1;
+            }
+            Err(RegistryError::Conflict { .. }) => {}
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(won, 1);
+}

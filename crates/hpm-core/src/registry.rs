@@ -903,11 +903,23 @@ pub struct RegistryOptions {
     pub legacy_path: Option<PathBuf>,
 }
 
-/// Default legacy registry (6.x: `<package>/config/servicenow-instances.json`). The
-/// Rust binary has no package directory; it reads it relative to the working
-/// directory, which is the repository checkout for the local launchers.
-pub fn default_legacy_path() -> PathBuf {
-    resolve_path(Path::new("config/servicenow-instances.json"))
+/// Default legacy registry. 6.x resolves `<package>/config/servicenow-instances.json`
+/// from its own source directory (`instance-registry.js:12`), never from the working
+/// directory. The Rust equivalent is the install root of the running binary:
+/// `<root>/bin/<exe>` → `<root>/config/servicenow-instances.json`. A cloned project
+/// in the working directory can therefore never become the registry.
+pub fn default_legacy_path() -> Option<PathBuf> {
+    legacy_path_for_exe(&std::env::current_exe().ok()?.canonicalize().ok()?)
+}
+
+/// `<exe>/../../config/servicenow-instances.json` (the install root of `exe`).
+pub fn legacy_path_for_exe(exe: &Path) -> Option<PathBuf> {
+    Some(
+        exe.parent()?
+            .parent()?
+            .join("config")
+            .join("servicenow-instances.json"),
+    )
 }
 
 struct State {
@@ -1018,8 +1030,8 @@ impl InstanceRegistry {
             .options
             .legacy_path
             .clone()
-            .unwrap_or_else(default_legacy_path);
-        let p = resolve_config_paths(&self.env, &home, Some(&legacy), &|p: &Path| p.exists());
+            .or_else(default_legacy_path);
+        let p = resolve_config_paths(&self.env, &home, legacy.as_deref(), &|p: &Path| p.exists());
         state.paths = Some((
             resolve_path(&p.read_path),
             resolve_path(&p.write_path),

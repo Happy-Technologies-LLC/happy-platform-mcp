@@ -338,6 +338,8 @@ pub struct ConfigManager {
     registry: Arc<InstanceRegistry>,
     env: Env,
     state: Mutex<ManagerState>,
+    /// Held across version check, change and bump so `apply` is a true CAS.
+    apply_lock: Mutex<()>,
 }
 
 impl ConfigManager {
@@ -351,6 +353,7 @@ impl ConfigManager {
                 principal_default: None,
                 version: 1,
             }),
+            apply_lock: Mutex::new(()),
         }
     }
 
@@ -746,19 +749,33 @@ impl RegistryStore for ConfigManager {
         expected_version: u64,
         change: RegistryChange,
     ) -> BoxFut<'a, Result<u64, RegistryError>> {
-        Box::pin(async move {
-            let current = self.state().version;
-            if current != expected_version {
-                return Err(RegistryError::Conflict {
-                    expected: expected_version,
-                    current,
-                });
-            }
-            self.apply_change(change)?;
-            let mut s = self.state();
-            s.version += 1;
-            Ok(s.version)
-        })
+        Box::pin(async move { self.apply_cas(expected_version, change) })
+    }
+}
+
+impl ConfigManager {
+    /// Compare-and-swap: check, change and bump under one lock (synchronous body,
+    /// so no guard is held across an await).
+    fn apply_cas(
+        &self,
+        expected_version: u64,
+        change: RegistryChange,
+    ) -> Result<u64, RegistryError> {
+        let _cas = self
+            .apply_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let current = self.state().version;
+        if current != expected_version {
+            return Err(RegistryError::Conflict {
+                expected: expected_version,
+                current,
+            });
+        }
+        self.apply_change(change)?;
+        let mut s = self.state();
+        s.version += 1;
+        Ok(s.version)
     }
 }
 

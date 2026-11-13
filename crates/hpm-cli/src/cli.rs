@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use hpm_core::config::Env;
-use hpm_core::keychain::{OsSecretStore, SecretStore};
+use hpm_core::keychain::{LazySecretStore, SecretStore};
 
 use crate::instance_cli::{
     CliContext, SECRET_ARGUMENT_ERROR, USAGE, contains_secret_argument, run_instance_cli,
@@ -69,13 +69,8 @@ pub fn main(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let secrets: Arc<dyn SecretStore> = match OsSecretStore::new() {
-                Ok(s) => Arc::new(s),
-                Err(e) => {
-                    let _ = writeln!(stderr, "{e}");
-                    return ExitCode::FAILURE;
-                }
-            };
+            // Opened on first credential operation, never for help/list/usage errors.
+            let secrets: Arc<dyn SecretStore> = Arc::new(LazySecretStore::os());
             let env = Env::process();
             let mut ctx = CliContext::from_env(&env, secrets, &mut stdout, &mut stderr);
             exit(runtime.block_on(dispatch_instance(args, &mut ctx)))

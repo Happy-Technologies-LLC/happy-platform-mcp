@@ -12,7 +12,8 @@ use hpm_core::keychain::{
     CredentialType, InstanceCredentialStore, SecretStore, credential_ref_for,
 };
 use hpm_core::registry::{
-    InstanceRegistry, RegisterOptions, is_secret_shaped_key, resolve_oauth_endpoints,
+    InstanceRegistry, RegisterOptions, is_secret_shaped_key, redact_secrets,
+    resolve_oauth_endpoints,
 };
 use hpm_core::token_store::{
     FileTokenStore, KeychainTokenStore, TokenStore, clear_instance_refresh_tokens,
@@ -20,9 +21,12 @@ use hpm_core::token_store::{
 };
 use hpm_types::BoxFut;
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 
 pub const SECRET_ARGUMENT_ERROR: &str =
     "Secret flags and values are not accepted in command arguments; use a masked prompt.";
+/// First line of `instance migrate` before its confirm prompt (not in 6.2.0).
+pub const MIGRATION_SOURCE_PREFIX: &str = "Migration source: ";
 const NON_INTERACTIVE: &str = "Non-interactive use requires an interactive TTY for masked prompts; rerun in a terminal or inject the required prompt function.";
 pub const USAGE: &str = "Usage:
   happy-platform-mcp instance add
@@ -210,6 +214,22 @@ fn form(pairs: &[(&str, &str)]) -> String {
         .finish()
 }
 
+/// Connect / overall deadlines of the probe (6.2.0 axios uses a 30 s timeout).
+const PROBE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Redirects are never followed (6.2.0 `postTokenForm`: `maxRedirects: 0`): a 3xx
+/// must not carry the client secret, password or bearer token elsewhere. A 3xx is
+/// reported as the non-success status it is.
+fn probe_client() -> Result<reqwest::Client, ProbeError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(PROBE_CONNECT_TIMEOUT)
+        .timeout(PROBE_TIMEOUT)
+        .build()
+        .map_err(|e| probe_error(e.to_string()))
+}
+
 impl Probe for HttpProbe {
     fn probe<'a>(
         &'a self,
@@ -218,7 +238,7 @@ impl Probe for HttpProbe {
     ) -> BoxFut<'a, Result<(), ProbeError>> {
         Box::pin(async move {
             let base = str_of(instance, "url").unwrap_or("").to_owned();
-            let http = reqwest::Client::new();
+            let http = probe_client()?;
             let target = format!("{base}/api/now/table/sys_user?sysparm_limit=1");
             let username = str_of(instance, "username").unwrap_or("").to_owned();
             let request = if str_of(instance, "authType").unwrap_or("basic") == "oauth" {
@@ -235,10 +255,11 @@ impl Probe for HttpProbe {
                     .await
                     .map_err(credential_probe_error)?;
                 let client_id = str_of(instance, "clientId").unwrap_or("").to_owned();
-                let mut pairs: Vec<(&str, String)> = vec![
-                    ("grant_type", grant.to_owned()),
-                    ("client_id", client_id),
-                    ("client_secret", secret.expose().to_owned()),
+                // Zeroized on drop; the encoded body handed to reqwest is not.
+                let mut pairs: Vec<(&str, Zeroizing<String>)> = vec![
+                    ("grant_type", Zeroizing::new(grant.to_owned())),
+                    ("client_id", Zeroizing::new(client_id)),
+                    ("client_secret", Zeroizing::new(secret.expose().to_owned())),
                 ];
                 if grant == "password" {
                     let reference = credential_ref(instance, "password")
@@ -247,11 +268,11 @@ impl Probe for HttpProbe {
                         .get_secret(&reference)
                         .await
                         .map_err(credential_probe_error)?;
-                    pairs.push(("username", username));
-                    pairs.push(("password", password.expose().to_owned()));
+                    pairs.push(("username", Zeroizing::new(username)));
+                    pairs.push(("password", Zeroizing::new(password.expose().to_owned())));
                 }
                 if let Some(scope) = str_of(instance, "scope").filter(|s| !s.is_empty()) {
-                    pairs.push(("scope", scope.to_owned()));
+                    pairs.push(("scope", Zeroizing::new(scope.to_owned())));
                 }
                 let (_, token_url) =
                     resolve_oauth_endpoints(&base, None, str_of(instance, "tokenUrl"));
@@ -285,7 +306,8 @@ impl Probe for HttpProbe {
                         probe_error("OAuth token response did not include access_token")
                     })?
                     .to_owned();
-                http.get(&target).bearer_auth(token)
+                let token = Zeroizing::new(token);
+                http.get(&target).bearer_auth(token.as_str())
             } else {
                 let reference = credential_ref(instance, "password")
                     .ok_or_else(|| probe_error("Credential not found"))?;
@@ -1017,11 +1039,12 @@ async fn prompt_metadata(ctx: &mut CliContext<'_>, initial: &Object) -> Result<O
     Ok(result)
 }
 
+/// The masked answer, zeroized on drop.
 fn prompt_secret(
     ctx: &mut CliContext<'_>,
     name: &str,
     message: &str,
-) -> Result<String, CodedError> {
+) -> Result<Zeroizing<String>, CodedError> {
     let value = ctx.ask(
         PromptKind::Password,
         PromptSpec {
@@ -1029,11 +1052,11 @@ fn prompt_secret(
             ..spec(name, message, None)
         },
     )?;
-    Ok(match value {
+    Ok(Zeroizing::new(match value {
         Value::String(s) => s,
         Value::Null => String::new(),
         other => other.to_string(),
-    })
+    }))
 }
 
 fn all_metadata_flags() -> Vec<(&'static str, bool)> {
@@ -1155,13 +1178,15 @@ async fn add_command(args: &[String], ctx: &mut CliContext<'_>) -> Result<i32, C
 
 fn list_command(ctx: &mut CliContext<'_>) -> Result<i32, CodedError> {
     // 6.x parity: `Array.map(redact)` passes the index as `insideCredentialRef`,
-    // so every entry after the first keeps only password/clientSecret keys.
+    // so every entry after the first keeps only password/clientSecret keys. The
+    // entries are stripped of secrets first, so that quirk can never print one
+    // even if a registry returned raw (legacy plaintext) entries.
     let mut instances: Vec<Value> = ctx
         .registry
         .list()?
         .into_iter()
         .enumerate()
-        .map(|(i, o)| redact(&Value::Object(o), i >= 1))
+        .map(|(i, o)| redact(&redact_secrets(&Value::Object(o)), i >= 1))
         .collect();
     let key = |v: &Value| match v.get("name") {
         Some(Value::String(s)) => s.clone(),
@@ -1799,6 +1824,11 @@ async fn migrate_command(ctx: &mut CliContext<'_>) -> Result<i32, CodedError> {
         .with("readPath", ctx.registry.read_path().to_string_lossy().into_owned())
         .with("writePath", ctx.registry.write_path().to_string_lossy().into_owned()));
     }
+    // Recorded deviation (review M2): name the plaintext source before asking.
+    ctx.out(&format!(
+        "{MIGRATION_SOURCE_PREFIX}{}",
+        ctx.registry.read_path().display()
+    ));
     let confirmed = ctx.ask(
         PromptKind::Confirm,
         spec(

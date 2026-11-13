@@ -19,7 +19,8 @@ async fn in_memory_round_trip_and_clear() {
             .get_refresh_token("caleb@dev")
             .await
             .unwrap()
-            .as_deref(),
+            .as_deref()
+            .map(String::as_str),
         Some("rt-1")
     );
     assert_eq!(
@@ -27,7 +28,8 @@ async fn in_memory_round_trip_and_clear() {
             .get_refresh_token("caleb@prod")
             .await
             .unwrap()
-            .as_deref(),
+            .as_deref()
+            .map(String::as_str),
         Some("rt-2")
     );
     store.clear_refresh_token("caleb@dev").await.unwrap();
@@ -111,11 +113,21 @@ mod file {
         store.set_refresh_token("prod", "rt-prod").await.unwrap();
         store.set_refresh_token("dev", "rt-2").await.unwrap();
         assert_eq!(
-            store.get_refresh_token("dev").await.unwrap().as_deref(),
+            store
+                .get_refresh_token("dev")
+                .await
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
             Some("rt-2")
         );
         assert_eq!(
-            store.get_refresh_token("prod").await.unwrap().as_deref(),
+            store
+                .get_refresh_token("prod")
+                .await
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
             Some("rt-prod")
         );
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
@@ -235,7 +247,12 @@ mod file {
         let store = FileTokenStore::new(&sticky.join("happy-platform-mcp")).unwrap();
         store.set_refresh_token("dev", "sticky").await.unwrap();
         assert_eq!(
-            store.get_refresh_token("dev").await.unwrap().as_deref(),
+            store
+                .get_refresh_token("dev")
+                .await
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
             Some("sticky")
         );
     }
@@ -255,7 +272,8 @@ mod file {
             b.get_refresh_token("synthetic-user@dev")
                 .await
                 .unwrap()
-                .as_deref(),
+                .as_deref()
+                .map(String::as_str),
             Some("inert")
         );
         b.clear_refresh_token("synthetic-user@dev").await.unwrap();

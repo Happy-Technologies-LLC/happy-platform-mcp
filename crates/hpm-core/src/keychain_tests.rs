@@ -99,3 +99,27 @@ async fn delete_returns_status() {
     assert!(!s.delete_secret(r).await.unwrap());
     assert!(mem.accounts(SERVICE_NAME).is_empty());
 }
+
+/// Review L2: keyring errors that carry the stored bytes are mapped to an opaque
+/// variant; neither `Debug` nor `Display` can print a planted secret.
+#[test]
+fn store_errors_never_format_stored_bytes() {
+    let planted = b"planted-secret-value".to_vec();
+    let numeric = format!("{:?}", &planted[..4]);
+    for e in [
+        keyring_core::Error::BadEncoding(planted.clone()),
+        keyring_core::Error::BadDataFormat(planted.clone(), "nested".into()),
+    ] {
+        let mapped = map_keyring_error(e);
+        let rendered = [
+            format!("{mapped:?}"),
+            format!("{mapped:#?}"),
+            mapped.to_string(),
+            format!("{:?}", Err::<(), _>(mapped)),
+        ];
+        for text in rendered {
+            assert!(!text.contains("planted"), "{text}");
+            assert!(!text.contains(numeric.trim_matches(['[', ']'])), "{text}");
+        }
+    }
+}

@@ -3,8 +3,10 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
-use hpm_core::keychain::{MemoryOp, MemorySecretStore, SecretStoreError};
-use hpm_core::token_store::InMemoryTokenStore;
+use hpm_core::keychain::{
+    LazySecretStore, MemoryOp, MemorySecretStore, SERVICE_NAME, SecretStoreError,
+};
+use hpm_core::token_store::{InMemoryTokenStore, RefreshToken};
 use hpm_types::credential::Secret;
 
 use super::*;
@@ -351,7 +353,7 @@ impl TokenStore for FailingTokenStore {
     fn get_refresh_token<'a>(
         &'a self,
         _: &'a str,
-    ) -> BoxFut<'a, Result<Option<String>, CodedError>> {
+    ) -> BoxFut<'a, Result<Option<RefreshToken>, CodedError>> {
         *self.calls.lock().unwrap() += 1;
         Box::pin(async { Err(CodedError::plain("store locked")) })
     }
@@ -1224,7 +1226,12 @@ async fn remove_clears_identity_and_legacy_keys_from_both_stores_leaving_other_i
         assert_eq!(store.get_refresh_token(&current).await.unwrap(), None);
         assert_eq!(store.get_refresh_token(&legacy).await.unwrap(), None);
         assert_eq!(
-            store.get_refresh_token(&other).await.unwrap().as_deref(),
+            store
+                .get_refresh_token(&other)
+                .await
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
             Some("rt-other")
         );
     }
@@ -1496,4 +1503,124 @@ fn dispatch_delegates_server_startup_arguments_to_stdio() {
     assert_eq!(route_of(&[]).0, Dispatch::Serve);
     assert_eq!(route_of(&["--docs-only"]).0, Dispatch::Serve);
     assert_eq!(route_of(&["--help"]).0, Dispatch::Exit(0));
+}
+
+// --- security review fixes (p2/review-w2-a.md) -------------------------------
+
+/// L5: even raw (unredacted) registry entries never reach `instance list` output,
+/// including the index >= 1 entries that go through the 6.x `{}` quirk.
+#[tokio::test]
+async fn list_never_prints_planted_secrets_from_a_raw_registry() {
+    let mut first = basic();
+    first.insert("password".into(), json!("planted-password-0"));
+    first.insert("clientSecret".into(), json!("planted-secret-0"));
+    let mut second = code_instance();
+    second.insert("password".into(), json!("planted-password-1"));
+    second.insert("clientSecret".into(), json!("planted-secret-1"));
+    let (code, out, err) = Harness::new(FakeRegistry::with(vec![first, second]), no_prompts())
+        .run(&["instance", "list"])
+        .await;
+    assert_eq!(code, 0);
+    for text in [&out, &err] {
+        assert!(!text.contains("planted"), "{text}");
+        assert!(!text.contains("\"password\""), "{text}");
+        assert!(!text.contains("\"clientSecret\""), "{text}");
+    }
+}
+
+fn failing_store() -> Arc<dyn SecretStore> {
+    Arc::new(LazySecretStore::new(Box::new(|| {
+        Err(SecretStoreError::Unavailable("no D-Bus session".into()))
+    })))
+}
+
+/// M3: help, list and usage errors never open the keychain.
+#[tokio::test]
+async fn help_and_list_succeed_when_the_keychain_cannot_be_opened() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry = tmp.path().join("instances.json");
+    let registry = registry.to_str().unwrap();
+    let env = Env::from_pairs(&[
+        ("HAPPY_CONFIG_PATH", registry),
+        ("HOME", tmp.path().to_str().unwrap()),
+        ("XDG_CONFIG_HOME", tmp.path().to_str().unwrap()),
+    ]);
+    for (argv, want) in [
+        (vec!["instance", "--help"], 0),
+        (vec!["instance", "list"], 0),
+        (vec!["instance", "bogus"], 2),
+    ] {
+        let argv = args(&argv);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert!(matches!(
+            route(&argv, &mut out, &mut err),
+            Dispatch::Instance
+        ));
+        let mut ctx = CliContext::from_env(&env, failing_store(), &mut out, &mut err);
+        ctx.prompter = no_prompts();
+        let code = run_instance_cli(&argv, &mut ctx).await;
+        drop(ctx);
+        let err = String::from_utf8(err).unwrap();
+        assert_eq!(code, want, "{argv:?}: {err}");
+        assert!(!err.contains("keychain unavailable"), "{argv:?}: {err}");
+    }
+}
+
+/// M3: a credential operation still fails closed with the init error.
+#[tokio::test]
+async fn lazy_store_surfaces_init_failure_from_the_operation() {
+    let store = failing_store();
+    let e = store
+        .get(SERVICE_NAME, "keychain:instance/dev/password")
+        .await;
+    assert!(matches!(e, Err(SecretStoreError::Unavailable(_))));
+    assert!(store.delete(SERVICE_NAME, "x").await.is_err());
+}
+
+/// M1: a 307 from the token endpoint is a failure and is never followed, so the
+/// client secret is never re-sent to the `Location` origin.
+#[tokio::test]
+async fn probe_never_follows_a_token_endpoint_redirect() {
+    use std::io::{Read, Write as _};
+    use std::net::TcpListener;
+    let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+    elsewhere.set_nonblocking(true).unwrap();
+    let elsewhere_port = elsewhere.local_addr().unwrap().port();
+    let token = TcpListener::bind("127.0.0.1:0").unwrap();
+    let token_port = token.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = token.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = conn.read(&mut buf).unwrap();
+        let response = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:{elsewhere_port}/oauth_token.do\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        conn.write_all(response.as_bytes()).unwrap();
+    });
+
+    let memory = Arc::new(MemorySecretStore::new());
+    memory.insert(
+        SERVICE_NAME,
+        "keychain:instance/dev/client-secret",
+        "planted-client-secret",
+    );
+    let credentials = InstanceCredentialStore::new(memory);
+    let instance = obj(json!({
+        "name": "dev", "url": format!("http://127.0.0.1:{token_port}"), "authType": "oauth",
+        "grantType": "client_credentials", "clientId": "client",
+        "credentialRef": {"clientSecret": "keychain:instance/dev/client-secret"}
+    }));
+    let err = HttpProbe
+        .probe(&instance, &credentials)
+        .await
+        .expect_err("a redirect must fail the probe");
+    server.join().unwrap();
+    assert_eq!(err.status, Some(307));
+    assert_eq!(err.message, "OAuth token request failed with status 307");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        elsewhere.accept().map(|_| ()).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the redirect target must receive no connection"
+    );
 }
