@@ -291,6 +291,11 @@ fn dispatcher(calls: &Arc<AtomicUsize>) -> Dispatcher {
 }
 
 fn ctx() -> RequestContext {
+    ctx_with_miss(None)
+}
+
+/// `instance_miss`: what the protocol adapter sets for an unknown per-call instance.
+fn ctx_with_miss(instance_miss: Option<String>) -> RequestContext {
     TrustedRoot::single_user_stdio()
         .admit(
             AdmissionInput {
@@ -299,6 +304,7 @@ fn ctx() -> RequestContext {
                 client_capabilities: serde_json::Value::Null,
                 client_name: "test".into(),
                 instance: None,
+                instance_miss,
                 cancel: CancellationToken::new(),
                 deadline: Instant::now() + Duration::from_secs(60),
                 progress: Arc::new(NoProgress),
@@ -334,10 +340,10 @@ async fn renders_handler_result() {
         })
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    // Listing follows D-05 (6.2.0 `tools/list`) order, not registration order.
+    // Listing follows 6.2.0 source order, not registration order.
     assert_eq!(
         d.tools().iter().map(|t| t.name).collect::<Vec<_>>(),
-        [REMOTE_TOOL, READ_TOOL, WRITE_TOOL]
+        [READ_TOOL, REMOTE_TOOL, WRITE_TOOL]
     );
 }
 
@@ -485,7 +491,7 @@ async fn unknown_per_call_instance_is_a_tool_error() {
     let d = dispatcher(&calls);
     let out = d
         .call_tool(
-            &ctx(),
+            &ctx_with_miss(Some("Instance 'ghost' not found".into())),
             READ_TOOL,
             serde_json::json!({"query": "x", "instance": "ghost"}),
         )

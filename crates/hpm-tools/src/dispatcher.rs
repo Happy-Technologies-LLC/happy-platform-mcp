@@ -302,16 +302,13 @@ impl Dispatcher {
             return Err(ToolError::InvalidParams(msg));
         }
         // 6.2.0 `resolveClient`: a per-call `instance` the registry does not know is
-        // a tool error, never a fallback to the default instance.
+        // a tool error with the `getInstance` text, never a fallback to the
+        // default. The adapter interpreted the argument once, at admission.
         if tool.needs_instance
-            && ctx.instance().is_none()
-            && let Some(name) = args
-                .get("instance")
-                .and_then(serde_json::Value::as_str)
-                .filter(|n| !n.is_empty())
+            && let Some(miss) = ctx.instance_miss()
         {
             self.exceptional(ctx, &subject, "unknown_instance").await;
-            return Err(ToolError::Message(format!("Instance '{name}' not found")));
+            return Err(ToolError::Message(miss.to_owned()));
         }
         let classification = s.classification.snapshot(ctx.instance());
         let input = NormalizeInput::new(ctx.instance(), &classification);
@@ -464,6 +461,11 @@ impl Dispatcher {
             Err(Err(e)) => return Err(e),
         };
         let actx = &admitted.ctx;
+        if !actx.is_live() {
+            self.exceptional(actx, &subject, "cancelled_before_send")
+                .await;
+            return Err(ToolError::Cancelled);
+        }
         let (body, withheld) = match (res.handler.read(actx).await, &admitted.pinned) {
             (Ok(b), None) => (b, 0),
             (Ok(b), Some(p)) => match s.protector.protect_resource(p, b).await {

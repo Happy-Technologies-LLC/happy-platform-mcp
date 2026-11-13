@@ -1,8 +1,11 @@
 //! [`PinnedClient`]: a client handle pinned to one instance generation
-//! (W3 baseline G2, W2-B L-C). Every request checks that the pinned generation
-//! is still current before any credential is built and after every await, so a
-//! `set_instance` (instance switch, reconfiguration) between two steps of one
-//! call fails the later step closed instead of sending it to another instance.
+//! (W3 baseline G2, W2-B L-C). Every request runs on the pinned generation's
+//! URL and credentials and checks that it is still the live one before any
+//! credential is built and after every await, so a `set_instance`
+//! (reconfiguration) between two steps of one call fails the later step closed
+//! instead of sending it to another instance. [`PinnedClient::client`] hands out
+//! a pinned [`ServiceNowClient`] clone, so multi-step flows (scripts, triggers,
+//! pickers, ATF) get the same guarantee with no check-then-act.
 
 use std::sync::Arc;
 
@@ -23,8 +26,11 @@ pub struct PinnedClient {
 }
 
 impl PinnedClient {
-    pub(crate) fn new(client: ServiceNowClient, state: Arc<State>) -> Self {
-        Self { client, state }
+    pub(crate) fn new(client: &ServiceNowClient, state: Arc<State>) -> Self {
+        Self {
+            client: client.pinned_to(state.clone()),
+            state,
+        }
     }
 
     pub fn generation(&self) -> u64 {
@@ -46,9 +52,10 @@ impl PinnedClient {
         self.client.assert_current(&self.state)
     }
 
-    /// The underlying client, for multi-step flows not yet moved onto the pinned
-    /// state (script processor, pickers, ATF: lanes C and D, §4 L-C). Callers
-    /// must call [`Self::assert_current`] before every step.
+    /// The [`ServiceNowClient`] pinned to this generation, for multi-step flows
+    /// (`execute_script_via_processor`/`_via_trigger`, pickers, ATF): every
+    /// method runs on the pinned instance only and fails stale once it moved.
+    /// `set_instance` on it is refused.
     pub fn client(&self) -> &ServiceNowClient {
         &self.client
     }
@@ -105,11 +112,5 @@ impl PinnedClient {
     ) -> Result<Value, ClientError> {
         let path = table_path(table, Some(sys_id))?;
         Ok(result_of(self.rest(Method::Put, &path, Some(data)).await?))
-    }
-
-    pub async fn delete_record(&self, table: &str, sys_id: &str) -> Result<Value, ClientError> {
-        self.rest(Method::Delete, &table_path(table, Some(sys_id))?, None)
-            .await?;
-        Ok(serde_json::json!({"success": true}))
     }
 }

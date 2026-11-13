@@ -5,10 +5,12 @@
 //! which `CredentialProvider::prepare` fixed at admission from
 //! `RequestContext::instance()` (the per-call `instance` argument, else the selected
 //! default). The handle is pinned to that binding's instance and credential
-//! generation: every request through it fails closed with
-//! `CredentialError::GenerationMoved` once the instance was switched, reconfigured
-//! or re-authenticated elsewhere, so no step of a multi-step flow can land on
-//! another instance (W2-B L-C).
+//! generation: every request through it, multi-step flows included, runs on that
+//! generation's URL and credentials and fails closed (stale, `Error: Instance
+//! changed during credential resolution`) once the instance was reconfigured
+//! (same instance id, new registry entry), so no step can land on another
+//! instance (W2-B L-C). `SN-Set-Instance` only changes the default selection for
+//! later calls; it never moves an in-flight call's binding.
 
 use crate::BoxFut;
 use crate::context::RequestContext;
