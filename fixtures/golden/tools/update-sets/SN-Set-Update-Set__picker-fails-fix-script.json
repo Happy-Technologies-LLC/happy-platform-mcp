@@ -1,0 +1,123 @@
+{
+  "description": "SN-Set-Update-Set picker-fails-fix-script",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Set-Update-Set/picker-fails-fix-script",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔄 Setting current update set to: ed62390adb712ed83486d9105c442b81",
+    "⚠️  Direct update set change failed, creating fix script..."
+  ],
+  "steps": [
+    {
+      "files": {
+        "scripts/set_update_set_Golden_Update_Set_1_{{FILE_TIMESTAMP}}.js": "/**\n * Fix Script: Set Current Update Set\n * Created: {{ISO_TIMESTAMP}}\n *\n * Note: Automated methods failed. Manual execution required.\n *\n * ALTERNATIVE: Manual UI Method\n * Navigate to System Update Sets → Local Update Sets, open the update set\n * whose sys_id is in updateSetSysId below, and click \"Make this my current set\".\n *\n * Caller- or instance-supplied values appear only as data literals below,\n * never as executable code or comment text.\n *\n * INSTRUCTIONS:\n * 1. Copy the script below this comment\n * 2. Navigate to ServiceNow: System Definition → Scripts - Background\n * 3. Paste the script\n * 4. Click \"Run script\"\n * 5. Verify output: \"Update set changed to: \" followed by the update set name\n * 6. Refresh your browser to see the update set in the top bar\n */\n\n// Set current update set using GlideUpdateSet API\nvar updateSetSysId = \"ed62390adb712ed83486d9105c442b81\";\nvar updateSetName = \"Golden Update Set 1\";\nvar gus = new GlideUpdateSet();\ngus.set(updateSetSysId);\ngs.info('✅ Update set changed to: ' + updateSetName);\n\n// End of script\n"
+      },
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_set/ed62390adb712ed83486d9105c442b81",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "text/html",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/concoursepicker/updateset",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_update_set/ed62390adb712ed83486d9105c442b81",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "update_set_sys_id": "ed62390adb712ed83486d9105c442b81"
+          },
+          "name": "SN-Set-Update-Set"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "⚠️ Automated update set change not available.\nCreated fix script for manual execution: {{TMP}}/SN-Set-Update-Set_picker-fails-fix-script/work/scripts/set_update_set_Golden_Update_Set_1_{{FILE_TIMESTAMP}}.js\n\nUpdate Set: Golden Update Set 1\nSys ID: ed62390adb712ed83486d9105c442b81\n\n🔧 To Apply:\n1. Open: {{TMP}}/SN-Set-Update-Set_picker-fails-fix-script/work/scripts/set_update_set_Golden_Update_Set_1_{{FILE_TIMESTAMP}}.js\n2. Copy the GlideUpdateSet script\n3. Run in ServiceNow: System Definition → Scripts - Background\n4. Refresh browser to see change\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Set-Update-Set"
+}

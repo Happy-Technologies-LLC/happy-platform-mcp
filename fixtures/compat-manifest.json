@@ -1,0 +1,1805 @@
+{
+  "manifestVersion": 1,
+  "description": "Compatibility manifest of happy-platform-mcp Node baseline 6.2.0 (plan §7.1). The Rust replatform must preserve every entry unless the owner records a deviation. Machine-checked by scripts/compat/check-manifest.mjs; every entry carries `source` file:line from the Node tree.",
+  "baseline": {
+    "package": "happy-platform-mcp",
+    "version": "6.2.0",
+    "mcpSdk": "1.32.2",
+    "nodeEngines": ">=20",
+    "packageMain": "src/server.js",
+    "source": "package.json:5"
+  },
+  "cli": {
+    "bins": {
+      "happy-platform-mcp": "src/cli.js",
+      "servicenow-mcp-server": "src/cli.js"
+    },
+    "binsSource": "package.json:8-11",
+    "usage": "Usage:\n  happy-platform-mcp instance add\n  happy-platform-mcp instance list\n  happy-platform-mcp instance update <name> [metadata flags; auth changes require remove/re-add]\n  happy-platform-mcp instance test <name>\n  happy-platform-mcp instance remove <name>\n  happy-platform-mcp instance credential set <name> --type password|client-secret\n  happy-platform-mcp instance migrate",
+    "usageSource": "src/instance-cli.js:13-20",
+    "dispatchOrder": [
+      {
+        "step": 1,
+        "rule": "any argv token that looks like a secret flag/assignment, or a --type value other than password|client-secret => stderr SECRET_ARGUMENT_ERROR, exit 2",
+        "source": "src/cli.js:30-33"
+      },
+      {
+        "step": 2,
+        "rule": "argv empty, or exactly [\"--docs-only\"] => stdio server (main()); exit 0 when stdin closes",
+        "source": "src/cli.js:34-38"
+      },
+      {
+        "step": 3,
+        "rule": "argv[0] === \"instance\" => runInstanceCli (rest of argv ignored by this dispatcher)",
+        "source": "src/cli.js:39"
+      },
+      {
+        "step": 4,
+        "rule": "argv[0] in --help|-h|help => usage on stdout, exit 0 (extra args ignored)",
+        "source": "src/cli.js:40-43"
+      },
+      {
+        "step": 5,
+        "rule": "anything else => stderr \"Unknown command. Use --help for usage.\", exit 2",
+        "source": "src/cli.js:44-45"
+      },
+      {
+        "step": 6,
+        "rule": "a rejected dispatch promise => stderr error message, exit 1",
+        "source": "src/cli.js:51-54"
+      }
+    ],
+    "docsOnlyFlag": {
+      "note": "--docs-only is accepted ONLY as the sole argument and is a NO-OP: it starts the same stdio server, which is docs-only only via HAPPY_MCP_DOCS_ONLY or the credential-missing fallback",
+      "source": "src/cli.js:34"
+    },
+    "instanceSubcommands": [
+      {
+        "name": "list",
+        "args": "no options",
+        "source": "src/instance-cli.js:898-900"
+      },
+      {
+        "name": "add",
+        "args": "interactive (masked prompts); metadata flags + --make-default",
+        "source": "src/instance-cli.js:901-902"
+      },
+      {
+        "name": "update",
+        "args": "<name> + metadata flags (auth changes require remove/re-add)",
+        "source": "src/instance-cli.js:903-904"
+      },
+      {
+        "name": "test",
+        "args": "<name> exactly",
+        "source": "src/instance-cli.js:905-907"
+      },
+      {
+        "name": "remove",
+        "args": "<name> exactly",
+        "source": "src/instance-cli.js:908-910"
+      },
+      {
+        "name": "credential",
+        "args": "set <name> --type password|client-secret",
+        "source": "src/instance-cli.js:911-913"
+      },
+      {
+        "name": "migrate",
+        "args": "no options",
+        "source": "src/instance-cli.js:914-916"
+      }
+    ],
+    "bareInstance": "argv [\"instance\"] or --help/-h/help after it prints USAGE on stdout, exit 0",
+    "bareInstanceSource": "src/instance-cli.js:892-895",
+    "metadataFlags": {
+      "name": "name",
+      "url": "url",
+      "auth-type": "authType",
+      "grant-type": "grantType",
+      "username": "username",
+      "client-id": "clientId",
+      "scope": "scope",
+      "authorize-url": "authorizeUrl",
+      "token-url": "tokenUrl",
+      "redirect-port": "redirectPort",
+      "callback-path": "callbackPath",
+      "description": "description",
+      "default": "default",
+      "no-default": "noDefault"
+    },
+    "metadataFlagsSource": "src/instance-cli.js:22-37",
+    "extraFlags": [
+      {
+        "subcommand": "add",
+        "flag": "--make-default",
+        "source": "src/instance-cli.js:412"
+      },
+      {
+        "subcommand": "credential set",
+        "flag": "--type password|client-secret (only flag; masked prompt supplies the secret)",
+        "source": "src/instance-cli.js:531"
+      }
+    ],
+    "flagSyntax": "flags are --name value or --name=value; --default/--no-default may be bare booleans; unknown option => USAGE error (exit 2); update accepts the same METADATA_FLAGS",
+    "flagSyntaxSource": "src/instance-cli.js:161-200",
+    "secretArgument": {
+      "secretNames": [
+        "password",
+        "clientsecret"
+      ],
+      "allowedTypeValues": [
+        "password",
+        "client-secret"
+      ],
+      "message": "Secret flags and values are not accepted in command arguments; use a masked prompt.",
+      "rule": "token starting with \"-\" whose name (strip leading dashes, remove -/_, lowercase) is password or clientsecret; OR token \"<name>=<v>\" with such a name; OR any --type/type= token anywhere in argv whose value is not password|client-secret",
+      "source": "src/instance-cli.js:10-12,124-158"
+    },
+    "exitCodes": [
+      {
+        "code": 0,
+        "trigger": "success; usage/help; stdio server ended by stdin EOF; `instance list` (incl. empty); `instance migrate` nothing to migrate; user-cancelled interactive command",
+        "source": "src/cli.js:37,42; src/instance-cli.js:473-487,892-895"
+      },
+      {
+        "code": 1,
+        "trigger": "instance CLI runtime error (registry/keychain/validation, instance not found); `instance test` auth/authorization/network failure; stdio startup failure; uncaught exception (process-guards); cli.js dispatch rejection",
+        "source": "src/instance-cli.js:933-934,619-626; src/stdio-server.js:144-147; src/process-guards.js:35; src/cli.js:51-54"
+      },
+      {
+        "code": 2,
+        "trigger": "secret argument; unknown top-level command; USAGE errors (unknown instance subcommand, bad option, wrong arg count); NON_INTERACTIVE_PROMPT (add/credential set without a TTY); MIGRATION_SOURCE_EQUALS_TARGET / MIGRATION_SOURCE_IDENTITY_FAILED",
+        "source": "src/cli.js:32,45; src/instance-cli.js:887-889,921-931"
+      },
+      {
+        "code": "HTTP server",
+        "trigger": "server.js: startup refusal (missing/invalid HAPPY_MCP_API_TOKEN or allow-lists) exit 1; SIGTERM/SIGINT graceful exit 0. Not a package bin (`npm start`, package.json main)",
+        "source": "src/server.js:32-35,79-93"
+      }
+    ],
+    "exitCodeProbes": [
+      {
+        "argv": [
+          "--help"
+        ],
+        "exit": 0,
+        "stream": "stdout",
+        "contains": "Usage:"
+      },
+      {
+        "argv": [
+          "-h"
+        ],
+        "exit": 0,
+        "stream": "stdout",
+        "contains": "happy-platform-mcp instance add"
+      },
+      {
+        "argv": [
+          "help"
+        ],
+        "exit": 0,
+        "stream": "stdout",
+        "contains": "Usage:"
+      },
+      {
+        "argv": [
+          "instance"
+        ],
+        "exit": 0,
+        "stream": "stdout",
+        "contains": "Usage:"
+      },
+      {
+        "argv": [
+          "foo"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "Unknown command. Use --help for usage."
+      },
+      {
+        "argv": [
+          "--docs-only",
+          "extra"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "Unknown command. Use --help for usage."
+      },
+      {
+        "argv": [
+          "instance",
+          "--password=x"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "Secret flags and values are not accepted"
+      },
+      {
+        "argv": [
+          "instance",
+          "credential",
+          "set",
+          "a",
+          "--type",
+          "token"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "Secret flags and values are not accepted"
+      },
+      {
+        "argv": [
+          "instance",
+          "bogus"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "Unknown instance command. Use --help for usage."
+      },
+      {
+        "argv": [
+          "instance",
+          "list",
+          "extra"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "instance list does not accept options."
+      },
+      {
+        "argv": [
+          "instance",
+          "credential",
+          "set"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "instance credential set requires an instance name."
+      },
+      {
+        "argv": [
+          "instance",
+          "add"
+        ],
+        "exit": 2,
+        "stream": "stderr",
+        "contains": "Non-interactive use requires an interactive TTY"
+      },
+      {
+        "argv": [
+          "instance",
+          "list"
+        ],
+        "exit": 0,
+        "stream": "stdout",
+        "contains": "No registered instances."
+      },
+      {
+        "argv": [
+          "instance",
+          "migrate"
+        ],
+        "exit": 0,
+        "stream": "stdout",
+        "contains": "No legacy plaintext credentials require migration."
+      },
+      {
+        "argv": [
+          "instance",
+          "test",
+          "nope"
+        ],
+        "exit": 1,
+        "stream": "stderr",
+        "contains": "Instance 'nope' not found"
+      },
+      {
+        "argv": [
+          "instance",
+          "remove",
+          "nope"
+        ],
+        "exit": 1,
+        "stream": "stderr",
+        "contains": "Instance 'nope' not found"
+      },
+      {
+        "argv": [
+          "instance",
+          "update",
+          "nope",
+          "--name",
+          "x"
+        ],
+        "exit": 1,
+        "stream": "stderr",
+        "contains": "Instance 'nope' not found"
+      },
+      {
+        "argv": [],
+        "exit": 0,
+        "stream": "stderr",
+        "contains": "Mode: docs-only"
+      },
+      {
+        "argv": [],
+        "env": {
+          "HAPPY_MCP_DOCS_ONLY": "false"
+        },
+        "exit": 1,
+        "stream": "stderr",
+        "contains": "Failed to start Happy MCP Server: Error: Missing ServiceNow credentials"
+      }
+    ],
+    "exitCodeProbesNote": "Run by the checker in a child process: cwd = empty temp dir (no .env), HOME and HAPPY_CONFIG_PATH point into that temp dir, stdin closed, no network, keychain never reached."
+  },
+  "tools": {
+    "count": 60,
+    "docsOnlyCount": 6,
+    "fixture": {
+      "path": "fixtures/tools-list-6.2.0.json",
+      "sha256": "e830e91e9e3f536cb88e5d062d799b78a42f39959e7e5156f09a128dad154885",
+      "origin": "/tmp/hpm-specs/happy-platform-mcp-tools-list-6.2.0.json (lead-owned copy)"
+    },
+    "hashing": "inputSchemaSha256 = sha256(JSON.stringify(sortKeysRecursively(tool.inputSchema))); descriptionSha256 = sha256(tool.description). Tools are compared against the source registration order; the fixture file is name-sorted so it is compared by name. Schemas include the per-tool `instance` property added by addInstanceParameter (mcp-server-consolidated.js:65).",
+    "listSource": "src/mcp-server-consolidated.js:205-1537",
+    "docsOnlyList": "docs-only tools/list = [SN-Register-Instance, SN-Docs-Families, SN-Docs-Status, SN-Docs-Sync, SN-Docs-Search, SN-Docs-Get] (no `instance` parameter injection) src/mcp-server-consolidated.js:208-211",
+    "items": [
+      {
+        "name": "SN-Set-Instance",
+        "docsOnly": false,
+        "inputSchemaSha256": "482f084c52efcf646c7a8fec756f70850d32c8956698d1cf6579ff36f62a0ec3",
+        "descriptionSha256": "af6672adb6a189bba7bda7c59efb40d22e206c56d4751e9e9b216cbc3f17aa49",
+        "source": "src/mcp-server-consolidated.js:215",
+        "sourceContains": "name: 'SN-Set-Instance'"
+      },
+      {
+        "name": "SN-Get-Current-Instance",
+        "docsOnly": false,
+        "inputSchemaSha256": "efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49",
+        "descriptionSha256": "44600a08e830953be6bd771971e9bbb29c13d826545d7dcf7bebc9873cfa9e4b",
+        "source": "src/mcp-server-consolidated.js:228",
+        "sourceContains": "name: 'SN-Get-Current-Instance'"
+      },
+      {
+        "name": "SN-Query-Table",
+        "docsOnly": false,
+        "inputSchemaSha256": "e2683af9c14b2a6d4f552a1354e3b1ff4a46b5cb92cd1aa6b22c5377c87486a6",
+        "descriptionSha256": "600a063818fbc4bf699f12499e279486b23fff630f11265b97be8d2b905782e8",
+        "source": "src/mcp-server-consolidated.js:236",
+        "sourceContains": "name: 'SN-Query-Table'"
+      },
+      {
+        "name": "SN-Create-Record",
+        "docsOnly": false,
+        "inputSchemaSha256": "62d6f10ead64307e4a2d7cd9f172465238e6cd24b1e8663d01731c16f5cdd819",
+        "descriptionSha256": "1bf656831552380b17aa3c4f48a882ead0c7f2186870a2b771b5cadf93a19e09",
+        "source": "src/mcp-server-consolidated.js:271",
+        "sourceContains": "name: 'SN-Create-Record'"
+      },
+      {
+        "name": "SN-Get-Record",
+        "docsOnly": false,
+        "inputSchemaSha256": "8c1c50197c72d5df97c19e8a3a0af09576e94e4f04055797e0ae64a76eda0c08",
+        "descriptionSha256": "0deadd314b7809de731edeca9d8da1084911637089561908a66cb707d4d3c5ea",
+        "source": "src/mcp-server-consolidated.js:289",
+        "sourceContains": "name: 'SN-Get-Record'"
+      },
+      {
+        "name": "SN-Update-Record",
+        "docsOnly": false,
+        "inputSchemaSha256": "16faac35f59082c61614ff6705590500b847d22d39420147174d35801a186041",
+        "descriptionSha256": "fd28666152e4a9b539ab7121e35be038ea75adacc2fa7e4674284d9eeaf47ffa",
+        "source": "src/mcp-server-consolidated.js:311",
+        "sourceContains": "name: 'SN-Update-Record'"
+      },
+      {
+        "name": "SN-Get-Table-Schema",
+        "docsOnly": false,
+        "inputSchemaSha256": "6fe541f1b39e922cc7b8234f3ff409743d1e5805f9daf7cce611ea6e9ed214b7",
+        "descriptionSha256": "6f569cd2f0a02433d8631f8f2e37f9196cdb1831cbc8c356bb78a3d113d7ff1d",
+        "source": "src/mcp-server-consolidated.js:333",
+        "sourceContains": "name: 'SN-Get-Table-Schema'"
+      },
+      {
+        "name": "SN-List-Available-Tables",
+        "docsOnly": false,
+        "inputSchemaSha256": "c7364d70681994ea26d779e24774f6761597aaf85be96ebd9adc549da069c3a7",
+        "descriptionSha256": "3d63d0340f6a59d2ef7993cc90a9da12fb0e67e505573be975d35aba92897581",
+        "source": "src/mcp-server-consolidated.js:347",
+        "sourceContains": "name: 'SN-List-Available-Tables'"
+      },
+      {
+        "name": "SN-List-Incidents",
+        "docsOnly": false,
+        "inputSchemaSha256": "7393b3d422f47517ed9aeb015cd219eb9b03926fbc323bdf6501d1d9d50a45fa",
+        "descriptionSha256": "b95b0cdb9d79ce3654a7ab4909a2985362954bda4390b0edc9011e3ece110e5e",
+        "source": "src/mcp-server-consolidated.js:362",
+        "sourceContains": "name: 'SN-List-Incidents'"
+      },
+      {
+        "name": "SN-Create-Incident",
+        "docsOnly": false,
+        "inputSchemaSha256": "f9bab144f3185d292796138a59aeed713b222ca41b968b11401339c3535ce55b",
+        "descriptionSha256": "db6702da57c803175d072eb68d0c5e7f198c43038a4de3d53e7d8f4f302b2f46",
+        "source": "src/mcp-server-consolidated.js:401",
+        "sourceContains": "name: 'SN-Create-Incident'"
+      },
+      {
+        "name": "SN-Get-Incident",
+        "docsOnly": false,
+        "inputSchemaSha256": "5e0daf2022dcd51e8c8c1d76b165ffcc9c126d7d1e39e52d24ad4f3d60b12fcd",
+        "descriptionSha256": "0ca77ec01137ae10f608e4af2bc56e8efdc23337a48a32503bdf3a58347517d8",
+        "source": "src/mcp-server-consolidated.js:427",
+        "sourceContains": "name: 'SN-Get-Incident'"
+      },
+      {
+        "name": "SN-List-SysUsers",
+        "docsOnly": false,
+        "inputSchemaSha256": "0966ff3db586ee2fd93b148b7a668a9aa6db98abc7e76c51c7fa6bd34face1a4",
+        "descriptionSha256": "bf12871d82f3d6d249817626601dbee871d7ec16032f47782ed21eace16c1321",
+        "source": "src/mcp-server-consolidated.js:438",
+        "sourceContains": "name: 'SN-List-SysUsers'"
+      },
+      {
+        "name": "SN-List-CmdbCis",
+        "docsOnly": false,
+        "inputSchemaSha256": "0966ff3db586ee2fd93b148b7a668a9aa6db98abc7e76c51c7fa6bd34face1a4",
+        "descriptionSha256": "c12b85049771cdd66008cfaad2f4e3a6b668b4930a56c33ef78c02e0eced0dd2",
+        "source": "src/mcp-server-consolidated.js:469",
+        "sourceContains": "name: 'SN-List-CmdbCis'"
+      },
+      {
+        "name": "SN-List-SysUserGroups",
+        "docsOnly": false,
+        "inputSchemaSha256": "0966ff3db586ee2fd93b148b7a668a9aa6db98abc7e76c51c7fa6bd34face1a4",
+        "descriptionSha256": "e2dc9c484cbde4613a53ce5608f45268d7cef6cb9b90a82eaaba810f0a4cefd4",
+        "source": "src/mcp-server-consolidated.js:500",
+        "sourceContains": "name: 'SN-List-SysUserGroups'"
+      },
+      {
+        "name": "SN-List-ChangeRequests",
+        "docsOnly": false,
+        "inputSchemaSha256": "a703bdc7657759f215a4da64317be66487baa7232f918c72cc013e237b79f4c2",
+        "descriptionSha256": "554ad4fe03967ce6d80570d6a0457c4e66a5d5eb62ce226862f14c6bd1feff86",
+        "source": "src/mcp-server-consolidated.js:531",
+        "sourceContains": "name: 'SN-List-ChangeRequests'"
+      },
+      {
+        "name": "SN-Set-Update-Set",
+        "docsOnly": false,
+        "inputSchemaSha256": "9310c5bde6bba3453c2739d52a688bb5bdaab49c1d2486d13e6e0e8bd9d4f59e",
+        "descriptionSha256": "9df90505d34f472c61379f8c039d28c37d37db644cb1179af7eddf75e2b3213a",
+        "source": "src/mcp-server-consolidated.js:570",
+        "sourceContains": "name: 'SN-Set-Update-Set'"
+      },
+      {
+        "name": "SN-Get-Current-Update-Set",
+        "docsOnly": false,
+        "inputSchemaSha256": "1399763420bea0356d412d038d40c27dba5491c6702b0c0bb0d7c6092f57d1e5",
+        "descriptionSha256": "86d88fb32f42392c9e37ceec70671f5ff7623d1a5dc0dc43bada4815e940059e",
+        "source": "src/mcp-server-consolidated.js:584",
+        "sourceContains": "name: 'SN-Get-Current-Update-Set'"
+      },
+      {
+        "name": "SN-List-Update-Sets",
+        "docsOnly": false,
+        "inputSchemaSha256": "4d9993df203ebeb9a87f82747d85c7a82beb4c17883840653e5193f428e5453a",
+        "descriptionSha256": "d4d7c1fd4436d5ae5d4b436939d36a4b9598da6702343b0c26faa89e5f84568d",
+        "source": "src/mcp-server-consolidated.js:593",
+        "sourceContains": "name: 'SN-List-Update-Sets'"
+      },
+      {
+        "name": "SN-Set-Current-Application",
+        "docsOnly": false,
+        "inputSchemaSha256": "39cae9068650bdb2cdfeaffb08a784c5eab820f352891ea245f3a3db9f60555a",
+        "descriptionSha256": "cf2f82ac278c68689e64efb49199afbf2c62b902d8505e5d028155c2e3edba94",
+        "source": "src/mcp-server-consolidated.js:624",
+        "sourceContains": "name: 'SN-Set-Current-Application'"
+      },
+      {
+        "name": "SN-List-Problems",
+        "docsOnly": false,
+        "inputSchemaSha256": "0966ff3db586ee2fd93b148b7a668a9aa6db98abc7e76c51c7fa6bd34face1a4",
+        "descriptionSha256": "4b3ec0d0b6d94c461af87c5d3225da12f44bfa4054f3d2875c8fa039934efc37",
+        "source": "src/mcp-server-consolidated.js:638",
+        "sourceContains": "name: 'SN-List-Problems'"
+      },
+      {
+        "name": "SN-Natural-Language-Search",
+        "docsOnly": false,
+        "inputSchemaSha256": "54e637c8c29e3532b32d378c21b9f47ff7e4d766bef0e3a6caa9fedffa1cc55a",
+        "descriptionSha256": "eaa15c9a364a6f98f090525742f0b34c18d255822cc6c5e52631f8304984a299",
+        "source": "src/mcp-server-consolidated.js:669",
+        "sourceContains": "name: 'SN-Natural-Language-Search'"
+      },
+      {
+        "name": "SN-Execute-Background-Script",
+        "docsOnly": false,
+        "inputSchemaSha256": "abbbf7c3acd5fabf85d6e54de6775315d2f53930cf327cadd0d3ab23e8926e4a",
+        "descriptionSha256": "76337f774eb01cfd456e71c5489edc44e30d8a07950bf473f16147d08697bce0",
+        "source": "src/mcp-server-consolidated.js:707",
+        "sourceContains": "name: 'SN-Execute-Background-Script'"
+      },
+      {
+        "name": "SN-Create-Fix-Script",
+        "docsOnly": false,
+        "inputSchemaSha256": "14e00c880e60bc529f2afe96e132f67a9a7915c2091408c736b13c3eb2ba1c39",
+        "descriptionSha256": "72f97807ce0d0f01058646a5f0bddbfae7139d924e3cd7ba73c1bbdb881b8d89",
+        "source": "src/mcp-server-consolidated.js:740",
+        "sourceContains": "name: 'SN-Create-Fix-Script'"
+      },
+      {
+        "name": "SN-Run-ATF-Test",
+        "docsOnly": false,
+        "inputSchemaSha256": "daa70713bef46b1a150300d8342563c16b57651146be4ba291baf31c1d9f69ca",
+        "descriptionSha256": "640cbb3cf3ec42899c2d01fa84757b8666c7af113ee816d5d123834045a34888",
+        "source": "src/cicd-atf.js:72",
+        "sourceContains": "name: 'SN-Run-ATF-Test'"
+      },
+      {
+        "name": "SN-Run-ATF-Suite",
+        "docsOnly": false,
+        "inputSchemaSha256": "5af8e5c4daeb9579dd479df018b7e2a815969846b65d2068342d40237909efad",
+        "descriptionSha256": "14e641ea8f494261ef92dee5b5af75885b5cedfe0eccb538df872be412253b5d",
+        "source": "src/cicd-atf.js:86",
+        "sourceContains": "name: 'SN-Run-ATF-Suite'"
+      },
+      {
+        "name": "SN-Get-CICD-Progress",
+        "docsOnly": false,
+        "inputSchemaSha256": "77e707d328065b893dc88cac4357e5ce965abdaf907e5d9295780a14ff8f11c7",
+        "descriptionSha256": "4098249803f1e7992f2be15b3e55c5744a175caec5b24b755d7c40cc61d57201",
+        "source": "src/cicd-atf.js:104",
+        "sourceContains": "name: 'SN-Get-CICD-Progress'"
+      },
+      {
+        "name": "SN-Get-ATF-Results",
+        "docsOnly": false,
+        "inputSchemaSha256": "2b891c6e66d00be1e34a70c82e0b989620fefa4eead0480c89344e35794a10a3",
+        "descriptionSha256": "12c5e23a5273b8f5b8ad1ec3051136648bb6a77197cb1501c958a6461473a9a2",
+        "source": "src/cicd-atf.js:122",
+        "sourceContains": "name: 'SN-Get-ATF-Results'"
+      },
+      {
+        "name": "SN-Get-ATF-Test-Logs",
+        "docsOnly": false,
+        "inputSchemaSha256": "fb3ae11eefc88606e6e4d17d24141335baf718880ffb062dffca05974033fc21",
+        "descriptionSha256": "75f6900cf25306d769069c6b23f51244e7e35add5850a96705de16699be70a17",
+        "source": "src/cicd-atf.js:134",
+        "sourceContains": "name: 'SN-Get-ATF-Test-Logs'"
+      },
+      {
+        "name": "SN-Discover-Table-Schema",
+        "docsOnly": false,
+        "inputSchemaSha256": "da2a8a8822dbcbfac90044a10e6bfa4d08fabfa9178acf4ce115a37e2b53b4fb",
+        "descriptionSha256": "b34604f917c47ac877a457b1186d89ec0992fda208602d0486c53a258748e1cc",
+        "source": "src/mcp-server-consolidated.js:769",
+        "sourceContains": "name: 'SN-Discover-Table-Schema'"
+      },
+      {
+        "name": "SN-Batch-Create",
+        "docsOnly": false,
+        "inputSchemaSha256": "d8eac66b9eb74e6729a946a07adecedffbc025b7b10c39d0cc9c7c427c6074c1",
+        "descriptionSha256": "1f1db8b2e8fb171ac406047e806bbf4d3d182338e25087aa167e54ec59cc076a",
+        "source": "src/mcp-server-consolidated.js:813",
+        "sourceContains": "name: 'SN-Batch-Create'"
+      },
+      {
+        "name": "SN-Batch-Update",
+        "docsOnly": false,
+        "inputSchemaSha256": "2d4101afa95eee11ce00d6de3f2effbbe9ffed7e54f2c209b2d3e6ee1173a0fe",
+        "descriptionSha256": "a37273f400d750a59465a0c7b85c920a8440f00d09623a34c93054b0e6592718",
+        "source": "src/mcp-server-consolidated.js:847",
+        "sourceContains": "name: 'SN-Batch-Update'"
+      },
+      {
+        "name": "SN-Explain-Field",
+        "docsOnly": false,
+        "inputSchemaSha256": "4d09b1430c674695141ffc460746a49cffa8a5150301fab7c93b93466806c1d3",
+        "descriptionSha256": "a954b77432c2026232bd595365004b7692b1c800411497f9fb6625d50833bfdf",
+        "source": "src/mcp-server-consolidated.js:881",
+        "sourceContains": "name: 'SN-Explain-Field'"
+      },
+      {
+        "name": "SN-Validate-Configuration",
+        "docsOnly": false,
+        "inputSchemaSha256": "d20803aae0c9d3892a171363128123899df8344160eb1066ba59b2ab3c3c6e55",
+        "descriptionSha256": "5d4f3fdb337f934feff2396b2b8ceb70be9d4252396dc082bba063c188a5095f",
+        "source": "src/mcp-server-consolidated.js:904",
+        "sourceContains": "name: 'SN-Validate-Configuration'"
+      },
+      {
+        "name": "SN-Inspect-Update-Set",
+        "docsOnly": false,
+        "inputSchemaSha256": "fcd0f9dbfa51bfd1a4801efa08360cf323223d50f01786b9269119e4eb75ef42",
+        "descriptionSha256": "3c7c1af4add9c66429eb7d3da24e4a14349cefa9bef437af9d74e91830c17005",
+        "source": "src/mcp-server-consolidated.js:941",
+        "sourceContains": "name: 'SN-Inspect-Update-Set'"
+      },
+      {
+        "name": "SN-Create-Workflow",
+        "docsOnly": false,
+        "inputSchemaSha256": "78e0a18ab27bcf21897feae6500794180cf5b6f93f1b3ce66c8c7860bbf11984",
+        "descriptionSha256": "e214c3781673d1260fdf1621a69b67c167eb1dfa2d872c06d4a17248abbe654e",
+        "source": "src/mcp-server-consolidated.js:965",
+        "sourceContains": "name: 'SN-Create-Workflow'"
+      },
+      {
+        "name": "SN-Create-Activity",
+        "docsOnly": false,
+        "inputSchemaSha256": "9da2a774d582ca6e9ebc35465a17cbc623f6c1edfdd38c335e6f82f075b2ef01",
+        "descriptionSha256": "366cd36d7e893500b7e22509f0d2d168b9c7632a6df76007caabc2ec5bec6236",
+        "source": "src/mcp-server-consolidated.js:1033",
+        "sourceContains": "name: 'SN-Create-Activity'"
+      },
+      {
+        "name": "SN-Create-Transition",
+        "docsOnly": false,
+        "inputSchemaSha256": "7019def62a6fe3a97a0afcb207da94c8407488d5d4b87b01461c3467d1f919ab",
+        "descriptionSha256": "9b3dc8f4c665879b2506b685d20edc8906da1f11731bc27d617fc18946955e71",
+        "source": "src/mcp-server-consolidated.js:1067",
+        "sourceContains": "name: 'SN-Create-Transition'"
+      },
+      {
+        "name": "SN-Publish-Workflow",
+        "docsOnly": false,
+        "inputSchemaSha256": "734738b2070e43c581e09e9f9922480f014205f6cb612adb680184aa1181f156",
+        "descriptionSha256": "e7892b94a4e358a520219dd8c0da82be816fbb14e12ddab82ea9cda3cf058978",
+        "source": "src/mcp-server-consolidated.js:1093",
+        "sourceContains": "name: 'SN-Publish-Workflow'"
+      },
+      {
+        "name": "SN-Move-Records-To-Update-Set",
+        "docsOnly": false,
+        "inputSchemaSha256": "f985151b2012041928d0fba73ebc1773a5a4f4c2bc267b27cb1287939bf6acab",
+        "descriptionSha256": "ae72410d67183ccd5b8814ca06bd9ccdb98aa6d4e54c8125d7543cc37facae75",
+        "source": "src/mcp-server-consolidated.js:1111",
+        "sourceContains": "name: 'SN-Move-Records-To-Update-Set'"
+      },
+      {
+        "name": "SN-Clone-Update-Set",
+        "docsOnly": false,
+        "inputSchemaSha256": "1a7cbb770cfa950acfa8e9a092fe21429f019aae20a09cd21e64d0fa3844268e",
+        "descriptionSha256": "97726b49445d30de75b17456b6ccaa2c699f095b0fe2bfb3001280ca0298a41f",
+        "source": "src/mcp-server-consolidated.js:1156",
+        "sourceContains": "name: 'SN-Clone-Update-Set'"
+      },
+      {
+        "name": "SN-Add-Comment",
+        "docsOnly": false,
+        "inputSchemaSha256": "cf6b2645a5c8d1ba1e4b1a603d3d30138daa652f4021db08614f748cb871bd99",
+        "descriptionSha256": "b46dee33706e8bb398c9ff9e1e9ece378b88a59542be1af548244025c9325528",
+        "source": "src/mcp-server-consolidated.js:1182",
+        "sourceContains": "name: 'SN-Add-Comment'"
+      },
+      {
+        "name": "SN-Add-Work-Notes",
+        "docsOnly": false,
+        "inputSchemaSha256": "9f6cff88830e50e533960e9c20717d10e9adbf4046839bd1cf03bd9792add478",
+        "descriptionSha256": "ed5997a6a394e31276c4a9ca27f473678c4dcd521278a4a43c879c6aaa061c9c",
+        "source": "src/mcp-server-consolidated.js:1204",
+        "sourceContains": "name: 'SN-Add-Work-Notes'"
+      },
+      {
+        "name": "SN-Assign-Incident",
+        "docsOnly": false,
+        "inputSchemaSha256": "333912c9b72f7debc16d74355169135bb1fad1eef99f56dfa51aee215b763869",
+        "descriptionSha256": "90c150b673457670d8de7ed0cb80725cffcef523f661e5f3133448f0c099fa27",
+        "source": "src/mcp-server-consolidated.js:1226",
+        "sourceContains": "name: 'SN-Assign-Incident'"
+      },
+      {
+        "name": "SN-Resolve-Incident",
+        "docsOnly": false,
+        "inputSchemaSha256": "0f2c2f70e5e2e02bfee952a866a50dde6c33ad6ce080ad8c79b051a16bfa1b75",
+        "descriptionSha256": "c9f049add1bbc54199c76c90df98f11c7e345c2da5fb97fc43bd754cf6ca54ae",
+        "source": "src/mcp-server-consolidated.js:1252",
+        "sourceContains": "name: 'SN-Resolve-Incident'"
+      },
+      {
+        "name": "SN-Close-Incident",
+        "docsOnly": false,
+        "inputSchemaSha256": "d4e887c0146e17d46425a54cc2491368e7bbccf11d1bc14f61e9683b7f1e7bc7",
+        "descriptionSha256": "f51470653a037a84fd4a98cb03ac0d57ac534eb5f4867caa4be821d67887a032",
+        "source": "src/mcp-server-consolidated.js:1278",
+        "sourceContains": "name: 'SN-Close-Incident'"
+      },
+      {
+        "name": "SN-Add-Change-Comment",
+        "docsOnly": false,
+        "inputSchemaSha256": "bbe3ca2281aff69944bf00cbb2683ff14ba7362044e318dea232e53c339eb05c",
+        "descriptionSha256": "34ad70050d235b9e811add6d7b3f48241c0474daa63d8ed037b4c07c35acee2b",
+        "source": "src/mcp-server-consolidated.js:1305",
+        "sourceContains": "name: 'SN-Add-Change-Comment'"
+      },
+      {
+        "name": "SN-Assign-Change",
+        "docsOnly": false,
+        "inputSchemaSha256": "9b8b5c44fe080bb4ee13efc51d6dc027c0127116f40eabd4e388772ca52705bd",
+        "descriptionSha256": "955e32f91608e98d13a80129ab1c60b9249b0293bc97c755e451af2020818584",
+        "source": "src/mcp-server-consolidated.js:1327",
+        "sourceContains": "name: 'SN-Assign-Change'"
+      },
+      {
+        "name": "SN-Approve-Change",
+        "docsOnly": false,
+        "inputSchemaSha256": "5801f311c13362ced32f2e98fb19de2d8e09e657b0158541ae692e12df076c77",
+        "descriptionSha256": "8c57ec9e517ac5cc6063e7cb40427a4ed4ba8997c79c8beb362e7d77987da1dc",
+        "source": "src/mcp-server-consolidated.js:1353",
+        "sourceContains": "name: 'SN-Approve-Change'"
+      },
+      {
+        "name": "SN-Add-Problem-Comment",
+        "docsOnly": false,
+        "inputSchemaSha256": "a59fc1f1d43a1077333390f749c08c313be0299c40eef373b5740e90c86f26e2",
+        "descriptionSha256": "84d1a7412ecaecd996f8aa9900ac9b0962f0ac6365cc03799f13faa6ab330a01",
+        "source": "src/mcp-server-consolidated.js:1376",
+        "sourceContains": "name: 'SN-Add-Problem-Comment'"
+      },
+      {
+        "name": "SN-Close-Problem",
+        "docsOnly": false,
+        "inputSchemaSha256": "41538e8cd5b5a4023e55dd0445bd994493b8aea00f4e1fa239e3b015770fb3ae",
+        "descriptionSha256": "c22a9f82dbc9bbb4275f2ad735d8b8afc55de2cc6b201e7a26f7c7c5ba8bf330",
+        "source": "src/mcp-server-consolidated.js:1398",
+        "sourceContains": "name: 'SN-Close-Problem'"
+      },
+      {
+        "name": "SN-Catalog-Get-Item",
+        "docsOnly": false,
+        "inputSchemaSha256": "920d7b28c0f812848c4b1971ae8312753e6ee1568fc4b38ac650b8e220d359e1",
+        "descriptionSha256": "eba64f91e0f60c9aa2cb309492da0618f44217801d1f45cd4eba7368ea3f1b78",
+        "source": "src/mcp-server-consolidated.js:1424",
+        "sourceContains": "name: 'SN-Catalog-Get-Item'"
+      },
+      {
+        "name": "SN-Catalog-Search-Items",
+        "docsOnly": false,
+        "inputSchemaSha256": "86439498200e80faa86e6fc0db9a204d53d33f79fdd6958fb500244dcce0e793",
+        "descriptionSha256": "3c43db050491c778fc36350b255cb10020259771e9b8552807d77a17a34488cb",
+        "source": "src/mcp-server-consolidated.js:1442",
+        "sourceContains": "name: 'SN-Catalog-Search-Items'"
+      },
+      {
+        "name": "SN-Catalog-Submit",
+        "docsOnly": false,
+        "inputSchemaSha256": "522877887ac2ed27f8d14b41b7cb8bccde42e78f7151844d9533d3339b655562",
+        "descriptionSha256": "17a800cbe115ac8528f091b088fc57d7d5ae7458f4dd85bdc11fc3d3fa9cdbc5",
+        "source": "src/mcp-server-consolidated.js:1478",
+        "sourceContains": "name: 'SN-Catalog-Submit'"
+      },
+      {
+        "name": "SN-Catalog-Get-Categories",
+        "docsOnly": false,
+        "inputSchemaSha256": "55312760c9f86a39bbf58374cc6da764758c2b0f56491128ab1db323462c93bc",
+        "descriptionSha256": "6816e8860e5bfd3183c8740471859a14036d2d18f174c9a3851bef403d1dbb26",
+        "source": "src/mcp-server-consolidated.js:1510",
+        "sourceContains": "name: 'SN-Catalog-Get-Categories'"
+      },
+      {
+        "name": "SN-Register-Instance",
+        "docsOnly": true,
+        "inputSchemaSha256": "f2d72510efceedd3315b335536449ba07b2403538cdba1e330234dc6838124be",
+        "descriptionSha256": "616ee93f6670cd8b77462fcc3d6b2f12d7a790462e8494a4c4a6ec45b8674f54",
+        "source": "src/instance-tools.js:66",
+        "sourceContains": "name: TOOL_NAME"
+      },
+      {
+        "name": "SN-Docs-Families",
+        "docsOnly": true,
+        "inputSchemaSha256": "efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49",
+        "descriptionSha256": "6724a3ccc7e9ebc0cf4f30dff70e3cb89e16e9990680f5383ff0926e2145797d",
+        "source": "src/docs/tool-definitions.js:3",
+        "sourceContains": "name: 'SN-Docs-Families'"
+      },
+      {
+        "name": "SN-Docs-Status",
+        "docsOnly": true,
+        "inputSchemaSha256": "efddc7bd8bbcef73a14eb1ace1ffdaec81e518ef1e13c1e9271d0b8acb694a49",
+        "descriptionSha256": "0654b52979faba1fe5873f1bb1c64c9fd81e9c70d8483b677e6fffd7c5825c7c",
+        "source": "src/docs/tool-definitions.js:8",
+        "sourceContains": "name: 'SN-Docs-Status'"
+      },
+      {
+        "name": "SN-Docs-Sync",
+        "docsOnly": true,
+        "inputSchemaSha256": "800089f789564e9a81c32180f480cd2626ed8a8ad6f0d6e38ca7b5a7ee707e90",
+        "descriptionSha256": "00007a84d8acde7bbda3db9b9a06b36a21408dfb3a9b4f676d77fee2366c37a0",
+        "source": "src/docs/tool-definitions.js:13",
+        "sourceContains": "name: 'SN-Docs-Sync'"
+      },
+      {
+        "name": "SN-Docs-Search",
+        "docsOnly": true,
+        "inputSchemaSha256": "615314a2245c7d98c86d3d69eb1b8b01fe1f7cca96a7fdd539781ab32326a068",
+        "descriptionSha256": "68716eacc8cfa187b9405a732c6c5d8399ce45ead41cad363d713c6f2769815a",
+        "source": "src/docs/tool-definitions.js:24",
+        "sourceContains": "name: 'SN-Docs-Search'"
+      },
+      {
+        "name": "SN-Docs-Get",
+        "docsOnly": true,
+        "inputSchemaSha256": "f1095cd01ac8628a9bfc833e337e33dce9c9c6aa2d0a590f9253b26c62e48fa6",
+        "descriptionSha256": "2a40d9ee608c0f5c3aaa4402d44794df0cbeb0a9f210c3f4a14ebb082ac25e07",
+        "source": "src/docs/tool-definitions.js:37",
+        "sourceContains": "name: 'SN-Docs-Get'"
+      }
+    ]
+  },
+  "protocol": {
+    "serverInfo": {
+      "name": "happy-platform-mcp",
+      "version": "6.2.0"
+    },
+    "serverInfoSource": "src/mcp-server-consolidated.js:94-97; src/package-info.js:5-6",
+    "capabilities": {
+      "prompts": {},
+      "resources": {},
+      "tools": {}
+    },
+    "capabilitiesNote": "prompts is advertised but NO prompts handler is registered: prompts/list => JSON-RPC -32601",
+    "capabilitiesSource": "src/mcp-server-consolidated.js:98-104",
+    "resources": [
+      {
+        "name": "ServiceNow Instance Info",
+        "uri": "servicenow://instance",
+        "description": "Information about the connected ServiceNow instance",
+        "mimeType": "application/json",
+        "source": "src/mcp-server-consolidated.js:3367",
+        "sourceContains": "uri: 'servicenow://instance'"
+      },
+      {
+        "name": "All ServiceNow Tables",
+        "uri": "servicenow://tables/all",
+        "description": "Complete list of available ServiceNow tables with metadata",
+        "mimeType": "application/json",
+        "source": "src/mcp-server-consolidated.js:3373",
+        "sourceContains": "uri: 'servicenow://tables/all'"
+      }
+    ],
+    "resourceReads": [
+      {
+        "uri": "servicenow://instance",
+        "behaviour": "JSON {server_info{name \"Happy MCP Server (Consolidated)\", version}, instance_info{url: process.env.SERVICENOW_INSTANCE_URL, username: process.env.SERVICENOW_USERNAME} (undefined => omitted when the registry/keychain config is used), capabilities{total_tables, operations, tools: count from tools/list}}",
+        "source": "src/mcp-server-consolidated.js:3385-3410"
+      },
+      {
+        "uri": "servicenow://tables/all",
+        "behaviour": "JSON of the loaded table metadata",
+        "source": "src/mcp-server-consolidated.js:3412-3420"
+      }
+    ],
+    "unknownResource": {
+      "ok": false,
+      "code": -32603,
+      "message": "Unknown resource: servicenow://nope"
+    },
+    "unknownResourceSource": "src/mcp-server-consolidated.js:3422",
+    "unknownResourceSourceContains": "Unknown resource: ${uri}",
+    "promptsList": {
+      "ok": false,
+      "code": -32601
+    },
+    "requestMethods": [
+      "initialize",
+      "ping",
+      "resources/list",
+      "resources/read",
+      "tools/call",
+      "tools/list"
+    ],
+    "requestMethodsNote": "initialize and ping are SDK-provided; tools/list, tools/call, resources/list, resources/read are registered here. No completion/logging/subscribe/prompts handlers; no notifications other than notifications/progress (sent when a tools/call carries _meta.progressToken).",
+    "deadCode": [
+      {
+        "what": "src/resources.js createResourceHandlers describes a different resource set but is referenced only by tests/resources.test.js",
+        "source": "src/resources.js:1"
+      },
+      {
+        "what": "script-sync.js is imported but never called (dead write path)",
+        "source": "src/mcp-server-consolidated.js:15"
+      }
+    ]
+  },
+  "errorShape": {
+    "toolFailure": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: <message>"
+        }
+      ],
+      "isError": true
+    },
+    "toolFailureSource": "src/mcp-server-consolidated.js:3340-3347",
+    "docsOnlyUnavailableTool": {
+      "isError": true,
+      "text": "Error: Tool SN-Nope is unavailable in docs-only mode"
+    },
+    "docsOnlyUnavailableToolSource": "src/mcp-server-consolidated.js:1562-1564",
+    "otherShapes": [
+      {
+        "shape": "text prefixed with \"❌ ...\" and isError:true (handler-specific guidance, e.g. fix-script/picker failures)",
+        "source": "src/mcp-server-consolidated.js:2402"
+      },
+      {
+        "shape": "SN-Register-Instance: text = JSON {success:false, code, message, ...} with isError:true; success text is JSON {success:true,...} without isError",
+        "source": "src/instance-tools.js:81-93"
+      },
+      {
+        "shape": "resources/read failure: JSON-RPC error -32603 \"Unknown resource: <uri>\"; prompts/*: -32601",
+        "source": "src/mcp-server-consolidated.js:3422",
+        "sourceContains": "Unknown resource"
+      }
+    ]
+  },
+  "logging": {
+    "stdio": "all diagnostics via console.error (stderr); stdout is the MCP stream",
+    "stdioSource": "src/stdio-server.js:76-137; src/process-guards.js:12",
+    "http": "server.js uses console.log (stdout) for startup banner, DEBUG, shutdown; errors via console.error",
+    "httpSource": "src/server.js:45,62-67,85",
+    "cli": "instance CLI: results on stdout, errors/usage on stderr"
+  },
+  "environment": [
+    {
+      "name": "DEBUG",
+      "purpose": "'true' logs the active instance at HTTP startup (stdout)",
+      "default": "unset",
+      "readBy": "http",
+      "source": "src/server.js:74"
+    },
+    {
+      "name": "HAPPY_CONFIG_PATH",
+      "purpose": "Explicit instance-registry path (trimmed, ~ expanded, path.resolve); read path = write path",
+      "default": "unset: precedence in config.precedence",
+      "readBy": "all",
+      "source": "src/config-path.js:23"
+    },
+    {
+      "name": "HAPPY_DOCS_CACHE_DIR",
+      "purpose": "Docs cache directory (files/ tree + index.sqlite); falls back to registry-file .docs.cacheDir",
+      "default": "~/.happy-platform-mcp/docs/servicenow",
+      "readBy": "docs",
+      "source": "src/docs/config.js:37"
+    },
+    {
+      "name": "HAPPY_DOCS_EMBEDDING_PROVIDER",
+      "purpose": "Docs embedding provider name",
+      "default": "none",
+      "readBy": "docs",
+      "source": "src/docs/config.js:44"
+    },
+    {
+      "name": "HAPPY_DOCS_ENABLE_LOCAL_INDEX",
+      "purpose": "true|1|yes enables the local FTS index (env presence overrides registry .docs.localIndexEnabled)",
+      "default": "false",
+      "readBy": "docs",
+      "source": "src/docs/config.js:38",
+      "otherReadSites": [
+        "src/docs/config.js:39"
+      ]
+    },
+    {
+      "name": "HAPPY_DOCS_ENABLE_VECTOR",
+      "purpose": "true|1|yes enables vector search (env presence overrides registry .docs.enableVector)",
+      "default": "false",
+      "readBy": "docs",
+      "source": "src/docs/config.js:41",
+      "otherReadSites": [
+        "src/docs/config.js:42"
+      ]
+    },
+    {
+      "name": "HAPPY_MCP_ALLOWED_HOSTS",
+      "purpose": "Comma list of allowed Host header values for HTTP",
+      "default": "unset",
+      "readBy": "http",
+      "source": "src/http-server.js:172",
+      "otherReadSites": [
+        "src/http-server.js:172"
+      ]
+    },
+    {
+      "name": "HAPPY_MCP_ALLOWED_ORIGINS",
+      "purpose": "Comma list of allowed Origin values for HTTP",
+      "default": "unset",
+      "readBy": "http",
+      "source": "src/http-server.js:175"
+    },
+    {
+      "name": "HAPPY_MCP_API_TOKEN",
+      "purpose": "Bearer token for the HTTP transport; 64 hex chars or 43 base64url chars; HTTP refuses to start without it",
+      "default": "unset (HTTP startup refused)",
+      "readBy": "http",
+      "source": "src/http-server.js:171"
+    },
+    {
+      "name": "HAPPY_MCP_BIND_HOST",
+      "purpose": "HTTP listen host",
+      "default": "127.0.0.1",
+      "readBy": "http",
+      "source": "src/server.js:28"
+    },
+    {
+      "name": "HAPPY_MCP_DOCS_ONLY",
+      "purpose": "true|1|yes (case-insensitive) forces docs-only; 'false' disables the credential-missing docs-only fallback",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/stdio-server.js:48",
+      "otherReadSites": [
+        "src/stdio-server.js:52"
+      ]
+    },
+    {
+      "name": "HAPPY_MCP_TELEMETRY",
+      "purpose": "on|1|true|yes enables anonymous opt-in usage pings (tool name counts)",
+      "default": "unset (off)",
+      "readBy": "all",
+      "source": "src/usage-telemetry.js:28"
+    },
+    {
+      "name": "HAPPY_MCP_TELEMETRY_URL",
+      "purpose": "Overrides the telemetry endpoint",
+      "default": "TELEMETRY_URL = 'https://build01-lab.tail0490c9.ts.net:10000/api/mcp/telemetry' (project-links.js:8)",
+      "readBy": "all",
+      "source": "src/usage-telemetry.js:32"
+    },
+    {
+      "name": "PORT",
+      "purpose": "HTTP listen port",
+      "default": "3000",
+      "readBy": "http",
+      "source": "src/server.js:27"
+    },
+    {
+      "name": "SERVICENOW_AUTH_TYPE",
+      "purpose": "'oauth' switches the .env-fallback instance to OAuth",
+      "default": "unset (basic)",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:117"
+    },
+    {
+      "name": "SERVICENOW_CLIENT_ID",
+      "purpose": ".env-fallback OAuth client id (only when SERVICENOW_AUTH_TYPE=oauth)",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:140"
+    },
+    {
+      "name": "SERVICENOW_CLIENT_SECRET",
+      "purpose": ".env-fallback OAuth client secret (only when SERVICENOW_AUTH_TYPE=oauth)",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:141"
+    },
+    {
+      "name": "SERVICENOW_INSTANCE",
+      "purpose": "Name of the registry instance to use at stdio startup (getInstanceOrDefault)",
+      "default": "unset: registry default instance",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:247",
+      "otherReadSites": [
+        "src/stdio-server.js:95"
+      ]
+    },
+    {
+      "name": "SERVICENOW_INSTANCE_URL",
+      "purpose": ".env-fallback instance URL; also reported by resource servicenow://instance; also decides docs-only fallback",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:122",
+      "otherReadSites": [
+        "src/config-manager.js:131",
+        "src/mcp-server-consolidated.js:3393",
+        "src/stdio-server.js:41",
+        "src/stdio-server.js:44"
+      ]
+    },
+    {
+      "name": "SERVICENOW_OAUTH_AUTHORIZE_URL",
+      "purpose": ".env-fallback authorize endpoint (authorization_code only)",
+      "default": "<instance>/oauth_auth.do (oauth-endpoint-policy.js:83)",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:147"
+    },
+    {
+      "name": "SERVICENOW_OAUTH_CALLBACK_PATH",
+      "purpose": ".env-fallback loopback callback path (authorization_code only)",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:161"
+    },
+    {
+      "name": "SERVICENOW_OAUTH_GRANT_TYPE",
+      "purpose": "client_credentials | authorization_code selects a passwordless grant (.env fallback; also stdio fallback decision)",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:118",
+      "otherReadSites": [
+        "src/stdio-server.js:39"
+      ]
+    },
+    {
+      "name": "SERVICENOW_OAUTH_REDIRECT_PORT",
+      "purpose": ".env-fallback loopback redirect port, decimal integer 0-65535, throws otherwise (authorization_code only)",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:149"
+    },
+    {
+      "name": "SERVICENOW_OAUTH_SCOPE",
+      "purpose": ".env-fallback OAuth scope (only when SERVICENOW_AUTH_TYPE=oauth)",
+      "default": "unset",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:142"
+    },
+    {
+      "name": "SERVICENOW_OAUTH_TOKEN_URL",
+      "purpose": ".env-fallback token endpoint (authorization_code only)",
+      "default": "<instance>/oauth_token.do (oauth-endpoint-policy.js:84)",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:148"
+    },
+    {
+      "name": "SERVICENOW_OAUTH_TRUSTED_ORIGINS",
+      "purpose": "Comma-separated exact https origins an OAuth authorize/token endpoint may use besides the instance origin; malformed entry throws",
+      "default": "unset: empty allow-list",
+      "readBy": "all",
+      "source": "src/oauth-endpoint-policy.js:51",
+      "otherReadSites": [
+        "src/oauth-endpoint-policy.js:98"
+      ]
+    },
+    {
+      "name": "SERVICENOW_PASSWORD",
+      "purpose": ".env-fallback basic-auth password (plaintext in env)",
+      "default": "'' in the fallback instance",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:125",
+      "otherReadSites": [
+        "src/config-manager.js:133",
+        "src/stdio-server.js:44"
+      ]
+    },
+    {
+      "name": "SERVICENOW_TOKEN_STORE",
+      "purpose": "Refresh-token store selector: 'keychain' | 'file'; anything else throws",
+      "default": "keychain",
+      "readBy": "all",
+      "source": "src/token-store.js:301"
+    },
+    {
+      "name": "SERVICENOW_USERNAME",
+      "purpose": ".env-fallback basic-auth username; also reported by resource servicenow://instance",
+      "default": "'' in the fallback instance",
+      "readBy": "stdio",
+      "source": "src/config-manager.js:125",
+      "otherReadSites": [
+        "src/config-manager.js:132",
+        "src/mcp-server-consolidated.js:3394",
+        "src/stdio-server.js:44"
+      ]
+    },
+    {
+      "name": "SSE_KEEPALIVE_INTERVAL",
+      "purpose": "HTTP SSE keep-alive interval (ms)",
+      "default": "15000",
+      "readBy": "http",
+      "source": "src/server.js:30"
+    },
+    {
+      "name": "XDG_CONFIG_HOME",
+      "purpose": "Base directory of the FILE token store only (not used by config-path.js)",
+      "default": "~/.config",
+      "readBy": "token-store",
+      "source": "src/token-store.js:57"
+    },
+    {
+      "name": "HOME / USERPROFILE",
+      "implicit": true,
+      "purpose": "os.homedir(): default registry (~/.config/happy-platform-mcp/instances.json), docs cache (~/.happy-platform-mcp/...) and file-token-store (~/.config/happy-platform-mcp) roots",
+      "default": "OS user home",
+      "source": "src/config-path.js:9"
+    },
+    {
+      "name": "process.cwd() and ./.env",
+      "implicit": true,
+      "purpose": "stdio-server.js and server.js call dotenv.config() (no override of already-set vars) so a .env in the working directory is read; cli.js `instance ...` subcommands never load .env; ./scripts is the fix-script output directory",
+      "default": "process cwd",
+      "source": "src/stdio-server.js:22"
+    },
+    {
+      "name": "os.userInfo().username",
+      "implicit": true,
+      "purpose": "Part of the identity-v1 refresh-token tuple (OS user name)",
+      "default": "OS user",
+      "source": "src/servicenow-client.js:542"
+    }
+  ],
+  "startupModes": {
+    "stdio": {
+      "entry": "happy-platform-mcp / servicenow-mcp-server with no args (src/cli.js -> src/stdio-server.js main) or `node src/stdio-server.js`",
+      "source": "src/stdio-server.js:61-153",
+      "selection": [
+        "HAPPY_MCP_DOCS_ONLY in {true,1,yes} => docs-only; config manager NOT consulted (stdio-server.js:47-49,88-90)",
+        "else manager.getInstanceOrDefault(SERVICENOW_INSTANCE) (stdio-server.js:95); success => full mode",
+        "on error: docs-only iff message matches /Missing ServiceNow credentials|servicenow-instances\\.json not found/i AND HAPPY_MCP_DOCS_ONLY != \"false\" AND no env credentials (stdio-server.js:55-59); otherwise rethrow => exit 1"
+      ],
+      "envCredentialsDefinition": "SERVICENOW_INSTANCE_URL && (SERVICENOW_OAUTH_GRANT_TYPE in {client_credentials, authorization_code} || (SERVICENOW_USERNAME && SERVICENOW_PASSWORD))",
+      "envCredentialsSource": "src/stdio-server.js:35-45",
+      "startupFailure": "console.error(\"Failed to start Happy MCP Server:\", error); process.exit(1)",
+      "stdioMatrix": [
+        {
+          "case": "HAPPY_MCP_DOCS_ONLY=true",
+          "env": {
+            "HAPPY_MCP_DOCS_ONLY": "true"
+          },
+          "outcome": "docs-only",
+          "managerCalls": 0
+        },
+        {
+          "case": "HAPPY_MCP_DOCS_ONLY=1",
+          "env": {
+            "HAPPY_MCP_DOCS_ONLY": "1"
+          },
+          "outcome": "docs-only",
+          "managerCalls": 0
+        },
+        {
+          "case": "HAPPY_MCP_DOCS_ONLY=YES (case-insensitive)",
+          "env": {
+            "HAPPY_MCP_DOCS_ONLY": "YES"
+          },
+          "outcome": "docs-only",
+          "managerCalls": 0
+        },
+        {
+          "case": "unset, config manager ok => full",
+          "env": {},
+          "outcome": "full",
+          "managerCalls": 1
+        },
+        {
+          "case": "DOCS_ONLY=false, config manager ok => full",
+          "env": {
+            "HAPPY_MCP_DOCS_ONLY": "false"
+          },
+          "outcome": "full",
+          "managerCalls": 1
+        },
+        {
+          "case": "missing credentials, no env creds => docs-only fallback",
+          "env": {},
+          "managerThrows": "Missing ServiceNow credentials. x",
+          "outcome": "docs-only",
+          "managerCalls": 1
+        },
+        {
+          "case": "registry file not found message => docs-only fallback",
+          "env": {},
+          "managerThrows": "servicenow-instances.json not found",
+          "outcome": "docs-only",
+          "managerCalls": 1
+        },
+        {
+          "case": "unrecognised DOCS_ONLY value does not block fallback",
+          "env": {
+            "HAPPY_MCP_DOCS_ONLY": "maybe"
+          },
+          "managerThrows": "Missing ServiceNow credentials. x",
+          "outcome": "docs-only",
+          "managerCalls": 1
+        },
+        {
+          "case": "DOCS_ONLY=false disables fallback",
+          "env": {
+            "HAPPY_MCP_DOCS_ONLY": "false"
+          },
+          "managerThrows": "Missing ServiceNow credentials. x",
+          "outcome": "throws",
+          "managerCalls": 1
+        },
+        {
+          "case": "env basic creds present => rethrow",
+          "env": {
+            "SERVICENOW_INSTANCE_URL": "https://a",
+            "SERVICENOW_USERNAME": "u",
+            "SERVICENOW_PASSWORD": "p"
+          },
+          "managerThrows": "Missing ServiceNow credentials. x",
+          "outcome": "throws",
+          "managerCalls": 1
+        },
+        {
+          "case": "URL + client_credentials => rethrow",
+          "env": {
+            "SERVICENOW_INSTANCE_URL": "https://a",
+            "SERVICENOW_OAUTH_GRANT_TYPE": "client_credentials"
+          },
+          "managerThrows": "Missing ServiceNow credentials. x",
+          "outcome": "throws",
+          "managerCalls": 1
+        },
+        {
+          "case": "URL + authorization_code => rethrow",
+          "env": {
+            "SERVICENOW_INSTANCE_URL": "https://a",
+            "SERVICENOW_OAUTH_GRANT_TYPE": "authorization_code"
+          },
+          "managerThrows": "Missing ServiceNow credentials. x",
+          "outcome": "throws",
+          "managerCalls": 1
+        },
+        {
+          "case": "URL + username only (no password, no passwordless grant) => still falls back",
+          "env": {
+            "SERVICENOW_INSTANCE_URL": "https://a",
+            "SERVICENOW_USERNAME": "u"
+          },
+          "managerThrows": "Missing ServiceNow credentials. x",
+          "outcome": "docs-only",
+          "managerCalls": 1
+        },
+        {
+          "case": "other error never falls back",
+          "env": {},
+          "managerThrows": "boom",
+          "outcome": "throws",
+          "managerCalls": 1
+        }
+      ]
+    },
+    "docsOnly": {
+      "tools": [
+        "SN-Register-Instance",
+        "SN-Docs-Families",
+        "SN-Docs-Status",
+        "SN-Docs-Sync",
+        "SN-Docs-Search",
+        "SN-Docs-Get"
+      ],
+      "behaviour": "initialize still advertises tools+resources+prompts; resources/list returns the same 2 resources; every other tool call => isError \"Error: Tool <name> is unavailable in docs-only mode\"",
+      "source": "src/mcp-server-consolidated.js:208-211,1562-1564"
+    },
+    "http": {
+      "entry": "`npm start` => src/server.js (package.json main); NOT a package bin",
+      "source": "src/server.js:1-93",
+      "listen": "HAPPY_MCP_BIND_HOST (default 127.0.0.1) : PORT (default 3000)",
+      "routes": [
+        {
+          "route": "GET /mcp",
+          "purpose": "SSE session establishment",
+          "source": "src/http-server.js:628"
+        },
+        {
+          "route": "POST /mcp",
+          "purpose": "JSON-RPC message for a session",
+          "source": "src/http-server.js:708"
+        },
+        {
+          "route": "GET /health",
+          "purpose": "health",
+          "source": "src/http-server.js:751"
+        },
+        {
+          "route": "GET /instances",
+          "purpose": "instance list",
+          "source": "src/http-server.js:760"
+        }
+      ],
+      "auth": "bearer HAPPY_MCP_API_TOKEN required; startup refused (exit 1) when absent/invalid",
+      "authSource": "src/http-server.js:55-65,169-176; src/server.js:32-39",
+      "limits": {
+        "maxPendingSessions": 16,
+        "maxActiveSessions": 32,
+        "sessionSetupTimeoutMs": 30000,
+        "sessionIdleTimeoutMs": 1800000,
+        "sessionMaxLifetimeMs": 43200000,
+        "maxJsonBytes": 8388608,
+        "maxQueuedPostsPerSession": 8,
+        "maxConcurrentPosts": 8,
+        "maxOutstandingRequestsPerSession": 16,
+        "maxOutstandingRequests": 64,
+        "authFailureLimit": 10,
+        "authFailureWindowMs": 60000,
+        "maxTrackedAuthPeers": 1024
+      },
+      "limitsSource": "src/http-server.js:20-34"
+    }
+  },
+  "config": {
+    "userPathRelative": ".config/happy-platform-mcp/instances.json",
+    "precedence": [
+      "1. HAPPY_CONFIG_PATH (trimmed; ~, ~/ expanded; path.resolve): read = write, source \"explicit\"",
+      "2. ~/.config/happy-platform-mcp/instances.json if it exists: read = write, source \"user\"",
+      "3. <package>/config/servicenow-instances.json (legacy; NOT src/config) if it exists: read legacy, WRITE user path, source \"legacy\"",
+      "4. otherwise user path (read = write; file absent)"
+    ],
+    "precedenceSource": "src/config-path.js:17-37; legacy path src/instance-registry.js:12",
+    "precedenceMatrix": [
+      {
+        "case": "explicit path",
+        "env": {
+          "HAPPY_CONFIG_PATH": "/x/y.json"
+        },
+        "existing": [
+          "/home/u/.config/happy-platform-mcp/instances.json"
+        ],
+        "expect": {
+          "readPath": "/x/y.json",
+          "writePath": "/x/y.json",
+          "source": "explicit"
+        }
+      },
+      {
+        "case": "explicit trimmed",
+        "env": {
+          "HAPPY_CONFIG_PATH": "  /x/y.json  "
+        },
+        "existing": [],
+        "expect": {
+          "readPath": "/x/y.json",
+          "writePath": "/x/y.json",
+          "source": "explicit"
+        }
+      },
+      {
+        "case": "explicit ~ expansion",
+        "env": {
+          "HAPPY_CONFIG_PATH": "~/cfg.json"
+        },
+        "existing": [],
+        "expect": {
+          "readPath": "/home/u/cfg.json",
+          "writePath": "/home/u/cfg.json",
+          "source": "explicit"
+        }
+      },
+      {
+        "case": "blank explicit falls through",
+        "env": {
+          "HAPPY_CONFIG_PATH": "   "
+        },
+        "existing": [],
+        "expect": {
+          "readPath": "/home/u/.config/happy-platform-mcp/instances.json",
+          "writePath": "/home/u/.config/happy-platform-mcp/instances.json",
+          "source": "user"
+        }
+      },
+      {
+        "case": "user file exists",
+        "env": {},
+        "existing": [
+          "/home/u/.config/happy-platform-mcp/instances.json",
+          "/pkg/config/servicenow-instances.json"
+        ],
+        "expect": {
+          "readPath": "/home/u/.config/happy-platform-mcp/instances.json",
+          "writePath": "/home/u/.config/happy-platform-mcp/instances.json",
+          "source": "user"
+        }
+      },
+      {
+        "case": "legacy only",
+        "env": {},
+        "existing": [
+          "/pkg/config/servicenow-instances.json"
+        ],
+        "expect": {
+          "readPath": "/pkg/config/servicenow-instances.json",
+          "writePath": "/home/u/.config/happy-platform-mcp/instances.json",
+          "source": "legacy"
+        }
+      },
+      {
+        "case": "none exist",
+        "env": {},
+        "existing": [],
+        "expect": {
+          "readPath": "/home/u/.config/happy-platform-mcp/instances.json",
+          "writePath": "/home/u/.config/happy-platform-mcp/instances.json",
+          "source": "user"
+        }
+      }
+    ],
+    "envFallback": {
+      "rule": ".env/environment instance (name \"default\", description \"Loaded from .env\", default:true) is used ONLY when the registry file does not exist (hasFile false / ENOENT / REGISTRY_FILE_NOT_FOUND); an existing registry file hides env credentials entirely",
+      "source": "src/config-manager.js:85-103,129-136"
+    },
+    "registryDocsProperties": "the registry file may carry a top-level `docs` object (cacheDir, localIndexEnabled, enableVector, embeddingProvider) read by src/docs/config.js:12-23; env overrides it",
+    "instanceNamePattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+    "instanceNamePatternSource": "src/instance-credential-store.js:5",
+    "legacyPlaintext": "plaintext passwords in the registry => LEGACY_MIGRATION_REQUIRED on mutations; `instance migrate` moves them to the keychain",
+    "legacyPlaintextSource": "src/instance-registry.js:676",
+    "registryWrite": "mkdir -p dir mode 0700; temp file \".<base>.<pid>.<Date.now>.<rand>.<attempt>.tmp\" opened wx mode 0600; rename onto target",
+    "registryWriteSource": "src/instance-registry.js:714-737"
+  },
+  "keychain": {
+    "service": "happy-platform-mcp",
+    "serviceSource": "src/instance-credential-store.js:3; src/token-store.js:21",
+    "backend": "@napi-rs/keyring Entry(service, account), lazily imported; a missing/locked backend surfaces KeychainUnavailableError (instance creds) or the raw error (refresh tokens)",
+    "backendSource": "src/instance-credential-store.js:88-101; src/token-store.js:259-267",
+    "instanceCredentials": {
+      "accountFormat": "keychain:instance/<instanceName>/<password|client-secret>",
+      "namePattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "examples": {
+        "password": "keychain:instance/dev-1/password",
+        "client-secret": "keychain:instance/dev-1/client-secret"
+      },
+      "source": "src/instance-credential-store.js:4-6,58-79"
+    },
+    "healthCheck": {
+      "accountFormat": "keychain:health-check/<uuid v4>",
+      "accountRegex": "^keychain:health-check/[0-9a-f-]{36}$",
+      "procedure": "set probe value, get, compare, delete; run on a missing credential to distinguish \"absent\" from \"backend unavailable\"",
+      "source": "src/instance-credential-store.js:104-144"
+    },
+    "refreshToken": {
+      "persistedFor": "authorization_code grant ONLY (client_credentials never persists)",
+      "accountPrefix": "identity-v1-",
+      "accountFormat": "identity-v1-<sha256 hex of UTF-8 JSON.stringify(tuple)>",
+      "tupleSource": "'happy-platform-mcp/oauth-refresh-token', 1, osUser, instanceUrl, instance.clientId, new URL(endpoints.authorizeUrl).href, new URL(endpoints.tokenUrl).href",
+      "tupleOrder": [
+        "\"happy-platform-mcp/oauth-refresh-token\" (literal)",
+        "1 (integer version)",
+        "os.userInfo().username",
+        "canonical instance URL = URL.origin + pathname with trailing \"/\" trimmed (no query/fragment; host lowercased, default port dropped by WHATWG URL)",
+        "OAuth client id (string, as configured)",
+        "URL(authorizeUrl).href of the effective endpoint (default <instanceUrl>/oauth_auth.do)",
+        "URL(tokenUrl).href of the effective endpoint (default <instanceUrl>/oauth_token.do)"
+      ],
+      "serialization": "JSON.stringify of a 7-element array (no spaces, default escaping), hashed as UTF-8 with SHA-256, lower-case hex",
+      "source": "src/servicenow-client.js:523-554; src/oauth-endpoint-policy.js:83-84",
+      "testVectors": [
+        {
+          "case": "default endpoints",
+          "osUser": "alice",
+          "instance": {
+            "url": "https://dev12345.service-now.com",
+            "clientId": "client-abc"
+          },
+          "canonicalUrl": "https://dev12345.service-now.com",
+          "authorizeHref": "https://dev12345.service-now.com/oauth_auth.do",
+          "tokenHref": "https://dev12345.service-now.com/oauth_token.do",
+          "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"alice\",\"https://dev12345.service-now.com\",\"client-abc\",\"https://dev12345.service-now.com/oauth_auth.do\",\"https://dev12345.service-now.com/oauth_token.do\"]",
+          "account": "identity-v1-315eba09fcbe101348a07366944ee5fd6b43771c7a546e539a71fc8430c3057c"
+        },
+        {
+          "case": "trailing slash + path + explicit endpoints",
+          "osUser": "bob",
+          "instance": {
+            "url": "https://dev12345.service-now.com/sub///",
+            "clientId": "client-abc",
+            "authorizeUrl": "https://dev12345.service-now.com/custom_auth.do",
+            "tokenUrl": "https://dev12345.service-now.com/custom_token.do"
+          },
+          "canonicalUrl": "https://dev12345.service-now.com/sub",
+          "authorizeHref": "https://dev12345.service-now.com/custom_auth.do",
+          "tokenHref": "https://dev12345.service-now.com/custom_token.do",
+          "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"bob\",\"https://dev12345.service-now.com/sub\",\"client-abc\",\"https://dev12345.service-now.com/custom_auth.do\",\"https://dev12345.service-now.com/custom_token.do\"]",
+          "account": "identity-v1-39767735a2a045f2310c987838b5bb13fc40ae9cdb2bdf6dc881f2b200a63b74"
+        },
+        {
+          "case": "uppercase host + default port normalised by URL",
+          "osUser": "alice",
+          "instance": {
+            "url": "HTTPS://DEV12345.service-now.com:443/",
+            "clientId": "client-abc"
+          },
+          "canonicalUrl": "https://dev12345.service-now.com",
+          "authorizeHref": "https://dev12345.service-now.com/oauth_auth.do",
+          "tokenHref": "https://dev12345.service-now.com/oauth_token.do",
+          "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"alice\",\"https://dev12345.service-now.com\",\"client-abc\",\"https://dev12345.service-now.com/oauth_auth.do\",\"https://dev12345.service-now.com/oauth_token.do\"]",
+          "account": "identity-v1-315eba09fcbe101348a07366944ee5fd6b43771c7a546e539a71fc8430c3057c"
+        }
+      ],
+      "legacyAccountFormat": "<osUser>@<instanceName> (never read, only cleared; null when it fails the account grammar)",
+      "legacyAccountExample": "alice@dev",
+      "legacySource": "src/servicenow-client.js:561-565"
+    },
+    "tokenAccountGrammar": "/^[A-Za-z0-9_@.-]{1,200}$/",
+    "tokenAccountGrammarNote": "plus: not \".\", no \"..\" substring (all stores)",
+    "tokenAccountGrammarSource": "src/token-store.js:24-27",
+    "storeSelection": "SERVICENOW_TOKEN_STORE unset|''|keychain => KeychainTokenStore (default); 'file' => FileTokenStore; else throws",
+    "storeSelectionSource": "src/token-store.js:301-305",
+    "cliCleanup": "instance remove/update/migrate clear refresh tokens in BOTH the OS keychain and the file store (file store skipped on win32 when its dir is absent)",
+    "cliCleanupSource": "src/instance-cli.js:244-261"
+  },
+  "fileTokenStore": {
+    "directory": "$XDG_CONFIG_HOME/happy-platform-mcp, else ~/.config/happy-platform-mcp (note: config-path.js does NOT honour XDG_CONFIG_HOME)",
+    "directorySource": "src/token-store.js:55-59",
+    "fileName": "token-<sha256 hex of account> (hashed so case-insensitive filesystems cannot alias keys)",
+    "fileNameSource": "src/token-store.js:80-85",
+    "modes": "directory 0700, files 0600; uid must match; no symlinks (O_NOFOLLOW); nlink <= 1; ancestors trusted; POSIX only (win32 fails closed)",
+    "modesSource": "src/token-store.js:87-95,145-147",
+    "write": "temp file \".token-<uuid>.tmp\" created O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW mode 0600, chmod 0600, then atomic rename",
+    "writeSource": "src/token-store.js:207-232",
+    "sourceSnippets": [
+      "const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');",
+      "return join(base, 'happy-platform-mcp');",
+      "join(directory, 'token-' + createHash('sha256').update(account, 'utf8').digest('hex'))",
+      "(directory ? 0o700 : 0o600)",
+      "'.token-' + randomUUID() + '.tmp'",
+      "constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600"
+    ]
+  },
+  "diskWrites": [
+    {
+      "path": "<registry write path> (config.precedence)",
+      "what": "instances.json (metadata only once migrated; no secrets)",
+      "mode": "dir 0700, file 0600 via temp+rename",
+      "source": "src/instance-registry.js:714-737"
+    },
+    {
+      "path": "./scripts/ (process.cwd()-relative, NOT package-relative)",
+      "what": "fix scripts: set_update_set_<fragment>_<ts>.js (SN-Set-Update-Set picker failure), background_script_<ts>.js (SN-Execute-Background-Script trigger failure), <script_name>_<ts>.js (SN-Create-Fix-Script)",
+      "mode": "mkdir -p; O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW 0600; refuses a symlinked directory",
+      "source": "src/mcp-server-consolidated.js:2083-2084,2342-2343,2475-2476; src/generated-scripts.js:101-135"
+    },
+    {
+      "path": "$HAPPY_DOCS_CACHE_DIR | ~/.happy-platform-mcp/docs/servicenow",
+      "what": "files/<family>/**/*.md and index.sqlite (better-sqlite3, optional sqlite-vec)",
+      "mode": "mkdir -p, default umask",
+      "source": "src/docs/config.js:7,37; src/docs/sync.js:140-169; src/docs/tool-handlers.js:21-22"
+    },
+    {
+      "path": "OS keychain",
+      "what": "instance secrets + refresh tokens (keychain section)",
+      "source": "src/instance-credential-store.js; src/token-store.js"
+    },
+    {
+      "path": "$XDG_CONFIG_HOME|~/.config /happy-platform-mcp/token-*",
+      "what": "file token store (only SERVICENOW_TOKEN_STORE=file)",
+      "source": "src/token-store.js:55-85"
+    }
+  ],
+  "fallbacks": [
+    {
+      "name": "SN-Set-Update-Set picker failure => fix script",
+      "detail": "UI picker /api/now/ui/concoursepicker/updateset; on failure writes a fix script and returns a manual-run message, EXCEPT a \"32-character\" sys_id validation error which is returned as an error",
+      "source": "src/mcp-server-consolidated.js:2052-2110"
+    },
+    {
+      "name": "SN-Set-Current-Application",
+      "detail": "UI picker only; NO fix-script fallback (isError result on failure)",
+      "source": "src/mcp-server-consolidated.js:2170-2205"
+    },
+    {
+      "name": "SN-Execute-Background-Script",
+      "detail": "wait:true => /sys.scripts.do; reason NOT_RUN => sys_trigger fallback ONLY if scope is undefined/global; UNKNOWN_OUTCOME => no fallback; wait:false => sys_trigger; trigger failure => fix script",
+      "source": "src/mcp-server-consolidated.js:2203-2465"
+    },
+    {
+      "name": "stdio docs-only fallback",
+      "detail": "see startupModes.stdio",
+      "source": "src/stdio-server.js:55-59"
+    },
+    {
+      "name": ".env instance fallback",
+      "detail": "see config.envFallback",
+      "source": "src/config-manager.js:98-103"
+    }
+  ],
+  "rollback": [
+    {
+      "name": "SN-Batch-Create transaction:true",
+      "detail": "ONLY STOPS at the first error; it does NOT delete or roll back already-created records, despite the tool description saying \"All-or-nothing\" (mcp-server-consolidated.js:832-834)",
+      "source": "src/servicenow-client.js:2493-2580"
+    },
+    {
+      "name": "instance add/update/remove/credential/migrate",
+      "detail": "keychain snapshot + restore on failure",
+      "source": "src/instance-cli.js:336-370"
+    },
+    {
+      "name": "SN-Register-Instance",
+      "detail": "compensateRegistration on failure",
+      "source": "src/instance-tools.js:298-303,472"
+    }
+  ],
+  "telemetry": {
+    "default": "off; HAPPY_MCP_TELEMETRY on|1|true|yes enables; payload carries tool-name counts only",
+    "payload": "JSON {v:1, package, version, session, transport, node (major), platform, tools{<name>:count}, sent_at}",
+    "flush": "every 10 min or 200 calls, 3 s send timeout",
+    "source": "src/usage-telemetry.js:22-33,60-76",
+    "sourceContains": "const ON_VALUES = new Set(['1', 'true', 'on', 'yes']);"
+  },
+  "sourceSnippets": [
+    {
+      "file": "src/instance-credential-store.js",
+      "contains": [
+        "const SERVICE_NAME = 'happy-platform-mcp';",
+        "const CREDENTIAL_PREFIX = 'keychain:instance/';",
+        "`keychain:health-check/${randomUUID()}`"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/token-store.js",
+      "contains": [
+        "const SERVICE_NAME = 'happy-platform-mcp';"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/servicenow-client.js",
+      "contains": [
+        "const REFRESH_TOKEN_IDENTITY_PREFIX = 'identity-v1-';",
+        "const account = `${osUser}@${instanceName}`;"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/mcp-server-consolidated.js",
+      "contains": [
+        "text: `Error: ${error.message}`",
+        "Tool ${name} is unavailable in docs-only mode",
+        "const scriptsDir = path.resolve(process.cwd(), 'scripts');",
+        "throw new Error(`Unknown resource: ${uri}`);",
+        "prompts: {}"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/stdio-server.js",
+      "contains": [
+        "['true', '1', 'yes'].includes(String(value || '').toLowerCase())",
+        "/Missing ServiceNow credentials|servicenow-instances\\.json not found/i",
+        "process.exit(1);",
+        "dotenv.config();"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/cli.js",
+      "contains": [
+        "args[0] === '--help' || args[0] === '-h' || args[0] === 'help'",
+        "args.length === 1 && args[0] === '--docs-only'",
+        "'Unknown command. Use --help for usage.'"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/oauth-endpoint-policy.js",
+      "contains": [
+        "`${instanceUrl}/oauth_auth.do`",
+        "`${instanceUrl}/oauth_token.do`"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/config-path.js",
+      "contains": [
+        "'.config', 'happy-platform-mcp', 'instances.json'"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/docs/config.js",
+      "contains": [
+        "path.join(os.homedir(), '.happy-platform-mcp', 'docs', 'servicenow')"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/project-links.js",
+      "contains": [
+        "export const TELEMETRY_URL = 'https://build01-lab.tail0490c9.ts.net:10000/api/mcp/telemetry';"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    },
+    {
+      "file": "src/server.js",
+      "contains": [
+        "Number(process.env.PORT || 3000)",
+        "process.env.HAPPY_MCP_BIND_HOST || '127.0.0.1'",
+        "Number(process.env.SSE_KEEPALIVE_INTERVAL || 15000)"
+      ],
+      "note": "verbatim constant that the manifest encodes"
+    }
+  ]
+}

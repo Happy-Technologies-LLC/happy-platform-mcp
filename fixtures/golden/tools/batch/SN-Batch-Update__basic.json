@@ -1,0 +1,106 @@
+{
+  "description": "SN-Batch-Update basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "batch",
+  "harnessError": null,
+  "id": "SN-Batch-Update/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📦 Batch updating 2 records (progress: true)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "state": "2"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/incident/8dce91cd01ccb903cce2773e4168a30b",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "state": "3"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/incident/4a7dbb25c27fc8894b866ae92feef15a",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "progress": true,
+            "stop_on_error": false,
+            "updates": [
+              {
+                "data": {
+                  "state": "2"
+                },
+                "sys_id": "8dce91cd01ccb903cce2773e4168a30b",
+                "table": "incident"
+              },
+              {
+                "data": {
+                  "state": "3"
+                },
+                "sys_id": "4a7dbb25c27fc8894b866ae92feef15a",
+                "table": "incident"
+              }
+            ]
+          },
+          "name": "SN-Batch-Update"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Batch update completed:\n{\n  \"success\": true,\n  \"updated_count\": 2,\n  \"errors\": [],\n  \"execution_time_ms\": {{N}}\n}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Batch-Update"
+}

@@ -1,0 +1,21 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": null
+  },
+  "argv": [
+    "instance",
+    "frobnicate"
+  ],
+  "bin": "servicenow-mcp-server",
+  "exit": {
+    "code": 2,
+    "signal": null
+  },
+  "id": "cli/unknown-instance-subcommand",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "Unknown instance command. Use --help for usage.\nUsage:\n  happy-platform-mcp instance add\n  happy-platform-mcp instance list\n  happy-platform-mcp instance update <name> [metadata flags; auth changes require remove/re-add]\n  happy-platform-mcp instance test <name>\n  happy-platform-mcp instance remove <name>\n  happy-platform-mcp instance credential set <name> --type password|client-secret\n  happy-platform-mcp instance migrate\n",
+  "stdout": ""
+}

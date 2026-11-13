@@ -1,0 +1,23 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": null
+  },
+  "argv": [
+    "instance",
+    "remove",
+    "a",
+    "b"
+  ],
+  "bin": "happy-platform-mcp",
+  "exit": {
+    "code": 2,
+    "signal": null
+  },
+  "id": "cli/remove-extra-args",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "instance remove requires exactly one instance name.\nUsage:\n  happy-platform-mcp instance add\n  happy-platform-mcp instance list\n  happy-platform-mcp instance update <name> [metadata flags; auth changes require remove/re-add]\n  happy-platform-mcp instance test <name>\n  happy-platform-mcp instance remove <name>\n  happy-platform-mcp instance credential set <name> --type password|client-secret\n  happy-platform-mcp instance migrate\n",
+  "stdout": ""
+}

@@ -1,0 +1,29 @@
+[package]
+name = "hpm-s1-transport"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+
+[[bin]]
+name = "hpm-s1"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "=3.10.0", default-features = false, features = ["server", "macros", "base64", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tokio-stream = "0.1"
+futures = "0.3"
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+keyring-core = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }

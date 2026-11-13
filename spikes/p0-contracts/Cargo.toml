@@ -1,0 +1,23 @@
+[package]
+name = "p0-contracts"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+description = "PROVISIONAL P0 sketch of hpm-types contracts (plan §5.2). Not production code."
+
+[features]
+default = ["trusted-root"]
+# Only the composition root (hpm-protocol / binary) enables this. Tool and
+# handler crates depend on hpm-types WITHOUT it, so they cannot build a
+# RequestContext or manufacture a principal (RFC v0.2 §2.1, review edit 6).
+trusted-root = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio-util = "0.7"
+zeroize = "1"
+
+[workspace]

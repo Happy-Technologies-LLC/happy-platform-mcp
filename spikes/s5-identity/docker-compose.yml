@@ -1,0 +1,48 @@
+# P1-S5 identity spike: Keycloak "hpm" (the bundled AS) brokering to an upstream OIDC IdP.
+# Upstream here = a second Keycloak (realm "fake-entra") standing in for Entra ID.
+# Local only. Dev-mode Keycloak with the embedded H2 database, plain HTTP on localhost.
+name: hpm-s5
+
+x-keycloak: &keycloak
+  image: quay.io/keycloak/keycloak:26.8.2
+  command: ["start-dev", "--import-realm"]
+  environment: &kc-env
+    KC_BOOTSTRAP_ADMIN_USERNAME: admin
+    KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    KC_HTTP_ENABLED: "true"
+    KC_HOSTNAME_STRICT: "false"
+    KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    KC_HEALTH_ENABLED: "true"
+    KC_LOG_LEVEL: "INFO,org.keycloak.events:debug,org.keycloak.services:debug,org.keycloak.authentication:debug"
+
+services:
+  # The bundled authorization server (MCP front door). Issuer: http://localhost:8080/realms/hpm
+  kc-hpm:
+    <<: *keycloak
+    container_name: hpm-s5-kc-hpm
+    ports: ["8080:8080"]
+    environment:
+      <<: *kc-env
+      KC_HOSTNAME: http://localhost:8080
+      HPM_MCP_SECRET: ${HPM_MCP_SECRET:-hpm-mcp-dev-secret}
+    volumes:
+      - ./realms/hpm-realm.json:/opt/keycloak/data/import/hpm-realm.json:ro
+    networks: [s5]
+
+  # Stand-in for Entra ID. Issuer: http://localhost:8081/realms/fake-entra
+  # (browser-facing URL; kc-hpm reaches it server-to-server as http://fake-entra:8080).
+  fake-entra:
+    <<: *keycloak
+    container_name: hpm-s5-fake-entra
+    ports: ["8081:8080"]
+    environment:
+      <<: *kc-env
+      KC_HOSTNAME: http://localhost:8081
+      BROKER_SECRET: ${BROKER_SECRET:-broker-dev-secret}
+      RECONCILER_SECRET: ${RECONCILER_SECRET:-reconciler-dev-secret}
+    volumes:
+      - ./realms/fake-entra-realm.json:/opt/keycloak/data/import/fake-entra-realm.json:ro
+    networks: [s5]
+
+networks:
+  s5: {}

@@ -1,0 +1,80 @@
+{
+  "description": "SN-Catalog-Get-Categories basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "catalog",
+  "harnessError": null,
+  "id": "SN-Catalog-Get-Categories/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📂 Fetching catalog categories"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sc_category",
+          "query": [
+            [
+              "sysparm_query",
+              "hardware"
+            ],
+            [
+              "sysparm_limit",
+              "5"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,title,description,parent,active"
+            ]
+          ],
+          "rawQuery": "sysparm_query=hardware&sysparm_limit=5&sysparm_fields=sys_id%2Ctitle%2Cdescription%2Cparent%2Cactive",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 5,
+            "query": "hardware"
+          },
+          "name": "SN-Catalog-Get-Categories"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 catalog categorie(s):\n[\n  {\n    \"sys_id\": \"7ed8297b22a41eb0b254414a1219b323\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sc_category\",\n    \"title\": \"Golden Category 1\",\n    \"description\": \"Golden category\",\n    \"active\": \"true\"\n  },\n  {\n    \"sys_id\": \"28b9127637bd9c455f02e380400eed54\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sc_category\",\n    \"title\": \"Golden Category 2\",\n    \"description\": \"Golden category\",\n    \"active\": \"true\"\n  },\n  {\n    \"sys_id\": \"159a6f6c0a72682077d19380c87a4c1a\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sc_category\",\n    \"title\": \"Golden Category 3\",\n    \"description\": \"Golden category\",\n    \"active\": \"true\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Catalog-Get-Categories"
+}

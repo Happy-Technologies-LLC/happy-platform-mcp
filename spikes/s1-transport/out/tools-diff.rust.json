@@ -1,0 +1,24 @@
+{
+  "label": "rust",
+  "toolCount": 60,
+  "topLevelKeys": [
+    "tools"
+  ],
+  "extraTopLevelKeys": [],
+  "wireBytes": 56840,
+  "wirePrettyVsFixture": {
+    "identical": false,
+    "changedLines": 240
+  },
+  "normalizedVsFixtureByteEqual": true,
+  "wireToolOrder": [
+    "SN-Add-Change-Comment",
+    "SN-Add-Comment",
+    "SN-Add-Problem-Comment"
+  ],
+  "wireFirstToolKeyOrder": [
+    "name",
+    "description",
+    "inputSchema"
+  ]
+}

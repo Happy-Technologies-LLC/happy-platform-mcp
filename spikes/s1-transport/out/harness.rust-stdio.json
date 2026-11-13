@@ -1,0 +1,51 @@
+{
+  "label": "rust-stdio",
+  "transport": "stdio",
+  "exec": [
+    "/Users/nczitzer/.omp/wt/t3d12d813b/m/spikes/s1-transport/target/debug/hpm-s1",
+    "stdio"
+  ],
+  "passed": true,
+  "results": [
+    {
+      "name": "initialize",
+      "ok": true,
+      "detail": "happy-platform-mcp@6.2.0"
+    },
+    {
+      "name": "negotiated protocol recorded",
+      "ok": true,
+      "detail": "n/a"
+    },
+    {
+      "name": "tools/list returns 60 tools",
+      "ok": true,
+      "detail": "count=60"
+    },
+    {
+      "name": "tools/list normalized == fixture (byte-equal)",
+      "ok": true,
+      "detail": "identical"
+    },
+    {
+      "name": "SN-Query-Table text format",
+      "ok": true,
+      "detail": "Found 1 records in sys_user:"
+    },
+    {
+      "name": "SN-Query-Table rows have sys_id,user_name only",
+      "ok": true,
+      "detail": "keys=sys_id,user_name"
+    },
+    {
+      "name": "SN-Query-Table pretty JSON (2-space)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "unknown tool observed",
+      "ok": true,
+      "detail": "{\"error\":{\"code\":-32602,\"message\":\"MCP error -32602: Unknown tool: SN-Does-Not-Exist\"}}"
+    }
+  ]
+}

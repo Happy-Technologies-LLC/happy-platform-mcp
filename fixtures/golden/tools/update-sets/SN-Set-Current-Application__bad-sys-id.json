@@ -1,0 +1,50 @@
+{
+  "description": "SN-Set-Current-Application bad-sys-id",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "update-sets",
+  "harnessError": null,
+  "id": "SN-Set-Current-Application/bad-sys-id",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔄 Setting current application to: nope",
+    "Failed to set current application: Invalid sys_id format: nope. Must be \"global\" or a 32-character lowercase hexadecimal sys_id.",
+    "❌ Failed to set current application: Failed to set current application: Invalid sys_id format: nope. Must be \"global\" or a 32-character lowercase hexadecimal sys_id."
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "app_sys_id": "nope"
+          },
+          "name": "SN-Set-Current-Application"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "❌ Failed to set current application: Failed to set current application: Invalid sys_id format: nope. Must be \"global\" or a 32-character lowercase hexadecimal sys_id.\n\nPlease verify:\n1. The app_sys_id is valid\n2. You have permissions to access the application\n3. The application exists in your instance",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Set-Current-Application"
+}

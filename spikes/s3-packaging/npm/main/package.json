@@ -1,0 +1,13 @@
+{
+  "name": "happy-platform-mcp",
+  "version": "0.0.1-s3spike",
+  "description": "Happy MCP Server (native binary wrapper). S3 packaging spike.",
+  "license": "Apache-2.0",
+  "bin": {
+    "happy-platform-mcp": "bin/happy-platform-mcp.js",
+    "servicenow-mcp-server": "bin/happy-platform-mcp.js"
+  },
+  "files": ["bin/"],
+  "engines": { "node": ">=18" },
+  "optionalDependencies": {}
+}

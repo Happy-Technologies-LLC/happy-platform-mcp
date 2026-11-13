@@ -1,0 +1,107 @@
+{
+  "description": "SN-Batch-Create basic-with-refs",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "batch",
+  "harnessError": null,
+  "id": "SN-Batch-Create/basic-with-refs",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📦 Batch creating 2 records (transaction: true, progress: true)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "short_description": "golden batch parent"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/incident",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "parent_incident": "5bce3426774ac32c955db24c5fe34c19",
+            "short_description": "golden batch child"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/incident",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "operations": [
+              {
+                "data": {
+                  "short_description": "golden batch parent"
+                },
+                "save_as": "parent",
+                "table": "incident"
+              },
+              {
+                "data": {
+                  "parent_incident": "${parent}",
+                  "short_description": "golden batch child"
+                },
+                "table": "incident"
+              }
+            ],
+            "progress": true,
+            "transaction": true
+          },
+          "name": "SN-Batch-Create"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Batch create completed:\n{\n  \"success\": true,\n  \"created_count\": 2,\n  \"sys_ids\": {\n    \"parent\": \"5bce3426774ac32c955db24c5fe34c19\",\n    \"operation_1\": \"d1929d4353f8f11b3a9128c0b9ad6f44\"\n  },\n  \"errors\": [],\n  \"execution_time_ms\": {{N}}\n}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Batch-Create"
+}

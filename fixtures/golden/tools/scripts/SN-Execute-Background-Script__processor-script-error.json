@@ -1,0 +1,189 @@
+{
+  "description": "SN-Execute-Background-Script processor-script-error",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "scripts",
+  "harnessError": null,
+  "id": "SN-Execute-Background-Script/processor-script-error",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🚀 Executing background script via /sys.scripts.do..."
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/x-www-form-urlencoded",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "POST",
+          "path": "/angular.do",
+          "query": [
+            [
+              "sysparm_type",
+              "get_user"
+            ]
+          ],
+          "rawQuery": "sysparm_type=get_user",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/user/current_user",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_user_session",
+          "query": [
+            [
+              "sysparm_fields",
+              "csrf_token,id"
+            ],
+            [
+              "sysparm_query",
+              "id=GOLDENSESSION"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_fields=csrf_token,id&sysparm_query=id%3DGOLDENSESSION&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "form": [
+            [
+              "script",
+              "var x = ;"
+            ],
+            [
+              "sysparm_ck",
+              "golden-csrf-token"
+            ],
+            [
+              "runscript",
+              "Run script"
+            ],
+            [
+              "quota_managed_transaction",
+              "on"
+            ],
+            [
+              "record_for_rollback",
+              "on"
+            ]
+          ],
+          "headers": {
+            "accept": "*/*",
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "POST",
+          "path": "/sys.scripts.do",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_script_execution_history",
+          "query": [
+            [
+              "sysparm_query",
+              "sys_id=2294818170563b10567a6c0a65bc9f80"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ],
+            [
+              "sysparm_fields",
+              "rollback_context"
+            ]
+          ],
+          "rawQuery": "sysparm_query=sys_id%3D2294818170563b10567a6c0a65bc9f80&sysparm_limit=1&sysparm_fields=rollback_context",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "var x = ;"
+          },
+          "name": "SN-Execute-Background-Script"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "❌ Script reported errors — it did NOT complete successfully.\n\nMethod: /sys.scripts.do processor (ran as the authenticated user, in that user's own session)\nScope: global\n\n📤 Output:\n  (none)\n\n🧨 Errors:\n  - Unexpected token ;\n\n🧾 Execution history: /sys_script_execution_history.do?sys_id=2294818170563b10567a6c0a65bc9f80\n↩️ Rollback context: /sys_rollback_context.do?sys_id=77d59a3ecafecd92a4b5a4789af648bb — this run's record changes can be rolled back from this rollback context (or its Script Execution History record).",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Execute-Background-Script"
+}

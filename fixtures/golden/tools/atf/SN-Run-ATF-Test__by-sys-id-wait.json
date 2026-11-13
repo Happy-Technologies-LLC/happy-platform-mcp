@@ -1,0 +1,114 @@
+{
+  "description": "SN-Run-ATF-Test by-sys-id-wait",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "atf",
+  "harnessError": null,
+  "id": "SN-Run-ATF-Test/by-sys-id-wait",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/sn_cicd/tests/run_test",
+          "query": [
+            [
+              "test_sys_id",
+              "c7bb315e80d10c6f67e081f42951a8ef"
+            ],
+            [
+              "run_in_cloud",
+              "false"
+            ]
+          ],
+          "rawQuery": "test_sys_id=c7bb315e80d10c6f67e081f42951a8ef&run_in_cloud=false",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/sn_cicd/progress/cd366dd5d573c905e2b6a47e88a70208",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/sn_cicd/tests/test/results/a29c8bbbadb15a6986e6054dd968c4f1",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "poll_interval_seconds": 1,
+            "run_in_cloud": false,
+            "test_sys_id": "c7bb315e80d10c6f67e081f42951a8ef",
+            "timeout_seconds": 10
+          },
+          "name": "SN-Run-ATF-Test"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"status\": \"successful\",\n  \"successful\": true,\n  \"target\": {\n    \"test_sys_id\": \"c7bb315e80d10c6f67e081f42951a8ef\"\n  },\n  \"progress_id\": \"cd366dd5d573c905e2b6a47e88a70208\",\n  \"progress\": {\n    \"progress_id\": \"cd366dd5d573c905e2b6a47e88a70208\",\n    \"state\": \"successful\",\n    \"status\": \"2\",\n    \"status_label\": \"Successful\",\n    \"status_message\": \"Done\",\n    \"percent_complete\": 100,\n    \"finished\": true,\n    \"results\": {\n      \"id\": \"a29c8bbbadb15a6986e6054dd968c4f1\"\n    }\n  },\n  \"results\": {\n    \"result_type\": \"test\",\n    \"result_id\": \"a29c8bbbadb15a6986e6054dd968c4f1\",\n    \"test_name\": \"Golden test\",\n    \"test_status\": \"success\",\n    \"output\": \"all good\",\n    \"links\": {\n      \"api\": \"{{INSTANCE_URL}}/api/sn_cicd/tests/test/results/a29c8bbbadb15a6986e6054dd968c4f1\",\n      \"record\": \"{{INSTANCE_URL}}/sys_atf_test_result.do?sys_id=a29c8bbbadb15a6986e6054dd968c4f1\"\n    }\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Run-ATF-Test"
+}

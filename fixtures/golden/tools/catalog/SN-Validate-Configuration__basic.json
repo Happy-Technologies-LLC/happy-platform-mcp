@@ -1,0 +1,107 @@
+{
+  "description": "SN-Validate-Configuration basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "catalog",
+  "harnessError": null,
+  "id": "SN-Validate-Configuration/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "✅ Validating catalog item f5ef0c68502d26a2608db13130663ab0"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/item_option_new",
+          "query": [
+            [
+              "sysparm_query",
+              "cat_item=f5ef0c68502d26a2608db13130663ab0"
+            ],
+            [
+              "sysparm_limit",
+              "1000"
+            ]
+          ],
+          "rawQuery": "sysparm_query=cat_item%3Df5ef0c68502d26a2608db13130663ab0&sysparm_limit=1000",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/catalog_ui_policy",
+          "query": [
+            [
+              "sysparm_query",
+              "catalog_item=f5ef0c68502d26a2608db13130663ab0"
+            ],
+            [
+              "sysparm_limit",
+              "1000"
+            ]
+          ],
+          "rawQuery": "sysparm_query=catalog_item%3Df5ef0c68502d26a2608db13130663ab0&sysparm_limit=1000",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "catalog_item": "f5ef0c68502d26a2608db13130663ab0",
+            "checks": {
+              "business_rules": true,
+              "ui_policies": true,
+              "variables": true
+            }
+          },
+          "name": "SN-Validate-Configuration"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Validation PASSED:\n{\n  \"valid\": true,\n  \"issues\": [],\n  \"warnings\": 0,\n  \"errors\": 0\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Validate-Configuration"
+}

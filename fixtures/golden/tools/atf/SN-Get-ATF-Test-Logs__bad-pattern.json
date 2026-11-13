@@ -1,0 +1,48 @@
+{
+  "description": "SN-Get-ATF-Test-Logs bad-pattern",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "atf",
+  "harnessError": null,
+  "id": "SN-Get-ATF-Test-Logs/bad-pattern",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "pattern": "(",
+            "result_id": "a29c8bbbadb15a6986e6054dd968c4f1"
+          },
+          "name": "SN-Get-ATF-Test-Logs"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: pattern is not a valid regular expression: Invalid regular expression: /(/i: Unterminated group",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-ATF-Test-Logs"
+}

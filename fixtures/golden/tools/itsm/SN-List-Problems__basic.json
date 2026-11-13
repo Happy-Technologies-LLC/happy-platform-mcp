@@ -1,0 +1,75 @@
+{
+  "description": "SN-List-Problems basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm",
+  "harnessError": null,
+  "id": "SN-List-Problems/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/problem",
+          "query": [
+            [
+              "sysparm_query",
+              "active=true"
+            ],
+            [
+              "sysparm_limit",
+              "3"
+            ]
+          ],
+          "rawQuery": "sysparm_query=active%3Dtrue&sysparm_limit=3",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 3,
+            "query": "active=true"
+          },
+          "name": "SN-List-Problems"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 Problem(s):\n[\n  {\n    \"sys_id\": \"7607a24b5d490e68354d3f1a7ea2054f\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"problem\",\n    \"number\": \"PRB0000001\",\n    \"short_description\": \"Golden problem 1\",\n    \"state\": \"1\",\n    \"priority\": \"3\"\n  },\n  {\n    \"sys_id\": \"25c9c3ed2f1c2f58b5fd546572496e6b\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"problem\",\n    \"number\": \"PRB0000002\",\n    \"short_description\": \"Golden problem 2\",\n    \"state\": \"1\",\n    \"priority\": \"3\"\n  },\n  {\n    \"sys_id\": \"a174ed5ff5a8b6d52f3834eb30894a20\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"problem\",\n    \"number\": \"PRB0000003\",\n    \"short_description\": \"Golden problem 3\",\n    \"state\": \"1\",\n    \"priority\": \"3\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-List-Problems"
+}

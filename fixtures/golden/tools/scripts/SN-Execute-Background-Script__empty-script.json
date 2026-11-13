@@ -1,0 +1,47 @@
+{
+  "description": "SN-Execute-Background-Script empty-script",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "scripts",
+  "harnessError": null,
+  "id": "SN-Execute-Background-Script/empty-script",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "   "
+          },
+          "name": "SN-Execute-Background-Script"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "❌ script must be a non-empty string",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Execute-Background-Script"
+}

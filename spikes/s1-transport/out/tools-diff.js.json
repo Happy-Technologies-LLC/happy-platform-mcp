@@ -1,0 +1,24 @@
+{
+  "label": "js",
+  "toolCount": 60,
+  "topLevelKeys": [
+    "tools"
+  ],
+  "extraTopLevelKeys": [],
+  "wireBytes": 56840,
+  "wirePrettyVsFixture": {
+    "identical": false,
+    "changedLines": 3406
+  },
+  "normalizedVsFixtureByteEqual": true,
+  "wireToolOrder": [
+    "SN-Set-Instance",
+    "SN-Get-Current-Instance",
+    "SN-Query-Table"
+  ],
+  "wireFirstToolKeyOrder": [
+    "name",
+    "description",
+    "inputSchema"
+  ]
+}

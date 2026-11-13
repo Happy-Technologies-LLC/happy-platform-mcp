@@ -1,0 +1,2387 @@
+{
+  "clientProtocolVersion": "1999-01-01",
+  "exchanges": [
+    {
+      "notifications": [],
+      "request": {
+        "method": "initialize",
+        "params": {
+          "capabilities": {},
+          "clientInfo": {
+            "name": "golden-capture",
+            "version": "0.0.0"
+          },
+          "protocolVersion": "1999-01-01"
+        }
+      },
+      "response": {
+        "result": {
+          "capabilities": {
+            "prompts": {},
+            "resources": {},
+            "tools": {}
+          },
+          "protocolVersion": "2025-11-25",
+          "serverInfo": {
+            "name": "happy-platform-mcp",
+            "version": "6.2.0"
+          }
+        }
+      }
+    },
+    {
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/list"
+      },
+      "response": {
+        "result": {
+          "tools": [
+            {
+              "description": "Switch to a different ServiceNow instance. Use this at the start of your session to target a specific instance (dev, test, prod, etc.). Lists available instances if no name provided.",
+              "inputSchema": {
+                "properties": {
+                  "instance_name": {
+                    "description": "Name of the instance to switch to (e.g., \"dev\", \"prod\", \"test\"). Leave empty to list available instances.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Set-Instance"
+            },
+            {
+              "description": "Get information about the currently active ServiceNow instance",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "SN-Get-Current-Instance"
+            },
+            {
+              "description": "Query any ServiceNow table by name with flexible filtering",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=1^priority=1\") (optional)",
+                    "type": "string"
+                  },
+                  "table_name": {
+                    "description": "ServiceNow table name (e.g., \"incident\", \"sys_user\", \"cmdb_ci\") (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table_name"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Query-Table"
+            },
+            {
+              "description": "Create a record in any ServiceNow table by name. WARNING: For catalog_ui_policy_action table, fields ui_policy and catalog_variable cannot be set via REST API - use SN-Execute-Background-Script with setValue() after creation.",
+              "inputSchema": {
+                "properties": {
+                  "data": {
+                    "description": "Record data as key-value pairs (e.g., {\"short_description\": \"Test\", \"priority\": 1}) (required)",
+                    "type": "object"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "table_name": {
+                    "description": "ServiceNow table name (e.g., \"incident\", \"sys_user\", \"cmdb_ci\") (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table_name",
+                  "data"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Create-Record"
+            },
+            {
+              "description": "Get a specific record from any ServiceNow table by sys_id",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "sys_id": {
+                    "description": "System ID of the record to retrieve (required)",
+                    "type": "string"
+                  },
+                  "table_name": {
+                    "description": "ServiceNow table name (e.g., \"incident\", \"sys_user\", \"cmdb_ci\") (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table_name",
+                  "sys_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Get-Record"
+            },
+            {
+              "description": "Update a record in any ServiceNow table by sys_id",
+              "inputSchema": {
+                "properties": {
+                  "data": {
+                    "description": "Record data to update as key-value pairs (e.g., {\"state\": 6, \"resolution_notes\": \"Fixed\"}) (required)",
+                    "type": "object"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "sys_id": {
+                    "description": "System ID of the record to update (required)",
+                    "type": "string"
+                  },
+                  "table_name": {
+                    "description": "ServiceNow table name (e.g., \"incident\", \"sys_user\", \"cmdb_ci\") (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table_name",
+                  "sys_id",
+                  "data"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Update-Record"
+            },
+            {
+              "description": "Get the schema/metadata for any ServiceNow table including required fields, common fields, and field descriptions",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "table_name": {
+                    "description": "ServiceNow table name (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table_name"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Get-Table-Schema"
+            },
+            {
+              "description": "List all available ServiceNow tables with their descriptions and capabilities",
+              "inputSchema": {
+                "properties": {
+                  "category": {
+                    "description": "Filter by category: \"core_itsm\", \"platform\", \"service_catalog\", \"cmdb\", or \"all\" (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-Available-Tables"
+            },
+            {
+              "description": "List Incident records with filtering and pagination",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "priority": {
+                    "description": "Filter by priority (1-5) (optional)",
+                    "type": "number"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=1^priority=1\") (optional)",
+                    "type": "string"
+                  },
+                  "state": {
+                    "description": "Filter by state (e.g., \"New\", \"In Progress\", \"Resolved\") (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-Incidents"
+            },
+            {
+              "description": "Create a new Incident",
+              "inputSchema": {
+                "properties": {
+                  "assigned_to": {
+                    "description": "assigned to (optional)",
+                    "type": "string"
+                  },
+                  "assignment_group": {
+                    "description": "assignment group (optional)",
+                    "type": "string"
+                  },
+                  "caller_id": {
+                    "description": "caller id (optional)",
+                    "type": "string"
+                  },
+                  "category": {
+                    "description": "category (optional)",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "description (optional)",
+                    "type": "string"
+                  },
+                  "impact": {
+                    "description": "impact (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "priority": {
+                    "description": "priority (optional)",
+                    "type": "string"
+                  },
+                  "short_description": {
+                    "description": "short description (required)",
+                    "type": "string"
+                  },
+                  "state": {
+                    "description": "state (optional)",
+                    "type": "string"
+                  },
+                  "subcategory": {
+                    "description": "subcategory (optional)",
+                    "type": "string"
+                  },
+                  "sys_created_by": {
+                    "description": "sys created by (optional)",
+                    "type": "string"
+                  },
+                  "sys_created_on": {
+                    "description": "sys created on (optional)",
+                    "type": "string"
+                  },
+                  "sys_updated_by": {
+                    "description": "sys updated by (optional)",
+                    "type": "string"
+                  },
+                  "sys_updated_on": {
+                    "description": "sys updated on (optional)",
+                    "type": "string"
+                  },
+                  "urgency": {
+                    "description": "urgency (optional)",
+                    "type": "string"
+                  },
+                  "work_notes": {
+                    "description": "work notes (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "short_description"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Create-Incident"
+            },
+            {
+              "description": "Get a Incident by ID",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "sys_id": {
+                    "description": "System ID",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sys_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Get-Incident"
+            },
+            {
+              "description": "List Sys User records with filtering and pagination",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=1^priority=1\") (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-SysUsers"
+            },
+            {
+              "description": "List Cmdb Ci records with filtering and pagination",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=1^priority=1\") (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-CmdbCis"
+            },
+            {
+              "description": "List Sys User Group records with filtering and pagination",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=1^priority=1\") (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-SysUserGroups"
+            },
+            {
+              "description": "List Change Request records with filtering and pagination",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=1^priority=1\") (optional)",
+                    "type": "string"
+                  },
+                  "state": {
+                    "description": "Filter by change state (optional)",
+                    "type": "string"
+                  },
+                  "type": {
+                    "description": "Filter by change type (e.g., \"Normal\", \"Emergency\") (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-ChangeRequests"
+            },
+            {
+              "description": "Set the current update set through the ServiceNow UI picker and verify, in the same session, that it took effect. If the automated change fails or cannot be verified, a fix script is written to ./scripts for manual execution instead.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "update_set_sys_id": {
+                    "description": "sys_id of the update set to make current: 32 lowercase hexadecimal characters (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "update_set_sys_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Set-Update-Set"
+            },
+            {
+              "description": "Get the currently active update set",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-Get-Current-Update-Set"
+            },
+            {
+              "description": "List available update sets",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-sys_created_on\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=in progress\") (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-Update-Sets"
+            },
+            {
+              "description": "Set the current application scope using the UI picker and verify the change in the same session. Reports the previous scope; returns an error if the change cannot be verified.",
+              "inputSchema": {
+                "properties": {
+                  "app_sys_id": {
+                    "description": "sys_id of the sys_app record to make current, or \"global\" for the Global scope (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "app_sys_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Set-Current-Application"
+            },
+            {
+              "description": "List Problem records with filtering and pagination",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Number of records to skip for pagination (optional)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "ServiceNow encoded query string (e.g., \"state=1^priority=1\") (optional)",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "name": "SN-List-Problems"
+            },
+            {
+              "description": "Search ServiceNow records using natural language queries. Converts human-readable queries into ServiceNow encoded queries and executes them. Supports: Priority (P1-P5, high/low), Assignment (assigned to me, unassigned, assigned to <name>), Dates (created today, last 7 days, recent), States (new/open/closed/in progress), Content (about SAP, containing error), Impact/Urgency (high/medium/low), Numbers (number is INC0012345). Examples: \"find all P1 incidents\", \"show recent problems assigned to me\", \"high priority changes created last week\", \"open incidents about SAP\", \"unassigned P2 incidents created today\". Returns both the parsed encoded query and matching records with pattern analysis.",
+              "inputSchema": {
+                "properties": {
+                  "fields": {
+                    "description": "Comma-separated list of fields to return (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of records to return (default: 25)",
+                    "type": "number"
+                  },
+                  "order_by": {
+                    "description": "Field to sort by (e.g., \"sys_created_on\" or \"-priority\" for descending) (optional)",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "Natural language query, at most 2048 characters (e.g., \"high priority incidents assigned to me\", \"recent problems about database\") (required)",
+                    "maxLength": 2048,
+                    "type": "string"
+                  },
+                  "show_patterns": {
+                    "default": true,
+                    "description": "Include pattern matching details in response (default: true)",
+                    "type": "boolean"
+                  },
+                  "table": {
+                    "default": "incident",
+                    "description": "Target ServiceNow table name (default: \"incident\"). Common tables: incident, problem, change_request, sys_user, cmdb_ci",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Natural-Language-Search"
+            },
+            {
+              "description": "Executes server-side JavaScript the way Scripts - Background does. Use for complex GlideRecord operations the CRUD tools cannot express. By default (wait: true) the script is POSTed once to the instance's /sys.scripts.do processor as the authenticated user, and the response is parsed into success/failure, output lines, errors, the scope it ran in, and links to its Script Execution History and rollback context. Requires the admin role. A rollback context is recorded by default (record_for_rollback), so the run's record changes can be rolled back from that context. The processor runs in the authenticated user's own session, so that user's current update set is expected to capture tracked configuration writes, and `scope` picks the application scope. The script request is never retried: a timeout, 5xx, or dropped connection is reported as an unknown outcome (check Script Execution History; do not re-run blindly). Only when the processor provably did not run the script (HTTP 401/403/404, a login page, or a connection error before sending) does it fall back to a sys_trigger job, and the response says so. The sys_trigger path (that fallback, or wait: false) runs in the scheduler's own session, not the caller's: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), GlideUpdateSet calls in it cannot change the update set other tools or the UI use (use SN-Set-Update-Set), and no rollback context is recorded. As a fallback it polls syslog for a correlation marker and reports \"completed\", \"failed\", or \"timeout\" (not a success); wait: false returns only trigger scheduling metadata immediately (see issue #40).",
+              "inputSchema": {
+                "properties": {
+                  "description": {
+                    "description": "Why the script is being run (optional). Flattened to one line and appended to the script as a trailing comment, so it is recorded on the run's Script Execution History record.",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "record_for_rollback": {
+                    "default": true,
+                    "description": "Record a rollback context so the run's record changes can be reverted (default true). Applies to the /sys.scripts.do path only.",
+                    "type": "boolean"
+                  },
+                  "scope": {
+                    "description": "Application scope to run in: an application sys_id, a scope name (e.g. \"x_acme_app\"), or \"global\" (optional; the processor default applies when omitted). Unknown scopes are rejected before anything runs. Only supported with wait: true; a non-global scope also rules out the sys_trigger fallback.",
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "script": {
+                    "description": "JavaScript code to execute (required)",
+                    "type": "string"
+                  },
+                  "wait": {
+                    "default": true,
+                    "description": "If true (default), run through /sys.scripts.do and return the parsed result. If false, schedule a sys_trigger job and return immediately with only trigger scheduling metadata (fire-and-forget).",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "script"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Execute-Background-Script"
+            },
+            {
+              "description": "⚠️ CREATES (not executes) a fix script file for MANUAL execution. ServiceNow REST API does NOT support direct script execution. This tool generates a .js file in /scripts/ directory with full instructions and optional auto-delete flag. You MUST manually copy and run the script in ServiceNow UI: System Definition → Scripts - Background. Use for: linking UI Policy Actions, setting update sets, complex GlideRecord operations that cannot be done via REST API.",
+              "inputSchema": {
+                "properties": {
+                  "auto_delete": {
+                    "default": false,
+                    "description": "If true, script file will be deleted after you confirm execution (default: false)",
+                    "type": "boolean"
+                  },
+                  "description": {
+                    "description": "Description of what the script does (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "script_content": {
+                    "description": "JavaScript code content (required)",
+                    "type": "string"
+                  },
+                  "script_name": {
+                    "description": "Base name for the script file, without path or extension: 1-100 letters, digits, \".\", \"_\" or \"-\", starting with a letter or digit, and not a Windows device name such as CON, NUL, COM1 or LPT1 (e.g., \"link_ui_policy_actions\") (required)",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "script_name",
+                  "script_content"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Create-Fix-Script"
+            },
+            {
+              "description": "Run one Automated Test Framework test on the instance through the CI/CD REST API (POST /api/sn_cicd/tests/run_test) and, by default, wait for its pass/fail result. Provide exactly one of test_sys_id or test_name (a name must match exactly one sys_atf_test record). This EXECUTES the test, which may create, change, or roll back data. Requires the CI/CD REST API plugin (com.glide.continuousdelivery) and the sn_cicd.sys_ci_automation or admin role.",
+              "inputSchema": {
+                "properties": {
+                  "capture_node_logs": {
+                    "description": "Capture node (browser) logs during the run.",
+                    "type": "boolean"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "poll_interval_seconds": {
+                    "default": 2,
+                    "description": "Seconds between progress polls (default 2, 1-30).",
+                    "maximum": 30,
+                    "minimum": 1,
+                    "type": "number"
+                  },
+                  "run_in_cloud": {
+                    "description": "Run UI steps on the ATF Cloud Runner instead of a scheduled client test runner.",
+                    "type": "boolean"
+                  },
+                  "test_name": {
+                    "description": "Exact name of the ATF test; resolved to a sys_id first. Fails when zero or several tests share the name. Mutually exclusive with test_sys_id.",
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  "test_sys_id": {
+                    "description": "sys_id of the ATF test (sys_atf_test). Mutually exclusive with test_name.",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  },
+                  "timeout_seconds": {
+                    "default": 45,
+                    "description": "Maximum seconds to wait when wait is true (default 45, max 600). On timeout the run keeps going on the instance; the response carries progress_id for SN-Get-CICD-Progress. Many MCP clients cancel requests after about 60 seconds.",
+                    "maximum": 600,
+                    "minimum": 1,
+                    "type": "number"
+                  },
+                  "wait": {
+                    "default": true,
+                    "description": "If true (default), poll the sn_cicd progress tracker until the run finishes or timeout_seconds elapses, then return pass/fail results. If false, return the progress_id immediately.",
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Run-ATF-Test"
+            },
+            {
+              "description": "Run an Automated Test Framework test suite through the CI/CD REST API (POST /api/sn_cicd/testsuite/run) and, by default, wait for pass/fail/error/skip counts and per-test status. Provide exactly one of test_suite_sys_id or test_suite_name. This EXECUTES every test in the suite, which may create, change, or roll back data. Requires the CI/CD REST API plugin (com.glide.continuousdelivery) and the sn_cicd.sys_ci_automation or admin role.",
+              "inputSchema": {
+                "properties": {
+                  "browser_name": {
+                    "description": "Browser to run UI tests in.",
+                    "enum": [
+                      "any",
+                      "chrome",
+                      "firefox",
+                      "edge",
+                      "ie",
+                      "safari"
+                    ],
+                    "type": "string"
+                  },
+                  "browser_version": {
+                    "description": "Browser version to run UI tests in.",
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "is_performance_run": {
+                    "description": "Run the suite as a performance test instead of a functional test.",
+                    "type": "boolean"
+                  },
+                  "os_name": {
+                    "description": "Operating system to run UI tests on.",
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "os_version": {
+                    "description": "Operating system version to run UI tests on.",
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "poll_interval_seconds": {
+                    "default": 2,
+                    "description": "Seconds between progress polls (default 2, 1-30).",
+                    "maximum": 30,
+                    "minimum": 1,
+                    "type": "number"
+                  },
+                  "run_in_cloud": {
+                    "description": "Run the suite on the ATF Cloud Runner instead of a manual or scheduled client test runner.",
+                    "type": "boolean"
+                  },
+                  "test_suite_name": {
+                    "description": "Name of the test suite; the instance resolves it. Mutually exclusive with test_suite_sys_id.",
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  "test_suite_sys_id": {
+                    "description": "sys_id of the test suite (sys_atf_test_suite). Mutually exclusive with test_suite_name.",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  },
+                  "timeout_seconds": {
+                    "default": 45,
+                    "description": "Maximum seconds to wait when wait is true (default 45, max 600). On timeout the run keeps going on the instance; the response carries progress_id for SN-Get-CICD-Progress. Many MCP clients cancel requests after about 60 seconds.",
+                    "maximum": 600,
+                    "minimum": 1,
+                    "type": "number"
+                  },
+                  "wait": {
+                    "default": true,
+                    "description": "If true (default), poll the sn_cicd progress tracker until the run finishes or timeout_seconds elapses, then return pass/fail results. If false, return the progress_id immediately.",
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Run-ATF-Suite"
+            },
+            {
+              "description": "Read a CI/CD REST API progress tracker (GET /api/sn_cicd/progress/{progress_id}), such as the progress_id returned by SN-Run-ATF-Test or SN-Run-ATF-Suite. Returns state (pending, running, successful, failed, canceled), percent complete, messages, and the results id once finished. Read-only: it never starts work. Set wait to keep polling until the tracker finishes.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "poll_interval_seconds": {
+                    "default": 2,
+                    "description": "Seconds between progress polls (default 2, 1-30).",
+                    "maximum": 30,
+                    "minimum": 1,
+                    "type": "number"
+                  },
+                  "progress_id": {
+                    "description": "Progress tracker sys_id returned by a run tool.",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  },
+                  "timeout_seconds": {
+                    "default": 45,
+                    "description": "Maximum seconds to wait when wait is true (default 45, max 600). On timeout the run keeps going on the instance; the response carries progress_id for SN-Get-CICD-Progress. Many MCP clients cancel requests after about 60 seconds.",
+                    "maximum": 600,
+                    "minimum": 1,
+                    "type": "number"
+                  },
+                  "wait": {
+                    "default": false,
+                    "description": "If true, poll until the tracker finishes or timeout_seconds elapses. Default false (single read).",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "progress_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Get-CICD-Progress"
+            },
+            {
+              "description": "Read an ATF run result through the CI/CD REST API. result_type \"test\" reads GET /api/sn_cicd/tests/test/results/{result_id} (status, output, links). result_type \"suite\" reads GET /api/sn_cicd/testsuite/results/{result_id} (pass/fail/error/skip counts, child suites, links) plus per-test status from sys_atf_test_result. Read-only.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "result_id": {
+                    "description": "Result sys_id: results.id from a run tool or SN-Get-CICD-Progress.",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  },
+                  "result_type": {
+                    "description": "\"test\" for a single-test result (sys_atf_test_result), \"suite\" for a test suite result (sys_atf_test_suite_result).",
+                    "enum": [
+                      "test",
+                      "suite"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "result_id",
+                  "result_type"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Get-ATF-Results"
+            },
+            {
+              "description": "Read the logs captured for one ATF test result (GET /api/sn_cicd/tests/test/results/{result_id}/logs). An optional regular expression filters log lines on the instance, which always matches case-insensitively. Read-only.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 100,
+                    "description": "Maximum log lines to return (default 100, max 1000).",
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "pattern": {
+                    "description": "Optional regular expression (at most 256 characters); only matching lines are returned. Invalid expressions and nested quantifiers such as (a+)+ are rejected.",
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  "result_id": {
+                    "description": "sys_id of the ATF test result (sys_atf_test_result).",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "result_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Get-ATF-Test-Logs"
+            },
+            {
+              "description": "Deep schema introspection with ServiceNow-specific metadata including type codes, choice tables, and relationships",
+              "inputSchema": {
+                "properties": {
+                  "include_business_rules": {
+                    "default": false,
+                    "description": "Show business rules for this table (optional)",
+                    "type": "boolean"
+                  },
+                  "include_choice_tables": {
+                    "default": false,
+                    "description": "Show which choice tables to use (optional)",
+                    "type": "boolean"
+                  },
+                  "include_field_constraints": {
+                    "default": false,
+                    "description": "Show field validations and defaults (optional)",
+                    "type": "boolean"
+                  },
+                  "include_relationships": {
+                    "default": false,
+                    "description": "Show parent/child table relationships (optional)",
+                    "type": "boolean"
+                  },
+                  "include_type_codes": {
+                    "default": false,
+                    "description": "Show internal type codes (e.g., 1=Choice, 5=Select Box) (optional)",
+                    "type": "boolean"
+                  },
+                  "include_ui_policies": {
+                    "default": false,
+                    "description": "Show UI policies affecting this table (optional)",
+                    "type": "boolean"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "table_name": {
+                    "description": "ServiceNow table name (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table_name"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Discover-Table-Schema"
+            },
+            {
+              "description": "Create multiple related records in one operation with variable references and transactional support. Reports progress during execution.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "operations": {
+                    "description": "Array of at most 100 create operations, validated as a whole before any write. Each operation can reference IDs saved by earlier operations via ${save_as_name} (or ${operation_N}); unknown or later names stay literal.",
+                    "items": {
+                      "properties": {
+                        "data": {
+                          "description": "Record data (at most 65536 bytes as JSON)",
+                          "type": "object"
+                        },
+                        "save_as": {
+                          "description": "Variable name to save sys_id as (optional)",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+                          "type": "string"
+                        },
+                        "table": {
+                          "description": "Table name",
+                          "pattern": "^[A-Za-z0-9_]{1,80}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "table",
+                        "data"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  },
+                  "progress": {
+                    "default": true,
+                    "description": "Report progress notifications (default: true)",
+                    "type": "boolean"
+                  },
+                  "transaction": {
+                    "default": true,
+                    "description": "All-or-nothing transaction (default: true)",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "operations"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Batch-Create"
+            },
+            {
+              "description": "Update multiple records efficiently in a single operation. Reports progress during execution.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "progress": {
+                    "default": true,
+                    "description": "Report progress notifications (default: true)",
+                    "type": "boolean"
+                  },
+                  "stop_on_error": {
+                    "default": false,
+                    "description": "Stop processing on first error (default: false)",
+                    "type": "boolean"
+                  },
+                  "updates": {
+                    "description": "Array of at most 100 update operations, validated as a whole before any write",
+                    "items": {
+                      "properties": {
+                        "data": {
+                          "description": "Fields to update (at most 65536 bytes as JSON)",
+                          "type": "object"
+                        },
+                        "sys_id": {
+                          "description": "Record sys_id (32 lowercase hex characters)",
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": "string"
+                        },
+                        "table": {
+                          "description": "Table name",
+                          "pattern": "^[A-Za-z0-9_]{1,80}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "table",
+                        "sys_id",
+                        "data"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "updates"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Batch-Update"
+            },
+            {
+              "description": "Get comprehensive explanation of a specific field including type, constraints, and known issues",
+              "inputSchema": {
+                "properties": {
+                  "field": {
+                    "description": "Field name (required)",
+                    "type": "string"
+                  },
+                  "include_examples": {
+                    "default": true,
+                    "description": "Include usage examples (default: true)",
+                    "type": "boolean"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "table": {
+                    "description": "Table name (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table",
+                  "field"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Explain-Field"
+            },
+            {
+              "description": "Validate catalog item configuration including variables, UI policies, and business rules",
+              "inputSchema": {
+                "properties": {
+                  "catalog_item": {
+                    "description": "Catalog item sys_id (required)",
+                    "type": "string"
+                  },
+                  "checks": {
+                    "description": "Validation checks to perform",
+                    "properties": {
+                      "ui_policies": {
+                        "properties": {
+                          "check_actions_linked": {
+                            "type": "boolean"
+                          },
+                          "check_conditions": {
+                            "type": "boolean"
+                          },
+                          "check_variables_exist": {
+                            "type": "boolean"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "variables": {
+                        "properties": {
+                          "check_choices": {
+                            "type": "boolean"
+                          },
+                          "check_linked": {
+                            "type": "boolean"
+                          },
+                          "check_mandatory": {
+                            "type": "boolean"
+                          },
+                          "check_types": {
+                            "type": "boolean"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "catalog_item"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Validate-Configuration"
+            },
+            {
+              "description": "Inspect update set contents and verify completeness",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "show_components": {
+                    "default": true,
+                    "description": "Show component breakdown (default: true)",
+                    "type": "boolean"
+                  },
+                  "show_dependencies": {
+                    "default": false,
+                    "description": "Show missing dependencies (default: false)",
+                    "type": "boolean"
+                  },
+                  "update_set": {
+                    "description": "Update set sys_id (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "update_set"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Inspect-Update-Set"
+            },
+            {
+              "description": "Create a complete ServiceNow workflow with activities, transitions, and conditions. This tool orchestrates the entire workflow creation process: base workflow → version → activities → transitions → publish. Reports progress during creation. Limits: 100 activities, 200 transitions, 262144 bytes per script, 4194304 bytes total; the whole input is validated before any write.",
+              "inputSchema": {
+                "properties": {
+                  "activities": {
+                    "description": "Array of activity definitions",
+                    "items": {
+                      "properties": {
+                        "activity_definition_sys_id": {
+                          "description": "Activity type sys_id (optional)",
+                          "pattern": "^[0-9a-f]{32}$",
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "Optional unique reference used by transitions and start_activity",
+                          "maxLength": 255,
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "Activity name",
+                          "maxLength": 255,
+                          "type": "string"
+                        },
+                        "script": {
+                          "description": "JavaScript code to execute",
+                          "maxLength": 262144,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  },
+                  "condition": {
+                    "description": "Condition for workflow to trigger (e.g., \"state=1^priority=1\") (optional)",
+                    "maxLength": 262144,
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "Workflow description (optional)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Workflow name (required)",
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  "progress": {
+                    "default": true,
+                    "description": "Report progress notifications (default: true)",
+                    "type": "boolean"
+                  },
+                  "publish": {
+                    "default": false,
+                    "description": "Publish workflow after creation (default: false)",
+                    "type": "boolean"
+                  },
+                  "table": {
+                    "description": "Table this workflow runs against (e.g., \"incident\", \"change_request\")",
+                    "pattern": "^[A-Za-z0-9_]{1,80}$",
+                    "type": "string"
+                  },
+                  "transitions": {
+                    "description": "Array of transition definitions (connects activities)",
+                    "items": {
+                      "properties": {
+                        "condition_script": {
+                          "description": "JavaScript condition (optional)",
+                          "maxLength": 262144,
+                          "type": "string"
+                        },
+                        "from": {
+                          "description": "From activity: a declared activity id, a unique activity name, or an existing activity sys_id",
+                          "maxLength": 255,
+                          "type": "string"
+                        },
+                        "to": {
+                          "description": "To activity: a declared activity id, a unique activity name, or an existing activity sys_id",
+                          "maxLength": 255,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from",
+                        "to"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "name",
+                  "table",
+                  "activities"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Create-Workflow"
+            },
+            {
+              "description": "Create a single workflow activity with embedded JavaScript code. Use this for adding activities to existing workflows.",
+              "inputSchema": {
+                "properties": {
+                  "activity_definition_sys_id": {
+                    "description": "Activity type sys_id (optional - defaults to generic activity)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Activity name (required)",
+                    "type": "string"
+                  },
+                  "script": {
+                    "description": "JavaScript code to execute in this activity (optional)",
+                    "type": "string"
+                  },
+                  "workflow_version_sys_id": {
+                    "description": "Workflow version sys_id (required)",
+                    "type": "string"
+                  },
+                  "x": {
+                    "description": "X coordinate on canvas (default: 100)",
+                    "type": "number"
+                  },
+                  "y": {
+                    "description": "Y coordinate on canvas (default: 100)",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "workflow_version_sys_id",
+                  "name"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Create-Activity"
+            },
+            {
+              "description": "Create a transition between two workflow activities with optional condition",
+              "inputSchema": {
+                "properties": {
+                  "condition_script": {
+                    "description": "JavaScript condition for this transition (optional)",
+                    "type": "string"
+                  },
+                  "from_activity_sys_id": {
+                    "description": "From activity sys_id (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "order": {
+                    "description": "Transition order (default: 1)",
+                    "type": "number"
+                  },
+                  "to_activity_sys_id": {
+                    "description": "To activity sys_id (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "from_activity_sys_id",
+                  "to_activity_sys_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Create-Transition"
+            },
+            {
+              "description": "Publish a workflow version, setting the start activity and making it active",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "start_activity_sys_id": {
+                    "description": "Starting activity sys_id (required)",
+                    "type": "string"
+                  },
+                  "version_sys_id": {
+                    "description": "Workflow version sys_id (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "version_sys_id",
+                  "start_activity_sys_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Publish-Workflow"
+            },
+            {
+              "description": "Move sys_update_xml records to a different update set. Supports filtering by sys_ids, time range, or source update set. Extremely useful when records end up in wrong update set (e.g., \"Default\" instead of custom set). Reports progress during move operation.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "progress": {
+                    "default": true,
+                    "description": "Report progress notifications (default: true)",
+                    "type": "boolean"
+                  },
+                  "record_sys_ids": {
+                    "description": "Array of at most 200 sys_update_xml sys_ids to move (optional)",
+                    "items": {
+                      "pattern": "^[0-9a-f]{32}$",
+                      "type": "string"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  },
+                  "source_update_set": {
+                    "description": "Filter by source update set name (e.g., \"Default\") (optional)",
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  "table": {
+                    "default": "sys_update_xml",
+                    "description": "Table name (default: sys_update_xml)",
+                    "pattern": "^[A-Za-z0-9_]{1,80}$",
+                    "type": "string"
+                  },
+                  "time_range": {
+                    "description": "Time range to filter records (optional - format: YYYY-MM-DD HH:MM:SS)",
+                    "properties": {
+                      "end": {
+                        "description": "End time (e.g., \"2025-09-29 20:03:31\")",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+                        "type": "string"
+                      },
+                      "start": {
+                        "description": "Start time (e.g., \"2025-09-29 20:00:00\")",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "update_set_id": {
+                    "description": "Target update set sys_id to move records to (required)",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "update_set_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Move-Records-To-Update-Set"
+            },
+            {
+              "description": "Clone an entire update set with all its sys_update_xml records. Creates a complete copy for backup, testing, or branching development work. Reports progress during cloning operation.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "new_name": {
+                    "description": "Name for the new cloned update set (required)",
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  "progress": {
+                    "default": true,
+                    "description": "Report progress notifications (default: true)",
+                    "type": "boolean"
+                  },
+                  "source_update_set_id": {
+                    "description": "Source update set sys_id to clone (required)",
+                    "pattern": "^[0-9a-f]{32}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source_update_set_id",
+                  "new_name"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Clone-Update-Set"
+            },
+            {
+              "description": "Add a comment to an incident. Accepts incident number for better UX.",
+              "inputSchema": {
+                "properties": {
+                  "comment": {
+                    "description": "Comment text to add (required)",
+                    "type": "string"
+                  },
+                  "incident_number": {
+                    "description": "Incident number (e.g., \"INC0012345\") (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "incident_number",
+                  "comment"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Add-Comment"
+            },
+            {
+              "description": "Add work notes to an incident. Accepts incident number for better UX.",
+              "inputSchema": {
+                "properties": {
+                  "incident_number": {
+                    "description": "Incident number (e.g., \"INC0012345\") (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "work_notes": {
+                    "description": "Work notes text to add (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "incident_number",
+                  "work_notes"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Add-Work-Notes"
+            },
+            {
+              "description": "Assign an incident to a user and/or group. Resolves user names automatically.",
+              "inputSchema": {
+                "properties": {
+                  "assigned_to": {
+                    "description": "User name or sys_id to assign to (required)",
+                    "type": "string"
+                  },
+                  "assignment_group": {
+                    "description": "Assignment group name or sys_id (optional)",
+                    "type": "string"
+                  },
+                  "incident_number": {
+                    "description": "Incident number (e.g., \"INC0012345\") (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "incident_number",
+                  "assigned_to"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Assign-Incident"
+            },
+            {
+              "description": "Resolve an incident with resolution notes and code.",
+              "inputSchema": {
+                "properties": {
+                  "incident_number": {
+                    "description": "Incident number (e.g., \"INC0012345\") (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "resolution_code": {
+                    "description": "Resolution code (e.g., \"Solved (Permanently)\", \"Solved (Work Around)\") (optional)",
+                    "type": "string"
+                  },
+                  "resolution_notes": {
+                    "description": "Resolution notes describing the fix (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "incident_number",
+                  "resolution_notes"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Resolve-Incident"
+            },
+            {
+              "description": "Close an incident with close notes and code.",
+              "inputSchema": {
+                "properties": {
+                  "close_code": {
+                    "description": "Close code (e.g., \"Solved (Permanently)\", \"Solved (Work Around)\") (optional)",
+                    "type": "string"
+                  },
+                  "close_notes": {
+                    "description": "Close notes (required)",
+                    "type": "string"
+                  },
+                  "incident_number": {
+                    "description": "Incident number (e.g., \"INC0012345\") (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "incident_number",
+                  "close_notes"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Close-Incident"
+            },
+            {
+              "description": "Add a comment to a change request. Accepts change number for better UX.",
+              "inputSchema": {
+                "properties": {
+                  "change_number": {
+                    "description": "Change request number (e.g., \"CHG0012345\") (required)",
+                    "type": "string"
+                  },
+                  "comment": {
+                    "description": "Comment text to add (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "change_number",
+                  "comment"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Add-Change-Comment"
+            },
+            {
+              "description": "Assign a change request to a user and/or group.",
+              "inputSchema": {
+                "properties": {
+                  "assigned_to": {
+                    "description": "User name or sys_id to assign to (required)",
+                    "type": "string"
+                  },
+                  "assignment_group": {
+                    "description": "Assignment group name or sys_id (optional)",
+                    "type": "string"
+                  },
+                  "change_number": {
+                    "description": "Change request number (e.g., \"CHG0012345\") (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "change_number",
+                  "assigned_to"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Assign-Change"
+            },
+            {
+              "description": "Approve a change request.",
+              "inputSchema": {
+                "properties": {
+                  "approval_comments": {
+                    "description": "Comments for the approval (optional)",
+                    "type": "string"
+                  },
+                  "change_number": {
+                    "description": "Change request number (e.g., \"CHG0012345\") (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "change_number"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Approve-Change"
+            },
+            {
+              "description": "Add a comment to a problem. Accepts problem number for better UX.",
+              "inputSchema": {
+                "properties": {
+                  "comment": {
+                    "description": "Comment text to add (required)",
+                    "type": "string"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "problem_number": {
+                    "description": "Problem number (e.g., \"PRB0012345\") (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "problem_number",
+                  "comment"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Add-Problem-Comment"
+            },
+            {
+              "description": "Close a problem with resolution information.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "problem_number": {
+                    "description": "Problem number (e.g., \"PRB0012345\") (required)",
+                    "type": "string"
+                  },
+                  "resolution_code": {
+                    "description": "Resolution code (optional)",
+                    "type": "string"
+                  },
+                  "resolution_notes": {
+                    "description": "Resolution notes (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "problem_number",
+                  "resolution_notes"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Close-Problem"
+            },
+            {
+              "description": "Retrieve full form context for a Service Catalog item or record producer. Returns item metadata, all variables with human-readable type names, choice options, variable sets, UI policy conditions/effects, and client script names. Use this before SN-Catalog-Submit to understand exactly which fields to fill and what values are valid.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "sys_id": {
+                    "description": "Catalog item or record producer sys_id (required)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sys_id"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Catalog-Get-Item"
+            },
+            {
+              "description": "Search or browse Service Catalog items and record producers. Use this to discover available forms before calling SN-Catalog-Get-Item to get full form details.",
+              "inputSchema": {
+                "properties": {
+                  "active": {
+                    "default": true,
+                    "description": "Filter by active status (default: true)",
+                    "type": "boolean"
+                  },
+                  "category": {
+                    "description": "Category sys_id to filter results (optional)",
+                    "type": "string"
+                  },
+                  "include_producers": {
+                    "default": true,
+                    "description": "Also search record producers in addition to catalog items (default: true)",
+                    "type": "boolean"
+                  },
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "keyword": {
+                    "description": "Keyword to match against item name or short description (optional)",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 25,
+                    "description": "Maximum number of results to return (default: 25)",
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Catalog-Search-Items"
+            },
+            {
+              "description": "Submit a Service Catalog form (catalog item or record producer). Provide the catalog item sys_id and a map of variable names to values. Use SN-Catalog-Get-Item first to discover required variables, their types, and valid choices. Returns the resulting request/task numbers.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "quantity": {
+                    "default": 1,
+                    "description": "Quantity to order (default: 1)",
+                    "type": "integer"
+                  },
+                  "requested_for": {
+                    "description": "User sys_id or username to request on behalf of (optional, defaults to authenticated user)",
+                    "type": "string"
+                  },
+                  "sys_id": {
+                    "description": "Catalog item or record producer sys_id (required)",
+                    "type": "string"
+                  },
+                  "variables": {
+                    "additionalProperties": true,
+                    "description": "Map of variable name to value, e.g. { \"requested_for\": \"jsmith\", \"justification\": \"Need access for project X\" } (required)",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "sys_id",
+                  "variables"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Catalog-Submit"
+            },
+            {
+              "description": "List Service Catalog categories so you can browse available form families. Use the returned sys_ids with SN-Catalog-Search-Items to filter forms by category.",
+              "inputSchema": {
+                "properties": {
+                  "instance": {
+                    "description": "Configured ServiceNow instance name. Optional; uses the current instance when omitted.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 50,
+                    "description": "Maximum number of results to return (default: 50)",
+                    "type": "integer"
+                  },
+                  "query": {
+                    "description": "Encoded query to filter categories (optional, e.g. \"active=true\")",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Catalog-Get-Categories"
+            },
+            {
+              "description": "Register non-secret ServiceNow instance metadata using credentials already stored by the local CLI.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "basic",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "username": {
+                        "description": "Basic-auth or OAuth password-grant username.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "username"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "oauth",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "clientId": {
+                        "description": "OAuth client identifier.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "grantType": {
+                        "const": "client_credentials",
+                        "description": "OAuth grant type.",
+                        "enum": [
+                          "client_credentials",
+                          "password",
+                          "authorization_code"
+                        ],
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "scope": {
+                        "description": "Optional OAuth scope.",
+                        "type": "string"
+                      },
+                      "tokenUrl": {
+                        "description": "Optional OAuth token endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "authType",
+                      "grantType",
+                      "clientId"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "oauth",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "clientId": {
+                        "description": "OAuth client identifier.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "grantType": {
+                        "const": "password",
+                        "description": "OAuth grant type.",
+                        "enum": [
+                          "client_credentials",
+                          "password",
+                          "authorization_code"
+                        ],
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "scope": {
+                        "description": "Optional OAuth scope.",
+                        "type": "string"
+                      },
+                      "tokenUrl": {
+                        "description": "Optional OAuth token endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "username": {
+                        "description": "Basic-auth or OAuth password-grant username.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "authType",
+                      "grantType",
+                      "username",
+                      "clientId"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "oauth",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "authorizeUrl": {
+                        "description": "Optional OAuth authorization endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "callbackPath": {
+                        "description": "Optional local authorization callback path.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "clientId": {
+                        "description": "OAuth client identifier.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "grantType": {
+                        "const": "authorization_code",
+                        "description": "OAuth grant type.",
+                        "enum": [
+                          "client_credentials",
+                          "password",
+                          "authorization_code"
+                        ],
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "redirectPort": {
+                        "description": "Optional local authorization callback port.",
+                        "maximum": 65535,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "scope": {
+                        "description": "Optional OAuth scope.",
+                        "type": "string"
+                      },
+                      "tokenUrl": {
+                        "description": "Optional OAuth token endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "authType",
+                      "grantType",
+                      "clientId"
+                    ],
+                    "type": "object"
+                  }
+                ],
+                "properties": {
+                  "authType": {
+                    "description": "Authentication type. Defaults to basic.",
+                    "enum": [
+                      "basic",
+                      "oauth"
+                    ],
+                    "type": "string"
+                  },
+                  "authorizeUrl": {
+                    "description": "Optional OAuth authorization endpoint.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "callbackPath": {
+                    "description": "Optional local authorization callback path.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "clientId": {
+                    "description": "OAuth client identifier.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "Optional human-readable description.",
+                    "type": "string"
+                  },
+                  "grantType": {
+                    "description": "OAuth grant type.",
+                    "enum": [
+                      "client_credentials",
+                      "password",
+                      "authorization_code"
+                    ],
+                    "type": "string"
+                  },
+                  "makeDefault": {
+                    "description": "Make this instance the default after registration.",
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Unique local instance name (for example, dev or prod).",
+                    "type": "string"
+                  },
+                  "redirectPort": {
+                    "description": "Optional local authorization callback port.",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "scope": {
+                    "description": "Optional OAuth scope.",
+                    "type": "string"
+                  },
+                  "tokenUrl": {
+                    "description": "Optional OAuth token endpoint.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "url": {
+                    "description": "HTTPS ServiceNow instance URL.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "username": {
+                    "description": "Basic-auth or OAuth password-grant username.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Register-Instance"
+            },
+            {
+              "description": "List available ServiceNow documentation families/releases from the official ServiceNowDocs GitHub repository.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "SN-Docs-Families"
+            },
+            {
+              "description": "Show local ServiceNow docs cache, FTS index, and optional vector index status.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "SN-Docs-Status"
+            },
+            {
+              "description": "Download and index a ServiceNowDocs family into the local SQLite FTS cache.",
+              "inputSchema": {
+                "properties": {
+                  "branch": {
+                    "description": "Optional branch assertion. Must equal the ref approved for the family by the ServiceNowDocs main/llms.txt index; any other value is rejected.",
+                    "type": "string"
+                  },
+                  "family": {
+                    "description": "Docs family listed by SN-Docs-Families, such as australia. Defaults to australia.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Docs-Sync"
+            },
+            {
+              "description": "Search locally synced ServiceNow documentation using SQLite FTS, with optional vector search when enabled.",
+              "inputSchema": {
+                "properties": {
+                  "family": {
+                    "description": "Optional docs family filter. Defaults to australia.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 10,
+                    "description": "Maximum results to return.",
+                    "type": "number"
+                  },
+                  "query": {
+                    "description": "Search query.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Docs-Search"
+            },
+            {
+              "description": "Retrieve a ServiceNow documentation markdown document by family and path.",
+              "inputSchema": {
+                "properties": {
+                  "family": {
+                    "description": "Docs family listed by SN-Docs-Families, such as australia. Defaults to australia.",
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Relative .md path inside the family branch, such as markdown/<publication>/index.md. No \"..\", percent-encoding, query, fragment or absolute URLs.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Docs-Get"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "ping"
+      },
+      "response": {
+        "result": {}
+      }
+    }
+  ],
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "harnessError": null,
+  "id": "surface/init-1999-01-01",
+  "mode": "full",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📋 Tool list requested by Claude Code",
+    "✅ Returning 60 consolidated tools to Claude Code"
+  ],
+  "strayStdout": [],
+  "wireExchanges": []
+}

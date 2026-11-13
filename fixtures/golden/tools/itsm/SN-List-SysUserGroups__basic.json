@@ -1,0 +1,70 @@
+{
+  "description": "SN-List-SysUserGroups basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm",
+  "harnessError": null,
+  "id": "SN-List-SysUserGroups/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_user_group",
+          "query": [
+            [
+              "sysparm_limit",
+              "3"
+            ]
+          ],
+          "rawQuery": "sysparm_limit=3",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 3
+          },
+          "name": "SN-List-SysUserGroups"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 Sys User Group(s):\n[\n  {\n    \"sys_id\": \"d1f6c3507567a9d433c80f708a13fff8\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_user_group\",\n    \"name\": \"Golden Group 1\",\n    \"description\": \"Golden group\",\n    \"active\": \"true\"\n  },\n  {\n    \"sys_id\": \"e75d5664966c6718fb38939147a4adad\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_user_group\",\n    \"name\": \"Golden Group 2\",\n    \"description\": \"Golden group\",\n    \"active\": \"true\"\n  },\n  {\n    \"sys_id\": \"3833d0c10d08444f989cb1cee509d017\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"sys_user_group\",\n    \"name\": \"Golden Group 3\",\n    \"description\": \"Golden group\",\n    \"active\": \"true\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-List-SysUserGroups"
+}

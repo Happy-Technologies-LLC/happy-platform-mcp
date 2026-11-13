@@ -1,0 +1,77 @@
+{
+  "clientProtocolVersion": "2025-06-18",
+  "exchanges": [
+    {
+      "notifications": [],
+      "request": {
+        "method": "initialize",
+        "params": {
+          "capabilities": {},
+          "clientInfo": {
+            "name": "golden-capture",
+            "version": "0.0.0"
+          },
+          "protocolVersion": "2025-06-18"
+        }
+      },
+      "response": {
+        "result": {
+          "capabilities": {
+            "prompts": {},
+            "resources": {},
+            "tools": {}
+          },
+          "protocolVersion": "2025-06-18",
+          "serverInfo": {
+            "name": "happy-platform-mcp",
+            "version": "6.2.0"
+          }
+        }
+      }
+    }
+  ],
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "harnessError": null,
+  "id": "surface/wire-errors",
+  "mode": "full",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "strayStdout": [],
+  "wireExchanges": [
+    {
+      "received": [],
+      "sentRaw": "{\"jsonrpc\":\"2.0\",\"id\":901,\"method\":\"tools/list\""
+    },
+    {
+      "received": [],
+      "sentRaw": "[]"
+    },
+    {
+      "received": [],
+      "sentRaw": "{\"jsonrpc\":\"2.0\",\"id\":902}"
+    },
+    {
+      "received": [],
+      "sentRaw": "{\"jsonrpc\":\"1.0\",\"id\":903,\"method\":\"ping\"}"
+    },
+    {
+      "received": [
+        {
+          "id": 904,
+          "jsonrpc": "2.0",
+          "result": {}
+        }
+      ],
+      "sentRaw": "{\"jsonrpc\":\"2.0\",\"id\":904,\"method\":\"ping\"}"
+    }
+  ]
+}

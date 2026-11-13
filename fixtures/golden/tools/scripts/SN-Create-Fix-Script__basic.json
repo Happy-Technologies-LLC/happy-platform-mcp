@@ -1,0 +1,52 @@
+{
+  "description": "SN-Create-Fix-Script basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "scripts",
+  "harnessError": null,
+  "id": "SN-Create-Fix-Script/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📝 Creating fix script: golden_fix"
+  ],
+  "steps": [
+    {
+      "files": {
+        "scripts/golden_fix_{{FILE_TIMESTAMP}}.js": "/**\n * Fix Script (Manual Execution Required)\n * Created: {{ISO_TIMESTAMP}}\n *\n * Caller- or instance-supplied values appear only as data literals below,\n * never as executable code or comment text.\n *\n * INSTRUCTIONS:\n * 1. Copy the entire script below\n * 2. Navigate to ServiceNow: System Definition → Scripts - Background\n * 3. Paste the script\n * 4. Click \"Run script\"\n * 5. Verify output in the output panel\n * 6. Delete this file after successful execution\n */\n\nvar fixScriptMetadata = {\"script_name\":\"golden_fix\",\"description\":\"Golden fix script\"};\n\ngs.info(\"golden fix script\");\n\n// End of script\n"
+      },
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "auto_delete": true,
+            "description": "Golden fix script",
+            "script_content": "gs.info(\"golden fix script\");",
+            "script_name": "golden_fix"
+          },
+          "name": "SN-Create-Fix-Script"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Fix script created: {{TMP}}/SN-Create-Fix-Script_basic/work/scripts/golden_fix_{{FILE_TIMESTAMP}}.js\n\n📋 Next Steps:\n1. Open the file: {{TMP}}/SN-Create-Fix-Script_basic/work/scripts/golden_fix_{{FILE_TIMESTAMP}}.js\n2. Copy the entire script content\n3. In ServiceNow, navigate to: System Definition → Scripts - Background\n4. Paste and run the script\n5. Verify the output\n6. Delete the file after successful execution\n\nScript Preview (first 200 chars):\ngs.info(\"golden fix script\");",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Create-Fix-Script"
+}

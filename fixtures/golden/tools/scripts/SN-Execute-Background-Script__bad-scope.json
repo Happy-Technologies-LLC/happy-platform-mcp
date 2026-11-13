@@ -1,0 +1,49 @@
+{
+  "description": "SN-Execute-Background-Script bad-scope",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "scripts",
+  "harnessError": null,
+  "id": "SN-Execute-Background-Script/bad-scope",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🚀 Executing background script via /sys.scripts.do..."
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "scope": "Not A Scope!",
+            "script": "gs.print(1);"
+          },
+          "name": "SN-Execute-Background-Script"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "❌ The script was NOT run: scope must be 'global', a 32-character hexadecimal application sys_id, or a scope name of lowercase letters, digits and underscores (at most 100 characters)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Execute-Background-Script"
+}

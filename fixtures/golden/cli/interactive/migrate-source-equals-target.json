@@ -1,0 +1,45 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": {
+      "instances": [
+        {
+          "default": true,
+          "description": "Golden dev",
+          "name": "dev",
+          "password": "{{FAKE_PASSWORD}}",
+          "url": "{{INSTANCE_URL}}",
+          "username": "golden.user"
+        },
+        {
+          "authType": "oauth",
+          "clientId": "golden-client",
+          "clientSecret": "golden-fake-client-secret",
+          "description": "Golden oauth",
+          "grantType": "client_credentials",
+          "name": "oauth1",
+          "url": "{{INSTANCE_URL}}"
+        }
+      ],
+      "version": 1
+    }
+  },
+  "answers": {
+    "confirm": true
+  },
+  "argv": [
+    "instance",
+    "migrate"
+  ],
+  "exit": {
+    "code": 2
+  },
+  "id": "cli/interactive/migrate-source-equals-target",
+  "mode": "in-process dispatch(argv, {prompts injected}); real registry file + real credential store over fake keyring",
+  "outbound": [],
+  "promptCalls": [],
+  "runnerError": null,
+  "stderr": "MIGRATION_SOURCE_EQUALS_TARGET (readPath={{TMP}}/cli-migrate-source-equals-target-interactive/cfg/instances.json, writePath={{TMP}}/cli-migrate-source-equals-target-interactive/cfg/instances.json): Migration refused: the plaintext source and registry target resolve to the same file. Choose a distinct HAPPY_CONFIG_PATH target, or unset HAPPY_CONFIG_PATH to use automatic package-legacy -> user-registry migration. The source bytes and OS keychain were left unchanged.\n",
+  "stdout": ""
+}

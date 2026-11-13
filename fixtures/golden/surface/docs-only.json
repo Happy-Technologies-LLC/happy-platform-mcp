@@ -1,0 +1,562 @@
+{
+  "clientProtocolVersion": "2025-06-18",
+  "exchanges": [
+    {
+      "notifications": [],
+      "request": {
+        "method": "initialize",
+        "params": {
+          "capabilities": {},
+          "clientInfo": {
+            "name": "golden-capture",
+            "version": "0.0.0"
+          },
+          "protocolVersion": "2025-06-18"
+        }
+      },
+      "response": {
+        "result": {
+          "capabilities": {
+            "prompts": {},
+            "resources": {},
+            "tools": {}
+          },
+          "protocolVersion": "2025-06-18",
+          "serverInfo": {
+            "name": "happy-platform-mcp",
+            "version": "6.2.0"
+          }
+        }
+      }
+    },
+    {
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/list"
+      },
+      "response": {
+        "result": {
+          "tools": [
+            {
+              "description": "Register non-secret ServiceNow instance metadata using credentials already stored by the local CLI.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "basic",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "username": {
+                        "description": "Basic-auth or OAuth password-grant username.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "username"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "oauth",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "clientId": {
+                        "description": "OAuth client identifier.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "grantType": {
+                        "const": "client_credentials",
+                        "description": "OAuth grant type.",
+                        "enum": [
+                          "client_credentials",
+                          "password",
+                          "authorization_code"
+                        ],
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "scope": {
+                        "description": "Optional OAuth scope.",
+                        "type": "string"
+                      },
+                      "tokenUrl": {
+                        "description": "Optional OAuth token endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "authType",
+                      "grantType",
+                      "clientId"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "oauth",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "clientId": {
+                        "description": "OAuth client identifier.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "grantType": {
+                        "const": "password",
+                        "description": "OAuth grant type.",
+                        "enum": [
+                          "client_credentials",
+                          "password",
+                          "authorization_code"
+                        ],
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "scope": {
+                        "description": "Optional OAuth scope.",
+                        "type": "string"
+                      },
+                      "tokenUrl": {
+                        "description": "Optional OAuth token endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "username": {
+                        "description": "Basic-auth or OAuth password-grant username.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "authType",
+                      "grantType",
+                      "username",
+                      "clientId"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "authType": {
+                        "const": "oauth",
+                        "description": "Authentication type. Defaults to basic.",
+                        "enum": [
+                          "basic",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "authorizeUrl": {
+                        "description": "Optional OAuth authorization endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "callbackPath": {
+                        "description": "Optional local authorization callback path.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "clientId": {
+                        "description": "OAuth client identifier.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "Optional human-readable description.",
+                        "type": "string"
+                      },
+                      "grantType": {
+                        "const": "authorization_code",
+                        "description": "OAuth grant type.",
+                        "enum": [
+                          "client_credentials",
+                          "password",
+                          "authorization_code"
+                        ],
+                        "type": "string"
+                      },
+                      "makeDefault": {
+                        "description": "Make this instance the default after registration.",
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "description": "Unique local instance name (for example, dev or prod).",
+                        "type": "string"
+                      },
+                      "redirectPort": {
+                        "description": "Optional local authorization callback port.",
+                        "maximum": 65535,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "scope": {
+                        "description": "Optional OAuth scope.",
+                        "type": "string"
+                      },
+                      "tokenUrl": {
+                        "description": "Optional OAuth token endpoint.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTPS ServiceNow instance URL.",
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "url",
+                      "authType",
+                      "grantType",
+                      "clientId"
+                    ],
+                    "type": "object"
+                  }
+                ],
+                "properties": {
+                  "authType": {
+                    "description": "Authentication type. Defaults to basic.",
+                    "enum": [
+                      "basic",
+                      "oauth"
+                    ],
+                    "type": "string"
+                  },
+                  "authorizeUrl": {
+                    "description": "Optional OAuth authorization endpoint.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "callbackPath": {
+                    "description": "Optional local authorization callback path.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "clientId": {
+                    "description": "OAuth client identifier.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "Optional human-readable description.",
+                    "type": "string"
+                  },
+                  "grantType": {
+                    "description": "OAuth grant type.",
+                    "enum": [
+                      "client_credentials",
+                      "password",
+                      "authorization_code"
+                    ],
+                    "type": "string"
+                  },
+                  "makeDefault": {
+                    "description": "Make this instance the default after registration.",
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Unique local instance name (for example, dev or prod).",
+                    "type": "string"
+                  },
+                  "redirectPort": {
+                    "description": "Optional local authorization callback port.",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "scope": {
+                    "description": "Optional OAuth scope.",
+                    "type": "string"
+                  },
+                  "tokenUrl": {
+                    "description": "Optional OAuth token endpoint.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "url": {
+                    "description": "HTTPS ServiceNow instance URL.",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "username": {
+                    "description": "Basic-auth or OAuth password-grant username.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Register-Instance"
+            },
+            {
+              "description": "List available ServiceNow documentation families/releases from the official ServiceNowDocs GitHub repository.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "SN-Docs-Families"
+            },
+            {
+              "description": "Show local ServiceNow docs cache, FTS index, and optional vector index status.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "SN-Docs-Status"
+            },
+            {
+              "description": "Download and index a ServiceNowDocs family into the local SQLite FTS cache.",
+              "inputSchema": {
+                "properties": {
+                  "branch": {
+                    "description": "Optional branch assertion. Must equal the ref approved for the family by the ServiceNowDocs main/llms.txt index; any other value is rejected.",
+                    "type": "string"
+                  },
+                  "family": {
+                    "description": "Docs family listed by SN-Docs-Families, such as australia. Defaults to australia.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "SN-Docs-Sync"
+            },
+            {
+              "description": "Search locally synced ServiceNow documentation using SQLite FTS, with optional vector search when enabled.",
+              "inputSchema": {
+                "properties": {
+                  "family": {
+                    "description": "Optional docs family filter. Defaults to australia.",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 10,
+                    "description": "Maximum results to return.",
+                    "type": "number"
+                  },
+                  "query": {
+                    "description": "Search query.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Docs-Search"
+            },
+            {
+              "description": "Retrieve a ServiceNow documentation markdown document by family and path.",
+              "inputSchema": {
+                "properties": {
+                  "family": {
+                    "description": "Docs family listed by SN-Docs-Families, such as australia. Defaults to australia.",
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Relative .md path inside the family branch, such as markdown/<publication>/index.md. No \"..\", percent-encoding, query, fragment or absolute URLs.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "name": "SN-Docs-Get"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "resources/list"
+      },
+      "response": {
+        "result": {
+          "resources": [
+            {
+              "description": "Information about the connected ServiceNow instance",
+              "mimeType": "application/json",
+              "name": "ServiceNow Instance Info",
+              "uri": "servicenow://instance"
+            },
+            {
+              "description": "Complete list of available ServiceNow tables with metadata",
+              "mimeType": "application/json",
+              "name": "All ServiceNow Tables",
+              "uri": "servicenow://tables/all"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "resources/read",
+        "params": {
+          "uri": "servicenow://instance"
+        }
+      },
+      "response": {
+        "result": {
+          "contents": [
+            {
+              "mimeType": "application/json",
+              "text": "{\n  \"server_info\": {\n    \"name\": \"Happy MCP Server (Consolidated)\",\n    \"version\": \"6.2.0\",\n    \"description\": \"Consolidated ServiceNow integration with metadata-driven schema lookups\"\n  },\n  \"instance_info\": {},\n  \"capabilities\": {\n    \"total_tables\": 94,\n    \"operations\": [\n      \"create\",\n      \"read\",\n      \"update\",\n      \"query\",\n      \"schema_lookup\"\n    ],\n    \"tools\": 6\n  }\n}",
+              "uri": "servicenow://instance"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "table_name": "incident"
+          },
+          "name": "SN-Query-Table"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: Tool SN-Query-Table is unavailable in docs-only mode",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "SN-Docs-Families"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"families\": [\n    {\n      \"name\": \"australia\",\n      \"branch\": \"australia\"\n    }\n  ]\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "harnessError": null,
+  "id": "surface/docs-only",
+  "mode": "docs-only",
+  "stderr": [
+    "📚 Starting Happy MCP in docs-only mode",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Mode: docs-only",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📋 Tool list requested by Claude Code",
+    "✅ Returning 6 docs-only tools to Claude Code",
+    "📋 Tool list requested by Claude Code",
+    "✅ Returning 6 docs-only tools to Claude Code"
+  ],
+  "strayStdout": [],
+  "wireExchanges": []
+}

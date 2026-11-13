@@ -1,0 +1,20 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": null
+  },
+  "argv": [
+    "--no-such-flag"
+  ],
+  "bin": "happy-platform-mcp",
+  "exit": {
+    "code": 2,
+    "signal": null
+  },
+  "id": "cli/unknown-flag-only",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "Unknown command. Use --help for usage.\n",
+  "stdout": ""
+}

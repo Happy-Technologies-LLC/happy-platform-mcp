@@ -1,0 +1,46 @@
+{
+  "description": "SN-Get-Table-Schema basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "schema",
+  "harnessError": null,
+  "id": "SN-Get-Table-Schema/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "table_name": "incident"
+          },
+          "name": "SN-Get-Table-Schema"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"table_name\": \"incident\",\n  \"label\": \"Incident\",\n  \"key_field\": \"number\",\n  \"display_field\": \"short_description\",\n  \"required_fields\": [\n    \"short_description\"\n  ],\n  \"common_fields\": [\n    \"sys_created_on\",\n    \"sys_updated_on\",\n    \"sys_created_by\",\n    \"sys_updated_by\",\n    \"state\",\n    \"priority\",\n    \"urgency\",\n    \"impact\",\n    \"category\",\n    \"subcategory\",\n    \"caller_id\",\n    \"assigned_to\",\n    \"assignment_group\",\n    \"description\",\n    \"work_notes\"\n  ],\n  \"operations\": [\n    \"create\",\n    \"read\",\n    \"update\",\n    \"list\",\n    \"search\"\n  ],\n  \"description\": \"ServiceNow Incident table\",\n  \"package\": \"service_desk\",\n  \"source\": \"local_cache\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-Table-Schema"
+}

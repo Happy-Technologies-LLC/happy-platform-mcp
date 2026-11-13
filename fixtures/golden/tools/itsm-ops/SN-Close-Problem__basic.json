@@ -1,0 +1,98 @@
+{
+  "description": "SN-Close-Problem basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm-ops",
+  "harnessError": null,
+  "id": "SN-Close-Problem/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/problem",
+          "query": [
+            [
+              "sysparm_query",
+              "number=PRB0040001"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=number%3DPRB0040001&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "resolution_code": "Fix applied",
+            "resolution_notes": "golden problem resolution",
+            "state": 3
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/problem/7607a24b5d490e68354d3f1a7ea2054f",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "problem_number": "PRB0040001",
+            "resolution_code": "Fix applied",
+            "resolution_notes": "golden problem resolution"
+          },
+          "name": "SN-Close-Problem"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ PRB0040001 closed successfully\n\nProblem: PRB0040001\nsys_id: 7607a24b5d490e68354d3f1a7ea2054f\nState: Resolved/Closed (3)\nResolution Notes: golden problem resolution\nResolution Code: Fix applied\nUpdated: {{ISO_TIMESTAMP}}\n\nThe problem has been closed successfully.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Close-Problem"
+}

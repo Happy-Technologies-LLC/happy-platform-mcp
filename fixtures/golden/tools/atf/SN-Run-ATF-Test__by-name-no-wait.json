@@ -1,0 +1,103 @@
+{
+  "description": "SN-Run-ATF-Test by-name-no-wait",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "atf",
+  "harnessError": null,
+  "id": "SN-Run-ATF-Test/by-name-no-wait",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_atf_test",
+          "query": [
+            [
+              "sysparm_query",
+              "name=Golden test"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,name"
+            ],
+            [
+              "sysparm_limit",
+              "2"
+            ]
+          ],
+          "rawQuery": "sysparm_query=name%3DGolden+test&sysparm_fields=sys_id%2Cname&sysparm_limit=2",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/sn_cicd/tests/run_test",
+          "query": [
+            [
+              "test_sys_id",
+              "c7bb315e80d10c6f67e081f42951a8ef"
+            ]
+          ],
+          "rawQuery": "test_sys_id=c7bb315e80d10c6f67e081f42951a8ef",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "test_name": "Golden test",
+            "wait": false
+          },
+          "name": "SN-Run-ATF-Test"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"status\": \"started\",\n  \"target\": {\n    \"test_sys_id\": \"c7bb315e80d10c6f67e081f42951a8ef\",\n    \"test_name\": \"Golden test\"\n  },\n  \"progress_id\": \"cd366dd5d573c905e2b6a47e88a70208\",\n  \"next_step\": \"Call SN-Get-CICD-Progress with progress_id cd366dd5d573c905e2b6a47e88a70208 (wait: true to block), then SN-Get-ATF-Results with result_type \\\"test\\\".\"\n}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Run-ATF-Test"
+}

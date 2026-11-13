@@ -1,0 +1,259 @@
+{
+  "description": "SN-Create-Workflow two-activities",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "workflow",
+  "harnessError": null,
+  "id": "SN-Create-Workflow/two-activities",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔄 Creating workflow: Golden Workflow (progress: true)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "access": "public",
+            "description": "golden",
+            "name": "Golden Workflow",
+            "template": false
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_workflow",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "active": true,
+            "after_business_rules": true,
+            "condition": "active=true",
+            "condition_type": "",
+            "description": "golden",
+            "expected_time": "",
+            "name": "Golden Workflow",
+            "order": 100,
+            "published": false,
+            "run_multiple": false,
+            "table": "incident",
+            "workflow": "4fdd7657ae44e98ecce677fdacdd6f69"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_workflow_version",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "activity_definition": "",
+            "height": 80,
+            "input": "answer = true;",
+            "name": "Start",
+            "parent": "",
+            "stage": "",
+            "timeout": "0 00:00:00",
+            "vars": "",
+            "width": 150,
+            "workflow_version": "28ccd90bfa9b74d70cd7dde247451ed3",
+            "x": 100,
+            "y": 100
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_activity",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "activity_definition": "",
+            "height": 80,
+            "input": "gs.info(\"done\");",
+            "name": "Finish",
+            "parent": "",
+            "stage": "",
+            "timeout": "0 00:00:00",
+            "vars": "",
+            "width": 150,
+            "workflow_version": "28ccd90bfa9b74d70cd7dde247451ed3",
+            "x": 250,
+            "y": 100
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_activity",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "activity": "c0db241d0557afa29144989c7c91a286",
+            "condition": "true",
+            "condition_type": "standard",
+            "else_flag": false,
+            "event": false,
+            "event_name": "",
+            "name": "Condition",
+            "order": 1,
+            "short_description": ""
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_condition",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "condition": "71d03b7fe297da6ffc28e60de97f9ef6",
+            "from": "c0db241d0557afa29144989c7c91a286",
+            "order": 1,
+            "to": "152c3958e6e0b3a626da8507bc7eb484"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_transition",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "published": true,
+            "start": "c0db241d0557afa29144989c7c91a286"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/wf_workflow_version/28ccd90bfa9b74d70cd7dde247451ed3",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "activities": [
+              {
+                "name": "Start",
+                "script": "answer = true;"
+              },
+              {
+                "name": "Finish",
+                "script": "gs.info(\"done\");"
+              }
+            ],
+            "condition": "active=true",
+            "description": "golden",
+            "name": "Golden Workflow",
+            "progress": true,
+            "publish": true,
+            "table": "incident",
+            "transitions": [
+              {
+                "condition": "true",
+                "from": 0,
+                "to": 1
+              }
+            ]
+          },
+          "name": "SN-Create-Workflow"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: Cannot read properties of undefined (reading 'length')",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Create-Workflow"
+}

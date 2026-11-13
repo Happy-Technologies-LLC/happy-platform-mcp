@@ -1,0 +1,42 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": {
+      "instances": [
+        {
+          "default": true,
+          "description": "Golden dev",
+          "name": "dev",
+          "password": "{{FAKE_PASSWORD}}",
+          "url": "{{INSTANCE_URL}}",
+          "username": "golden.user"
+        },
+        {
+          "authType": "oauth",
+          "clientId": "golden-client",
+          "clientSecret": "golden-fake-client-secret",
+          "description": "Golden oauth",
+          "grantType": "client_credentials",
+          "name": "oauth1",
+          "url": "{{INSTANCE_URL}}"
+        }
+      ],
+      "version": 1
+    }
+  },
+  "argv": [
+    "instance",
+    "list"
+  ],
+  "bin": "happy-platform-mcp",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "id": "cli/list-legacy-plaintext-registry",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "",
+  "stdout": "[\n  {\n    \"default\": true,\n    \"description\": \"Golden dev\",\n    \"name\": \"dev\",\n    \"url\": \"{{INSTANCE_URL}}\",\n    \"username\": \"golden.user\"\n  },\n  {}\n]\n"
+}

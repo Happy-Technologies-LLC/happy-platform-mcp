@@ -1,0 +1,76 @@
+{
+  "description": "SN-List-ChangeRequests basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm",
+  "harnessError": null,
+  "id": "SN-List-ChangeRequests/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/change_request",
+          "query": [
+            [
+              "sysparm_query",
+              "state=-5^type=normal"
+            ],
+            [
+              "sysparm_limit",
+              "3"
+            ]
+          ],
+          "rawQuery": "sysparm_query=state%3D-5%5Etype%3Dnormal&sysparm_limit=3",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 3,
+            "state": "-5",
+            "type": "normal"
+          },
+          "name": "SN-List-ChangeRequests"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 Change Request(s):\n[\n  {\n    \"sys_id\": \"e0624e2745e0f5aaaa1fa36d29956fc2\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"change_request\",\n    \"number\": \"CHG0000001\",\n    \"short_description\": \"Golden change 1\",\n    \"state\": \"-5\",\n    \"type\": \"normal\",\n    \"approval\": \"not requested\",\n    \"priority\": \"3\"\n  },\n  {\n    \"sys_id\": \"f7c59bcbe18a89d044e6ea194e3d22f8\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"change_request\",\n    \"number\": \"CHG0000002\",\n    \"short_description\": \"Golden change 2\",\n    \"state\": \"-5\",\n    \"type\": \"normal\",\n    \"approval\": \"not requested\",\n    \"priority\": \"3\"\n  },\n  {\n    \"sys_id\": \"60537fb75ef5b229d68c1542b86fb896\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"change_request\",\n    \"number\": \"CHG0000003\",\n    \"short_description\": \"Golden change 3\",\n    \"state\": \"-5\",\n    \"type\": \"normal\",\n    \"approval\": \"not requested\",\n    \"priority\": \"3\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-List-ChangeRequests"
+}

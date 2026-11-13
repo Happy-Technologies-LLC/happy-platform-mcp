@@ -1,0 +1,73 @@
+{
+  "realm": "hpm",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "mcp-user"
+      },
+      {
+        "name": "mcp-developer"
+      },
+      {
+        "name": "mcp-admin"
+      },
+      {
+        "name": "mcp-auditor"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "hpm-mcp",
+      "name": "MCP resource server (token audience; introspects tokens; calls the admin API)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${HPM_MCP_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
+    },
+    {
+      "clientId": "mcp-client",
+      "name": "Simulated MCP client (public, auth code + PKCE)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://127.0.0.1:8765/callback"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-hpm-mcp",
+      "enabled": true,
+      "serviceAccountClientId": "hpm-mcp",
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "query-users",
+          "manage-users",
+          "view-realm",
+          "view-clients",
+          "query-clients"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+[package]
+name = "happy-platform-mcp"
+version = "0.0.1-s3spike"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "Apache-2.0"
+description = "S3 packaging spike: minimal binary used to prove cargo-dist, npm wrapper, signing and keychain parity. Not production code."
+repository = "https://github.com/nickzitzer/happy-platform-mcp"
+
+# publish = false would hide the package from dist; force-enable it.
+[package.metadata.dist]
+dist = true
+
+[lib]
+name = "hpm_s3"
+path = "src/lib.rs"
+
+[[bin]]
+name = "happy-platform-mcp"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = "0.10"
+serde_json = "1"
+url = "2"
+
+# Keychain stores (keyring-core 1.x). Dev-only: the spike binary itself does not
+# touch the keychain; `tests/keychain_vectors.rs` is the vector harness.
+[dev-dependencies]
+keyring-core = "1"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows-native-keyring-store = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Standalone spike: never join a parent workspace.
+[workspace]
+
+# cargo-dist adds [profile.dist] via `dist init`; kept in-file so the project is self-describing.
+[profile.dist]
+inherits = "release"
+lto = "thin"

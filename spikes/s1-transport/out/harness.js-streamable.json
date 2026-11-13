@@ -1,0 +1,16 @@
+{
+  "label": "js-streamable",
+  "transport": "streamable",
+  "exec": [
+    "node",
+    "/Users/nczitzer/.omp/wt/t3d12d813b/m/src/server.js"
+  ],
+  "passed": false,
+  "results": [
+    {
+      "name": "harness run",
+      "ok": false,
+      "detail": "Error: Streamable HTTP error: Error POSTing to endpoint: {\"error\":\"Invalid or missing session ID\"}\n    at StreamableHTTPClientTransport.send (file:///Users/nczitzer/.omp/wt/t3d12d813b/m/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js:378:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"
+    }
+  ]
+}

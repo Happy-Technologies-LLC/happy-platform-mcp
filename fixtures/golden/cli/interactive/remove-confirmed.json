@@ -1,0 +1,51 @@
+{
+  "after": {
+    "keyringAccounts": [
+      "keychain:instance/dev/password"
+    ],
+    "keyringValueMatchesFakeSecret": {
+      "keychain:instance/dev/password": true
+    },
+    "registryJson": {
+      "instances": [
+        {
+          "authType": "basic",
+          "credentialRef": "keychain:instance/dev/password",
+          "default": true,
+          "description": "Golden dev",
+          "name": "dev",
+          "url": "{{INSTANCE_URL}}",
+          "username": "golden.user"
+        }
+      ],
+      "version": 1
+    }
+  },
+  "answers": {
+    "confirm": true
+  },
+  "argv": [
+    "instance",
+    "remove",
+    "oauth1"
+  ],
+  "exit": {
+    "code": 0
+  },
+  "id": "cli/interactive/remove-confirmed",
+  "mode": "in-process dispatch(argv, {prompts injected}); real registry file + real credential store over fake keyring",
+  "outbound": [],
+  "promptCalls": [
+    {
+      "answered": true,
+      "hasDefault": true,
+      "hasMask": false,
+      "kind": "confirm",
+      "message": "Remove instance 'oauth1'?",
+      "name": "confirm"
+    }
+  ],
+  "runnerError": null,
+  "stderr": "",
+  "stdout": "Removed instance 'oauth1'.\n"
+}

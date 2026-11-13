@@ -1,0 +1,113 @@
+{
+  "description": "SN-Catalog-Search-Items keyword",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "catalog",
+  "harnessError": null,
+  "id": "SN-Catalog-Search-Items/keyword",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔍 Searching catalog items (keyword: laptop, category: all)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sc_cat_item",
+          "query": [
+            [
+              "sysparm_query",
+              "active=true^nameLIKElaptop^ORshort_descriptionLIKElaptop"
+            ],
+            [
+              "sysparm_limit",
+              "5"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,name,short_description,category,active,sys_class_name"
+            ]
+          ],
+          "rawQuery": "sysparm_query=active%3Dtrue%5EnameLIKElaptop%5EORshort_descriptionLIKElaptop&sysparm_limit=5&sysparm_fields=sys_id%2Cname%2Cshort_description%2Ccategory%2Cactive%2Csys_class_name",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sc_cat_item_producer",
+          "query": [
+            [
+              "sysparm_query",
+              "active=true^nameLIKElaptop^ORshort_descriptionLIKElaptop"
+            ],
+            [
+              "sysparm_limit",
+              "5"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,name,short_description,category,active,sys_class_name"
+            ]
+          ],
+          "rawQuery": "sysparm_query=active%3Dtrue%5EnameLIKElaptop%5EORshort_descriptionLIKElaptop&sysparm_limit=5&sysparm_fields=sys_id%2Cname%2Cshort_description%2Ccategory%2Cactive%2Csys_class_name",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "active": true,
+            "include_producers": true,
+            "keyword": "laptop",
+            "limit": 5
+          },
+          "name": "SN-Catalog-Search-Items"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 6 catalog item(s):\n[\n  {\n    \"sys_id\": \"bcc56d8006416a1276b7677f5f2b4347\",\n    \"name\": \"Golden Item 1\",\n    \"short_description\": \"Golden catalog item\",\n    \"category\": \"7ed8297b22a41eb0b254414a1219b323\",\n    \"active\": \"true\",\n    \"item_type\": \"catalog_item\"\n  },\n  {\n    \"sys_id\": \"776e0becab666a27fd936a49be3806b4\",\n    \"name\": \"Golden Item 2\",\n    \"short_description\": \"Golden catalog item\",\n    \"category\": \"7ed8297b22a41eb0b254414a1219b323\",\n    \"active\": \"true\",\n    \"item_type\": \"catalog_item\"\n  },\n  {\n    \"sys_id\": \"32d572e09af36e8bfedc5fe2062f9e73\",\n    \"name\": \"Golden Item 3\",\n    \"short_description\": \"Golden catalog item\",\n    \"category\": \"7ed8297b22a41eb0b254414a1219b323\",\n    \"active\": \"true\",\n    \"item_type\": \"catalog_item\"\n  },\n  {\n    \"sys_id\": \"0a180de8a17114f8928e0e0aa1b9df4e\",\n    \"name\": \"golden-sc_cat_item_producer-1\",\n    \"item_type\": \"record_producer\"\n  },\n  {\n    \"sys_id\": \"7f50b32bc4acaeb6ac206a5f78e78c44\",\n    \"name\": \"golden-sc_cat_item_producer-2\",\n    \"item_type\": \"record_producer\"\n  },\n  {\n    \"sys_id\": \"3ae017034d672aff726c85492e337204\",\n    \"name\": \"golden-sc_cat_item_producer-3\",\n    \"item_type\": \"record_producer\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Catalog-Search-Items"
+}

@@ -1,0 +1,22 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryFile": "<malformed, preserved>",
+    "registryJson": "unparseable"
+  },
+  "argv": [
+    "instance",
+    "list"
+  ],
+  "bin": "happy-platform-mcp",
+  "exit": {
+    "code": 1,
+    "signal": null
+  },
+  "id": "cli/list-registry-malformed-json",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "REGISTRY_RELOAD_FAILED (path={{TMP}}/cli-list-registry-malformed-json-happy-platform-mcp/cfg/instances.json)\n",
+  "stdout": ""
+}

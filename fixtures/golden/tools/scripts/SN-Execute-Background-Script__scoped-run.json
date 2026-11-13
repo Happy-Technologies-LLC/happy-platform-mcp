@@ -1,0 +1,194 @@
+{
+  "description": "SN-Execute-Background-Script scoped-run",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "scripts",
+  "harnessError": null,
+  "id": "SN-Execute-Background-Script/scoped-run",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🚀 Executing background script via /sys.scripts.do..."
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_scope",
+          "query": [
+            [
+              "sysparm_query",
+              "scope=x_golden_app1"
+            ],
+            [
+              "sysparm_limit",
+              "2"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,scope,name,active"
+            ]
+          ],
+          "rawQuery": "sysparm_query=scope%3Dx_golden_app1&sysparm_limit=2&sysparm_fields=sys_id%2Cscope%2Cname%2Cactive",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/x-www-form-urlencoded",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "POST",
+          "path": "/angular.do",
+          "query": [
+            [
+              "sysparm_type",
+              "get_user"
+            ]
+          ],
+          "rawQuery": "sysparm_type=get_user",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/ui/user/current_user",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_user_session",
+          "query": [
+            [
+              "sysparm_fields",
+              "csrf_token,id"
+            ],
+            [
+              "sysparm_query",
+              "id=GOLDENSESSION"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_fields=csrf_token,id&sysparm_query=id%3DGOLDENSESSION&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": true,
+            "userToken": false
+          },
+          "form": [
+            [
+              "script",
+              "gs.print(\"scoped\");"
+            ],
+            [
+              "sysparm_ck",
+              "golden-csrf-token"
+            ],
+            [
+              "runscript",
+              "Run script"
+            ],
+            [
+              "quota_managed_transaction",
+              "on"
+            ],
+            [
+              "sys_scope",
+              "f8d56f186119b1db105647c28cc218e8"
+            ],
+            [
+              "record_for_rollback",
+              "on"
+            ]
+          ],
+          "headers": {
+            "accept": "*/*",
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "user-agent": "ServiceNow-MCP-Client/2.0"
+          },
+          "method": "POST",
+          "path": "/sys.scripts.do",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "scope": "x_golden_app1",
+            "script": "gs.print(\"scoped\");"
+          },
+          "name": "SN-Execute-Background-Script"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Script executed successfully.\n\nMethod: /sys.scripts.do processor (ran as the authenticated user, in that user's own session)\nScope: x_golden_app1 (f8d56f186119b1db105647c28cc218e8)\n\n📤 Output:\n  scoped\n\n🧾 Execution history: not reported by the instance\n↩️ Rollback: no rollback context was found for this run, so there is nothing to roll back from here.",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Execute-Background-Script"
+}

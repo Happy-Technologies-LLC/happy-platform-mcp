@@ -1,0 +1,169 @@
+{
+  "description": "Everything the capture rewrites. Secrets/hosts/paths are scrubbed; only listed nondeterministic values are normalized. Matching runs on JSON string values and object keys, never on the serialized document.",
+  "deterministicByConstruction": [
+    "Stub ServiceNow generates sys_ids from a per-capture counter (sha-derived, not random) and a fixed server clock 2026-01-15 12:00:00; these are NOT normalized, so id/time handling drift is visible.",
+    "JSON object keys sorted recursively; 2-space indent; trailing newline.",
+    "JSON-RPC ids stripped from tool/CLI responses; surface keeps ids."
+  ],
+  "hitsPerStage": {
+    "cli": {
+      "L:{{FAKE_PASSWORD}}": 3,
+      "L:{{INSTANCE_URL}}": 64,
+      "L:{{TMP}}": 5
+    },
+    "surface": {
+      "L:{{INSTANCE_URL}}": 15
+    },
+    "tools": {
+      "L:{{INSTANCE_URL_ALT}}": 5,
+      "L:{{INSTANCE_URL}}": 210,
+      "L:{{TMP}}": 8,
+      "N-EPOCH-MS": 2,
+      "N-EXEC-TIME-FIELD": 3,
+      "N-FILE-TIMESTAMP": 6,
+      "N-ISO-TIMESTAMP": 13,
+      "N-SN-DATETIME": 9,
+      "N-SN-DATETIME-ENCODED": 5,
+      "N-TRIGGER-MARKER": 5
+    }
+  },
+  "literals": [
+    {
+      "placeholder": "{{INSTANCE_URL}} / {{INSTANCE_URL_ALT}} / {{INSTANCE_HOST}} / {{INSTANCE_HOST_ALT}}",
+      "value": "loopback ServiceNow stub origin http://127.0.0.1:<port>"
+    },
+    {
+      "placeholder": "{{RAW_GITHUB_URL}} / {{RAW_GITHUB_HOST}}",
+      "value": "loopback raw-GitHub docs stub"
+    },
+    {
+      "placeholder": "{{FAKE_PASSWORD}} / {{BASIC_CREDENTIAL}}",
+      "value": "the fixed fake test secret and its encoded basic-auth form"
+    },
+    {
+      "placeholder": "{{TMP}} / {{REPO}} / {{OS_TMPDIR}} / {{REAL_HOME}}",
+      "value": "per-run temp root, repo root, os tmpdir, real HOME"
+    }
+  ],
+  "normalizeRules": [
+    {
+      "doc": "ISO-8601 timestamps from new Date().toISOString()",
+      "flags": "g",
+      "id": "N-ISO-TIMESTAMP",
+      "pattern": "\\b\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z\\b",
+      "to": "{{ISO_TIMESTAMP}}"
+    },
+    {
+      "doc": "Filename-safe timestamps (fix scripts: 2026-01-01T00-00-00-000Z)",
+      "flags": "g",
+      "id": "N-FILE-TIMESTAMP",
+      "pattern": "(?<![0-9])\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z(?![0-9])",
+      "to": "{{FILE_TIMESTAMP}}"
+    },
+    {
+      "doc": "Server-generated ServiceNow datetimes (YYYY-MM-DD HH:MM:SS) NOT equal to the stub fixed time",
+      "flags": "g",
+      "id": "N-SN-DATETIME",
+      "pattern": "\\b(?!2026-01-15 12:00:00\\b)\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\b",
+      "to": "{{SN_DATETIME}}"
+    },
+    {
+      "doc": "Elapsed-time figures in ms",
+      "flags": "g",
+      "id": "N-DURATION-MS",
+      "pattern": "\\b(\\d+)\\s?ms\\b",
+      "to": "{{N}}ms"
+    },
+    {
+      "doc": "Elapsed-time fields embedded in JSON text (execution_time_ms: N)",
+      "flags": "g",
+      "id": "N-EXEC-TIME-FIELD",
+      "pattern": "(\"?execution_time_ms\"?\\s*:\\s*)\\d+",
+      "to": "$1{{N}}"
+    },
+    {
+      "doc": "Epoch-millisecond ids embedded in generated names (MCP_Script_<ms>)",
+      "flags": "g",
+      "id": "N-EPOCH-MS",
+      "pattern": "\\b(MCP_Script_|MCP_Workflow_|mcp_marker_)\\d{10,}\\b",
+      "to": "$1{{EPOCH_MS}}"
+    },
+    {
+      "doc": "Random per-execution script markers",
+      "flags": "g",
+      "id": "N-RANDOM-MARKER",
+      "pattern": "\\bMCP_SCRIPT_[A-Z0-9]+_[0-9a-f]{8,}\\b",
+      "to": "MCP_SCRIPT_{{MARKER}}"
+    },
+    {
+      "doc": "sys_trigger fallback correlation marker MCP_<epoch-ms>_<8 hex>",
+      "flags": "g",
+      "id": "N-TRIGGER-MARKER",
+      "pattern": "MCP_\\d{10,}_[0-9a-f]{6,}(?![0-9a-f])",
+      "to": "MCP_{{EPOCH_MS}}_{{MARKER}}"
+    },
+    {
+      "doc": "URL-encoded datetimes in raw query strings (YYYY-MM-DD+HH%3AMM%3ASS) other than the stub fixed time",
+      "flags": "g",
+      "id": "N-SN-DATETIME-ENCODED",
+      "pattern": "(?<!\\d)(?!2026-01-15\\+12%3A00%3A00)\\d{4}-\\d{2}-\\d{2}\\+\\d{2}%3A\\d{2}%3A\\d{2}\\b",
+      "to": "{{SN_DATETIME_ENCODED}}"
+    },
+    {
+      "doc": "Random UUIDs (request/session/health ids)",
+      "flags": "g",
+      "id": "N-UUID",
+      "pattern": "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
+      "to": "{{UUID}}"
+    }
+  ],
+  "scrubRules": [
+    {
+      "doc": "Any hostname under the ServiceNow cloud domains (patterns in lib/scrub.mjs)",
+      "flags": "gi",
+      "id": "S-SN-HOST",
+      "patternSource": "scripts/golden/lib/scrub.mjs",
+      "placeholder": "{{SN_HOST}}"
+    },
+    {
+      "doc": "Names of real (non-fixture) ServiceNow instances that must never appear in goldens; the exact list lives in lib/scrub.mjs",
+      "flags": "gi",
+      "id": "S-REAL-INSTANCE",
+      "patternSource": "scripts/golden/lib/scrub.mjs",
+      "placeholder": "{{REAL_INSTANCE}}"
+    },
+    {
+      "doc": "HTTP basic-scheme credential value",
+      "flags": "g",
+      "id": "S-AUTH-BASIC",
+      "patternSource": "scripts/golden/lib/scrub.mjs",
+      "placeholder": "{{CREDENTIAL}}"
+    },
+    {
+      "doc": "HTTP bearer-scheme token value",
+      "flags": "g",
+      "id": "S-AUTH-BEARER",
+      "patternSource": "scripts/golden/lib/scrub.mjs",
+      "placeholder": "{{CREDENTIAL}}"
+    },
+    {
+      "doc": "Query/form parameters that carry passwords, client secrets or tokens (value replaced)",
+      "flags": "gi",
+      "id": "S-PASSWORD-PARAM",
+      "patternSource": "scripts/golden/lib/scrub.mjs",
+      "placeholder": "{{CREDENTIAL}}"
+    },
+    {
+      "doc": "Cookie name=value pairs for session cookies",
+      "flags": "g",
+      "id": "S-COOKIE-VALUE",
+      "patternSource": "scripts/golden/lib/scrub.mjs",
+      "placeholder": "{{COOKIE}}"
+    }
+  ],
+  "stageRuleSets": {
+    "cli": "scrub + normalize",
+    "surface": "scrub-only (tools/list and all protocol payloads stay byte-exact)",
+    "tools": "scrub + normalize"
+  }
+}

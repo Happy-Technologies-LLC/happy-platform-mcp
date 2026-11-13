@@ -1,0 +1,98 @@
+{
+  "description": "SN-Resolve-Incident basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm-ops",
+  "harnessError": null,
+  "id": "SN-Resolve-Incident/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/incident",
+          "query": [
+            [
+              "sysparm_query",
+              "number=INC0010001"
+            ],
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_query=number%3DINC0010001&sysparm_limit=1",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "close_code": "Solution provided",
+            "close_notes": "golden resolution",
+            "state": 6
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "PUT",
+          "path": "/api/now/table/incident/2fc8aa1ec6d67779a3ab923ac2cc7238",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "incident_number": "INC0010001",
+            "resolution_code": "Solution provided",
+            "resolution_notes": "golden resolution"
+          },
+          "name": "SN-Resolve-Incident"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ INC0010001 resolved successfully\n\nIncident: INC0010001\nsys_id: 2fc8aa1ec6d67779a3ab923ac2cc7238\nState: Resolved (6)\nResolution Notes: golden resolution\nResolution Code: Solution provided\nUpdated: {{ISO_TIMESTAMP}}\n\nThe incident has been resolved successfully.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Resolve-Incident"
+}

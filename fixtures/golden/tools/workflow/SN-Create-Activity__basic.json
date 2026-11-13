@@ -1,0 +1,83 @@
+{
+  "description": "SN-Create-Activity basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "workflow",
+  "harnessError": null,
+  "id": "SN-Create-Activity/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "➕ Creating activity: Golden Activity"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "activity_definition": "",
+            "height": 80,
+            "input": "answer = true;",
+            "name": "Golden Activity",
+            "parent": "",
+            "stage": "",
+            "timeout": "0 00:00:00",
+            "vars": "",
+            "width": 150,
+            "workflow_version": "90a22b13d339eb67a1dc409a2131a060",
+            "x": 100,
+            "y": 200
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_activity",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "name": "Golden Activity",
+            "script": "answer = true;",
+            "workflow_version_sys_id": "90a22b13d339eb67a1dc409a2131a060",
+            "x": 100,
+            "y": 200
+          },
+          "name": "SN-Create-Activity"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Activity created successfully!\n\nActivity: Golden Activity\nActivity sys_id: 153ded67457e6ce6938b68b8eed050f2\n\nYou can now:\n- Create transitions to/from this activity using SN-Create-Transition\n- Add this activity to workflow canvas in ServiceNow UI",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Create-Activity"
+}

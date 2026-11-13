@@ -1,0 +1,72 @@
+{
+  "description": "SN-Query-Table per-call-instance-override",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "instances",
+  "harnessError": null,
+  "id": "SN-Query-Table/per-call-instance-override",
+  "mode": "registry-multi-instance",
+  "stderr": [
+    "🔗 Default ServiceNow instance: dev ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: dev - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/incident",
+          "query": [
+            [
+              "sysparm_limit",
+              "1"
+            ]
+          ],
+          "rawQuery": "sysparm_limit=1",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "instance": "prod",
+            "limit": 1,
+            "table_name": "incident"
+          },
+          "name": "SN-Query-Table"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 1 records in incident:\n[\n  {\n    \"sys_id\": \"2fc8aa1ec6d67779a3ab923ac2cc7238\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"incident\",\n    \"number\": \"INC0000001\",\n    \"short_description\": \"Golden incident 1\",\n    \"state\": \"1\",\n    \"priority\": \"3\",\n    \"urgency\": \"2\",\n    \"impact\": \"2\",\n    \"category\": \"software\",\n    \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"assigned_to\": \"\",\n    \"assignment_group\": \"\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Query-Table"
+}

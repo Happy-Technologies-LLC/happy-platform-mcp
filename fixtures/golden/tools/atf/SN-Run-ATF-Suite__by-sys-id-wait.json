@@ -1,0 +1,153 @@
+{
+  "description": "SN-Run-ATF-Suite by-sys-id-wait",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "atf",
+  "harnessError": null,
+  "id": "SN-Run-ATF-Suite/by-sys-id-wait",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/sn_cicd/testsuite/run",
+          "query": [
+            [
+              "test_suite_sys_id",
+              "5a40b66efbf65320eccd9314f2990352"
+            ],
+            [
+              "browser_name",
+              "chrome"
+            ]
+          ],
+          "rawQuery": "test_suite_sys_id=5a40b66efbf65320eccd9314f2990352&browser_name=chrome",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/sn_cicd/progress/cd366dd5d573c905e2b6a47e88a70208",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/sn_cicd/testsuite/results/a29c8bbbadb15a6986e6054dd968c4f1",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/sys_atf_test_result",
+          "query": [
+            [
+              "sysparm_query",
+              "parent=a29c8bbbadb15a6986e6054dd968c4f1^ORDERBYstart_time"
+            ],
+            [
+              "sysparm_fields",
+              "sys_id,test,status,output,start_time,end_time,run_time"
+            ],
+            [
+              "sysparm_display_value",
+              "true"
+            ],
+            [
+              "sysparm_exclude_reference_link",
+              "true"
+            ],
+            [
+              "sysparm_limit",
+              "201"
+            ]
+          ],
+          "rawQuery": "sysparm_query=parent%3Da29c8bbbadb15a6986e6054dd968c4f1%5EORDERBYstart_time&sysparm_fields=sys_id%2Ctest%2Cstatus%2Coutput%2Cstart_time%2Cend_time%2Crun_time&sysparm_display_value=true&sysparm_exclude_reference_link=true&sysparm_limit=201",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "browser_name": "chrome",
+            "poll_interval_seconds": 1,
+            "test_suite_sys_id": "5a40b66efbf65320eccd9314f2990352",
+            "timeout_seconds": 10
+          },
+          "name": "SN-Run-ATF-Suite"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"status\": \"successful\",\n  \"successful\": true,\n  \"target\": {\n    \"test_suite_sys_id\": \"5a40b66efbf65320eccd9314f2990352\"\n  },\n  \"progress_id\": \"cd366dd5d573c905e2b6a47e88a70208\",\n  \"progress\": {\n    \"progress_id\": \"cd366dd5d573c905e2b6a47e88a70208\",\n    \"state\": \"successful\",\n    \"status\": \"2\",\n    \"status_label\": \"Successful\",\n    \"status_message\": \"Done\",\n    \"percent_complete\": 100,\n    \"finished\": true,\n    \"results\": {\n      \"id\": \"a29c8bbbadb15a6986e6054dd968c4f1\"\n    }\n  },\n  \"results\": {\n    \"result_type\": \"suite\",\n    \"result_id\": \"a29c8bbbadb15a6986e6054dd968c4f1\",\n    \"test_suite_name\": \"Golden Suite\",\n    \"test_suite_status\": \"success\",\n    \"counts\": {\n      \"passed\": 2,\n      \"failed\": 0,\n      \"errored\": 0,\n      \"skipped\": 0\n    },\n    \"tests\": [\n      {\n        \"test_result_sys_id\": \"773a89184bf0d1cf1afbf084de72d0e8\",\n        \"link\": \"{{INSTANCE_URL}}/sys_atf_test_result.do?sys_id=773a89184bf0d1cf1afbf084de72d0e8\"\n      },\n      {\n        \"test_result_sys_id\": \"e0753dc74c53229ccca768345ab56e7b\",\n        \"link\": \"{{INSTANCE_URL}}/sys_atf_test_result.do?sys_id=e0753dc74c53229ccca768345ab56e7b\"\n      },\n      {\n        \"test_result_sys_id\": \"30d87642ae202ce7ad4614b3a9b4cc3c\",\n        \"link\": \"{{INSTANCE_URL}}/sys_atf_test_result.do?sys_id=30d87642ae202ce7ad4614b3a9b4cc3c\"\n      }\n    ],\n    \"links\": {\n      \"api\": \"{{INSTANCE_URL}}/api/sn_cicd/testsuite/results/a29c8bbbadb15a6986e6054dd968c4f1\",\n      \"record\": \"{{INSTANCE_URL}}/sys_atf_test_suite_result.do?sys_id=a29c8bbbadb15a6986e6054dd968c4f1\"\n    }\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Run-ATF-Suite"
+}

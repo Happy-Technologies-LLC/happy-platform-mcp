@@ -1,0 +1,34 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "legacyFileUntouched": true,
+    "registryJson": null
+  },
+  "answers": {
+    "confirm": false
+  },
+  "argv": [
+    "instance",
+    "migrate"
+  ],
+  "exit": {
+    "code": 0
+  },
+  "id": "cli/interactive/migrate-declined",
+  "mode": "in-process dispatch(argv, {prompts injected}); real registry file + real credential store over fake keyring",
+  "outbound": [],
+  "promptCalls": [
+    {
+      "answered": false,
+      "hasDefault": true,
+      "hasMask": false,
+      "kind": "confirm",
+      "message": "Migrate legacy credentials into the OS keychain?",
+      "name": "confirm"
+    }
+  ],
+  "runnerError": null,
+  "stderr": "",
+  "stdout": "Cancelled.\n"
+}

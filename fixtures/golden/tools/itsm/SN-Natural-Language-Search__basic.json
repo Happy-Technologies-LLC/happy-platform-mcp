@@ -1,0 +1,76 @@
+{
+  "description": "SN-Natural-Language-Search basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm",
+  "harnessError": null,
+  "id": "SN-Natural-Language-Search/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔍 Natural language search (38 chars) on incident"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/incident",
+          "query": [
+            [
+              "sysparm_query",
+              "assigned_to=javascript:gs.getUserID()^priority=2"
+            ],
+            [
+              "sysparm_limit",
+              "5"
+            ]
+          ],
+          "rawQuery": "sysparm_query=assigned_to%3Djavascript%3Ags.getUserID%28%29%5Epriority%3D2&sysparm_limit=5",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 5,
+            "query": "high priority incidents assigned to me"
+          },
+          "name": "SN-Natural-Language-Search"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Natural Language Search Results\n\n**Original Query:** \"high priority incidents assigned to me\"\n**Target Table:** incident\n**Parsed Encoded Query:** `assigned_to=javascript:gs.getUserID()^priority=2`\n**Records Found:** 3/5\n\n## Matched Patterns:\n1. **\"assigned to me\"** → `assigned_to=javascript:gs.getUserID()`\n2. **\"high priority\"** → `priority=2`\n\n⚠️ **Unrecognized:** \"incidents\"\n\n## Results:\n```json\n[\n  {\n    \"sys_id\": \"2fc8aa1ec6d67779a3ab923ac2cc7238\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"incident\",\n    \"number\": \"INC0000001\",\n    \"short_description\": \"Golden incident 1\",\n    \"state\": \"1\",\n    \"priority\": \"3\",\n    \"urgency\": \"2\",\n    \"impact\": \"2\",\n    \"category\": \"software\",\n    \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"assigned_to\": \"\",\n    \"assignment_group\": \"\"\n  },\n  {\n    \"sys_id\": \"f2bd9ee077a023364ec9be5301e9482c\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"incident\",\n    \"number\": \"INC0000002\",\n    \"short_description\": \"Golden incident 2\",\n    \"state\": \"1\",\n    \"priority\": \"3\",\n    \"urgency\": \"2\",\n    \"impact\": \"2\",\n    \"category\": \"software\",\n    \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"assigned_to\": \"\",\n    \"assignment_group\": \"\"\n  },\n  {\n    \"sys_id\": \"b136d7883af6d5a2bcfda82f7993007e\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"incident\",\n    \"number\": \"INC0000003\",\n    \"short_description\": \"Golden incident 3\",\n    \"state\": \"1\",\n    \"priority\": \"3\",\n    \"urgency\": \"2\",\n    \"impact\": \"2\",\n    \"category\": \"software\",\n    \"caller_id\": \"8d1cba9bbb9a19d3a8ab22c62b5c2df1\",\n    \"assigned_to\": \"\",\n    \"assignment_group\": \"\"\n  }\n]\n```",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Natural-Language-Search"
+}

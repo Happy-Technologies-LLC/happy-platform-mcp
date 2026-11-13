@@ -1,0 +1,24 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": {
+      "instances": [],
+      "version": 1
+    }
+  },
+  "argv": [
+    "instance",
+    "list"
+  ],
+  "bin": "happy-platform-mcp",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "id": "cli/list-empty-registry",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "",
+  "stdout": "No registered instances.\n"
+}

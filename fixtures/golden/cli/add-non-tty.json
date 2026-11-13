@@ -1,0 +1,21 @@
+{
+  "after": {
+    "keyringAccounts": [],
+    "keyringValueMatchesFakeSecret": {},
+    "registryJson": null
+  },
+  "argv": [
+    "instance",
+    "add"
+  ],
+  "bin": "happy-platform-mcp",
+  "exit": {
+    "code": 2,
+    "signal": null
+  },
+  "id": "cli/add-non-tty",
+  "mode": "subprocess-bin-symlink, stdin=/dev/null (non-TTY)",
+  "outbound": [],
+  "stderr": "Non-interactive use requires an interactive TTY for masked prompts; rerun in a terminal or inject the required prompt function.\n",
+  "stdout": ""
+}

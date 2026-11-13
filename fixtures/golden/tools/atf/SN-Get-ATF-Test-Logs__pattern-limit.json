@@ -1,0 +1,77 @@
+{
+  "description": "SN-Get-ATF-Test-Logs pattern-limit",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "atf",
+  "harnessError": null,
+  "id": "SN-Get-ATF-Test-Logs/pattern-limit",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/sn_cicd/tests/test/results/a29c8bbbadb15a6986e6054dd968c4f1/logs",
+          "query": [
+            [
+              "sysparm_regex",
+              "error|warn"
+            ],
+            [
+              "sysparm_limit",
+              "20"
+            ]
+          ],
+          "rawQuery": "sysparm_regex=error%7Cwarn&sysparm_limit=20",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 20,
+            "pattern": "error|warn",
+            "result_id": "a29c8bbbadb15a6986e6054dd968c4f1"
+          },
+          "name": "SN-Get-ATF-Test-Logs"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"result_id\": \"a29c8bbbadb15a6986e6054dd968c4f1\",\n  \"pattern\": \"error|warn\",\n  \"limit\": 20,\n  \"logs\": {\n    \"logs\": [\n      \"INFO step 1 ok\",\n      \"ERROR step 2 golden\"\n    ]\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "tool": "SN-Get-ATF-Test-Logs"
+}

@@ -1,0 +1,1513 @@
+{
+  "label": "js",
+  "passed": false,
+  "cases": [
+    {
+      "id": "M1",
+      "rule": "C1",
+      "description": "server/discover (modern _meta)",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "server/discover"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "server/discover",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "M2",
+      "rule": "C1/C4/C5",
+      "description": "tools/list modern: 60 tools, resultType, ttlMs, cacheScope",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/list"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 2,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "M3",
+      "rule": "C1",
+      "description": "tools/call SN-Query-Table modern (PDI)",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/call",
+          "Mcp-Name": "SN-Query-Table"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 3,
+          "method": "tools/call",
+          "params": {
+            "name": "SN-Query-Table",
+            "arguments": {
+              "table_name": "sys_user",
+              "limit": 1,
+              "fields": "sys_id,user_name"
+            },
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "M4",
+      "rule": "C6",
+      "description": "tools/call unknown tool modern",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/call",
+          "Mcp-Name": "SN-Nope"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 4,
+          "method": "tools/call",
+          "params": {
+            "name": "SN-Nope",
+            "arguments": {},
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-1",
+      "rule": "C3",
+      "description": "missing MCP-Protocol-Version header",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "Mcp-Method": "tools/list"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 10,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-2",
+      "rule": "C3",
+      "description": "MCP-Protocol-Version header ≠ _meta version",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2025-11-25",
+          "Mcp-Method": "tools/list"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 11,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-3",
+      "rule": "C3",
+      "description": "missing Mcp-Method",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 12,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-4",
+      "rule": "C3",
+      "description": "Mcp-Method ≠ body method",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "prompts/list"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 13,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-5",
+      "rule": "C3",
+      "description": "Mcp-Method value differs only in case (values are case-sensitive)",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "Tools/List"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 14,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-6",
+      "rule": "C3",
+      "description": "header names in lower case (names case-insensitive)",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "authorization": "Bearer 319d13d83a95468bfe56f2cac063119b65e1817190279b3b18dad5579ec58caa",
+          "content-type": "application/json",
+          "accept": "application/json, text/event-stream",
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "tools/list"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 15,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-7",
+      "rule": "C3",
+      "description": "tools/call missing Mcp-Name",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/call"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 16,
+          "method": "tools/call",
+          "params": {
+            "name": "SN-Query-Table",
+            "arguments": {
+              "table_name": "sys_user",
+              "limit": 1,
+              "fields": "sys_id,user_name"
+            },
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-8",
+      "rule": "C3",
+      "description": "Mcp-Name ≠ params.name",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/call",
+          "Mcp-Name": "SN-Get-Record"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 17,
+          "method": "tools/call",
+          "params": {
+            "name": "SN-Query-Table",
+            "arguments": {
+              "table_name": "sys_user",
+              "limit": 1,
+              "fields": "sys_id,user_name"
+            },
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-9",
+      "rule": "C3",
+      "description": "Mcp-Name Base64 sentinel, decoded value matches",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/call",
+          "Mcp-Name": "=?base64?U04tUXVlcnktVGFibGU=?="
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 18,
+          "method": "tools/call",
+          "params": {
+            "name": "SN-Query-Table",
+            "arguments": {
+              "table_name": "sys_user",
+              "limit": 1,
+              "fields": "sys_id,user_name"
+            },
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-10",
+      "rule": "C3",
+      "description": "Mcp-Name Base64 sentinel, decoded value differs",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/call",
+          "Mcp-Name": "=?base64?U04tR2V0LVJlY29yZA==?="
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 19,
+          "method": "tools/call",
+          "params": {
+            "name": "SN-Query-Table",
+            "arguments": {
+              "table_name": "sys_user",
+              "limit": 1,
+              "fields": "sys_id,user_name"
+            },
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-11",
+      "rule": "C3",
+      "description": "unsupported version (header + _meta 2099-01-01)",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2099-01-01",
+          "Mcp-Method": "tools/list"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 20,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2099-01-01",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-12",
+      "rule": "C3",
+      "description": "unknown method (modern)",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "foo/bar"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 21,
+          "method": "foo/bar",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "C3-13",
+      "rule": "C1",
+      "description": "_meta without clientCapabilities",
+      "ok": true,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/list"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 22,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R1-a",
+      "rule": "1",
+      "description": "no bearer token",
+      "ok": true,
+      "observed": {
+        "status": 401,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 30,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Unauthorized\"}"
+      }
+    },
+    {
+      "id": "R1-b",
+      "rule": "1",
+      "description": "foreign Host header (DNS rebinding)",
+      "ok": true,
+      "observed": {
+        "status": 403
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Host": "evil.example",
+          "Authorization": "Bearer <redacted>"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 31,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 403
+      }
+    },
+    {
+      "id": "R1-c",
+      "rule": "1",
+      "description": "foreign Origin (allowlist empty ⇒ any Origin rejected; F7)",
+      "ok": true,
+      "observed": {
+        "status": 403,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/list",
+          "Origin": "https://evil.example"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 32,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Origin not allowed\"}"
+      }
+    },
+    {
+      "id": "R1-d",
+      "rule": "1",
+      "description": "body > 8 MiB",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/list"
+        },
+        "body": "{\"jsonrpc\":\"2.0\",\"id\":33,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"…(8388873 chars)"
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R2",
+      "rule": "2",
+      "description": "both ?sessionId and Mcp-Session-Id",
+      "ok": true,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp?sessionId=<sid>",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "Mcp-Session-Id": "abc"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 34,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R3",
+      "rule": "3",
+      "description": "modern _meta + stale Mcp-Session-Id → stateless, no session minted",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": "tools/list",
+          "Mcp-Session-Id": "stale-session"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 35,
+          "method": "tools/list",
+          "params": {
+            "_meta": {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientInfo": {
+                "name": "s1-modern-harness",
+                "version": "0.0.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities": {}
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R4-a",
+      "rule": "4",
+      "description": "POST initialize 2025-11-25 → legacy session",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2025-11-25"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 40,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {
+              "name": "s1",
+              "version": "0"
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R4-b",
+      "rule": "4",
+      "description": "POST initialize 2025-06-18 → legacy session",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2025-06-18"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 41,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {
+              "name": "s1",
+              "version": "0"
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R4-c",
+      "rule": "4",
+      "description": "POST initialize 2025-03-26 → legacy session",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 42,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {
+              "name": "s1",
+              "version": "0"
+            }
+          }
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R5-a",
+      "rule": "5",
+      "description": "POST tools/list with valid Mcp-Session-Id",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "Mcp-Session-Id": null
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 50,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R5-b",
+      "rule": "5 / C11",
+      "description": "JSON-RPC batch on a 2025-03-26 session",
+      "ok": true,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "Mcp-Session-Id": null
+        },
+        "body": [
+          {
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "ping",
+            "params": {}
+          },
+          {
+            "jsonrpc": "2.0",
+            "id": 52,
+            "method": "ping",
+            "params": {}
+          }
+        ]
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R5-c",
+      "rule": "5",
+      "description": "GET with Mcp-Session-Id → standalone SSE stream",
+      "ok": true,
+      "observed": {
+        "status": 200,
+        "contentType": "text/event-stream",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "GET",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Accept": "text/event-stream",
+          "Mcp-Session-Id": null
+        }
+      },
+      "response": {
+        "sseEvents": [
+          {
+            "event": "endpoint",
+            "data": "/mcp?sessionId=<sid>"
+          }
+        ]
+      }
+    },
+    {
+      "id": "R5-d",
+      "rule": "5",
+      "description": "unknown Mcp-Session-Id → 404",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "Mcp-Session-Id": "does-not-exist"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 53,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R5-e",
+      "rule": "5",
+      "description": "DELETE with Mcp-Session-Id",
+      "ok": false,
+      "observed": {
+        "status": 404,
+        "contentType": "text/html; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "DELETE",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Mcp-Session-Id": null
+        }
+      },
+      "response": {
+        "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot DELETE /mcp</pre>\n</body>\n</html>\n"
+      }
+    },
+    {
+      "id": "R5-f",
+      "rule": "5",
+      "description": "POST on the deleted session → 404",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "Mcp-Session-Id": null
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 54,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R6",
+      "rule": "6",
+      "description": "GET Accept: text/event-stream, no session → endpoint event",
+      "ok": true,
+      "observed": {
+        "status": 200,
+        "contentType": "text/event-stream"
+      },
+      "request": {
+        "method": "GET",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Accept": "text/event-stream"
+        }
+      },
+      "response": {
+        "firstEvent": "event: endpoint\ndata: /mcp?sessionId=<sid>"
+      }
+    },
+    {
+      "id": "R7-a",
+      "rule": "7",
+      "description": "POST /mcp?sessionId=… → 202, response on the SSE stream",
+      "ok": true,
+      "observed": {
+        "initPost": {
+          "status": 202,
+          "text": "Accepted"
+        },
+        "listPost": {
+          "status": 202,
+          "text": "Accepted"
+        }
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp?sessionId=<sid>",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 60,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+              "name": "s1",
+              "version": "0"
+            }
+          }
+        }
+      },
+      "response": {
+        "http": "202 Accepted",
+        "sseEvent": "event: message\ndata: {\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}},\"serverInfo\":{\"name\":\"happy-platform-mcp\",\"version\":\"6.2.0\"}},\"jsonrpc\":\"2.0\",\"id\":60}"
+      }
+    },
+    {
+      "id": "R7-b",
+      "rule": "7",
+      "description": "POST ?sessionId=unknown → 404",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp?sessionId=<sid>",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 62,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R8-a",
+      "rule": "8",
+      "description": "malformed JSON → 400 / -32700",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream"
+        },
+        "body": "{\"jsonrpc\":"
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R8-b",
+      "rule": "8",
+      "description": "unsupported MCP-Protocol-Version (legacy shape) → 400 / -32022",
+      "ok": false,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2099-01-01"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 70,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R8-c",
+      "rule": "8",
+      "description": "PUT → 405",
+      "ok": false,
+      "observed": {
+        "status": 404,
+        "contentType": "text/html; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "PUT",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 71,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot PUT /mcp</pre>\n</body>\n</html>\n"
+      }
+    },
+    {
+      "id": "R8-d",
+      "rule": "8",
+      "description": "sessionless legacy non-initialize POST",
+      "ok": true,
+      "observed": {
+        "status": 400,
+        "contentType": "application/json; charset=utf-8",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "POST",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream"
+        },
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 72,
+          "method": "tools/list",
+          "params": {}
+        }
+      },
+      "response": {
+        "body": "{\"error\":\"Invalid or missing session ID\"}"
+      }
+    },
+    {
+      "id": "R8-e",
+      "rule": "8",
+      "description": "GET without Accept: text/event-stream",
+      "ok": false,
+      "observed": {
+        "status": 200,
+        "contentType": "text/event-stream",
+        "sessionId": null,
+        "allow": null,
+        "errorCode": null
+      },
+      "request": {
+        "method": "GET",
+        "url": "/mcp",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Accept": "application/json"
+        }
+      },
+      "response": {
+        "sseEvents": [
+          {
+            "event": "endpoint",
+            "data": "/mcp?sessionId=<sid>"
+          }
+        ]
+      }
+    }
+  ]
+}

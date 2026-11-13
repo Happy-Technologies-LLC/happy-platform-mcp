@@ -1,0 +1,103 @@
+{
+  "description": "SN-Batch-Create failure-rollback",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "batch",
+  "harnessError": null,
+  "id": "SN-Batch-Create/failure-rollback",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📦 Batch creating 2 records (transaction: true, progress: true)"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "short_description": "golden ok"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/incident",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "short_description": "golden fails"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/problem",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "operations": [
+              {
+                "data": {
+                  "short_description": "golden ok"
+                },
+                "table": "incident"
+              },
+              {
+                "data": {
+                  "short_description": "golden fails"
+                },
+                "table": "problem"
+              }
+            ],
+            "transaction": true
+          },
+          "name": "SN-Batch-Create"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: Batch create failed at operation 1: 403 Insert Operation Failed: ACL golden",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Batch-Create"
+}

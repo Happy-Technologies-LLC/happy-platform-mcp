@@ -1,0 +1,79 @@
+{
+  "description": "SN-Catalog-Submit basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "catalog",
+  "harnessError": null,
+  "id": "SN-Catalog-Submit/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "📋 Submitting catalog form: f5ef0c68502d26a2608db13130663ab0"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "requested_for": "61a23f060657495adfa79df3e86c369e",
+            "sysparm_quantity": 2,
+            "variables": {
+              "justification": "golden",
+              "model": "golden-laptop"
+            }
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/sn_sc/servicecatalog/items/f5ef0c68502d26a2608db13130663ab0/order_now",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "quantity": 2,
+            "requested_for": "61a23f060657495adfa79df3e86c369e",
+            "sys_id": "f5ef0c68502d26a2608db13130663ab0",
+            "variables": {
+              "justification": "golden",
+              "model": "golden-laptop"
+            }
+          },
+          "name": "SN-Catalog-Submit"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Catalog form submitted successfully!\n\nRequest: REQ0010001\n\nFull result:\n{\n  \"sys_id\": \"1f23cd5a7e3ab3eabd2f724dd82f94d5\",\n  \"number\": \"REQ0010001\",\n  \"request_number\": \"REQ0010001\",\n  \"request_id\": \"1f23cd5a7e3ab3eabd2f724dd82f94d5\",\n  \"table\": \"sc_request\"\n}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Catalog-Submit"
+}

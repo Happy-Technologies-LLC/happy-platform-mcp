@@ -1,0 +1,59 @@
+{
+  "source": "src/servicenow-client.js:542-555",
+  "vectors": [
+    {
+      "name": "default-endpoints",
+      "input": {
+        "url": "https://dev451274.service-now.com",
+        "clientId": "abc123",
+        "osUser": "alice"
+      },
+      "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"alice\",\"https://dev451274.service-now.com\",\"abc123\",\"https://dev451274.service-now.com/oauth_auth.do\",\"https://dev451274.service-now.com/oauth_token.do\"]",
+      "account": "identity-v1-cc6aa25f6e44cf27f69e38a2072d6b054776bb8619e21a7d994ad980864b1097"
+    },
+    {
+      "name": "normalisation-and-external-idp",
+      "input": {
+        "url": "HTTPS://Example.Service-Now.com:443/sub/path//",
+        "clientId": "client-ß",
+        "authorizeUrl": "https://login.example.com/oauth2/v2.0/authorize?x=1&y=%7E",
+        "tokenUrl": "https://login.example.com:443/oauth2/v2.0/token",
+        "osUser": "bob"
+      },
+      "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"bob\",\"https://example.service-now.com/sub/path\",\"client-ß\",\"https://login.example.com/oauth2/v2.0/authorize?x=1&y=%7E\",\"https://login.example.com/oauth2/v2.0/token\"]",
+      "account": "identity-v1-300b29c3362e9fed6409711030d391f7c6e381f6afb0f81f9a693dd194660409"
+    },
+    {
+      "name": "unicode-and-json-escapes",
+      "input": {
+        "url": "https://dev451274.service-now.com:8443/",
+        "clientId": "id\"with\\quote\ttab\u0001",
+        "authorizeUrl": "",
+        "tokenUrl": "https://idp.example.com/tëst path/token",
+        "osUser": "Ünï cødé☃ "
+      },
+      "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"Ünï cødé☃ \",\"https://dev451274.service-now.com:8443\",\"id\\\"with\\\\quote\\ttab\\u0001\",\"https://dev451274.service-now.com:8443/oauth_auth.do\",\"https://idp.example.com/t%C3%ABst%20path/token\"]",
+      "account": "identity-v1-5e90429d2fbd5fe50455c3b8e5853fcfb6dc7d11ab86f6444bead4df2bceb18c"
+    },
+    {
+      "name": "idn-host",
+      "input": {
+        "url": "https://dév.example.com/",
+        "clientId": "c",
+        "osUser": "carol"
+      },
+      "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"carol\",\"https://xn--dv-bja.example.com\",\"c\",\"https://xn--dv-bja.example.com/oauth_auth.do\",\"https://xn--dv-bja.example.com/oauth_token.do\"]",
+      "account": "identity-v1-158ae3b27e1ffc7816d7114ba522242b7d21f83e22f0b04b58d691ec2bb57d44"
+    },
+    {
+      "name": "windows-domain-user",
+      "input": {
+        "url": "https://tenant.example.com/path/",
+        "clientId": "cid",
+        "osUser": "CORP\\dave"
+      },
+      "tupleJson": "[\"happy-platform-mcp/oauth-refresh-token\",1,\"CORP\\\\dave\",\"https://tenant.example.com/path\",\"cid\",\"https://tenant.example.com/path/oauth_auth.do\",\"https://tenant.example.com/path/oauth_token.do\"]",
+      "account": "identity-v1-bacea13fcb9d8424c5706254a50c544e2fe96929c32e606865c7e8aa0bbf30e1"
+    }
+  ]
+}

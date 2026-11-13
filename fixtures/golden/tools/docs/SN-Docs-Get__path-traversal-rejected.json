@@ -1,0 +1,48 @@
+{
+  "description": "SN-Docs-Get path-traversal-rejected",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "docs",
+  "harnessError": null,
+  "id": "SN-Docs-Get/path-traversal-rejected",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "family": "australia",
+            "path": "../../etc/passwd"
+          },
+          "name": "SN-Docs-Get"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Error: Unsafe docs path: only relative paths of letters, digits and ._~+=,@()- segments are allowed",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "tool": "SN-Docs-Get"
+}

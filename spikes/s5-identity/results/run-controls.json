@@ -1,0 +1,549 @@
+{
+ "scale": 10,
+ "window_s": 150.0,
+ "profiles": {
+  "P3-backchannel": {
+   "name": "P3-backchannel",
+   "desc": "P1 + upstream OIDC back-channel logout to hpm",
+   "at": 30,
+   "idle": 180,
+   "max": 2880,
+   "sync": "FORCE",
+   "bcl": true,
+   "recon": null,
+   "recon_interval": 30,
+   "min_validity": null,
+   "offline": false,
+   "events": [
+    "E1-disable",
+    "E2-role-removed",
+    "E3-sessions-revoked",
+    "E4-delete"
+   ],
+   "repeat": 1
+  },
+  "P7-recommended": {
+   "name": "P7-recommended",
+   "desc": "P1 + SSO max 4 h + graph reconciler every 5 min; no back-channel logout (Entra has none)",
+   "at": 30,
+   "idle": 180,
+   "max": 1440,
+   "sync": "FORCE",
+   "bcl": false,
+   "recon": "graph",
+   "recon_interval": 30,
+   "min_validity": null,
+   "offline": false,
+   "events": [
+    "E1-disable",
+    "E2-role-removed",
+    "E3-sessions-revoked",
+    "E4-delete"
+   ],
+   "repeat": 2
+  }
+ },
+ "results": [
+  {
+   "scenario": "P3-backchannel/E1-disable#0",
+   "profile": "P3-backchannel",
+   "event": "E1-disable",
+   "offline": false,
+   "a": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "b": {
+    "t": 30.9,
+    "why": "inactive at exp (expiry only)"
+   },
+   "c1": {
+    "t": 0.1,
+    "why": "login_rejected@localhost:8081:Account is disabled, contact your administrator."
+   },
+   "c2": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "c3": {
+    "t": 2.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P3-backchannel/E2-role-removed/a+b#0",
+   "profile": "P3-backchannel",
+   "event": "E2-role-removed",
+   "offline": false,
+   "a": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "b": {
+    "t": 32.7,
+    "why": "inactive at exp (expiry only)"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P3-backchannel/E2-role-removed/c1#0",
+   "profile": "P3-backchannel",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c1": {
+    "t": 0.1,
+    "why": "role absent from new token"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P3-backchannel/E2-role-removed/c2#0",
+   "profile": "P3-backchannel",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c2": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P3-backchannel/E2-role-removed/c3#0",
+   "profile": "P3-backchannel",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c3": {
+    "t": 3.1,
+    "why": "role absent from new token"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P3-backchannel/E3-sessions-revoked#0",
+   "profile": "P3-backchannel",
+   "event": "E3-sessions-revoked",
+   "offline": false,
+   "a": {
+    "t": 0.0,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 0.0,
+    "why": "inactive before exp (revoked)"
+   },
+   "c1": {
+    "t": null,
+    "why": "n/a"
+   },
+   "c2": {
+    "t": 1.5,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "c3": {
+    "t": 3.1,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P3-backchannel/E4-delete#0",
+   "profile": "P3-backchannel",
+   "event": "E4-delete",
+   "offline": false,
+   "a": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "b": {
+    "t": 30.9,
+    "why": "inactive at exp (expiry only)"
+   },
+   "c1": {
+    "t": 0.1,
+    "why": "login_rejected@localhost:8081:Invalid username or password."
+   },
+   "c2": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "c3": {
+    "t": 2.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P3-backchannel/E0-control/a+b+c1+c2+c3#0",
+   "profile": "P3-backchannel",
+   "event": "E0-control",
+   "offline": false,
+   "a": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "b": {
+    "t": 31.8,
+    "why": "inactive at exp (expiry only)"
+   },
+   "c1": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "c2": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "c3": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P7-recommended/E1-disable#0",
+   "profile": "P7-recommended",
+   "event": "E1-disable",
+   "offline": false,
+   "a": {
+    "t": 4.2,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.2,
+    "why": "inactive before exp (revoked)"
+   },
+   "c1": {
+    "t": 0.1,
+    "why": "login_rejected@localhost:8081:Account is disabled, contact your administrator."
+   },
+   "c2": {
+    "t": 5.8,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "c3": {
+    "t": 2.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-disabled",
+    "t": 2.9,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E1-disable#1",
+   "profile": "P7-recommended",
+   "event": "E1-disable",
+   "offline": false,
+   "a": {
+    "t": 4.2,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.2,
+    "why": "inactive before exp (revoked)"
+   },
+   "c1": {
+    "t": 0.1,
+    "why": "login_rejected@localhost:8081:Account is disabled, contact your administrator."
+   },
+   "c2": {
+    "t": 5.8,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "c3": {
+    "t": 2.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-disabled",
+    "t": 2.9,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/a+b#0",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "a": {
+    "t": 4.1,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.1,
+    "why": "inactive before exp (revoked)"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-role-removed",
+    "t": 2.8,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/a+b#1",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "a": {
+    "t": 4.1,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.1,
+    "why": "inactive before exp (revoked)"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-role-removed",
+    "t": 2.8,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/c1#0",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c1": {
+    "t": 0.1,
+    "why": "role absent from new token"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/c1#1",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c1": {
+    "t": 0.1,
+    "why": "role absent from new token"
+   },
+   "at_f_exp_after_event_s": 29.8
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/c2#0",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c2": {
+    "t": 5.6,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.7,
+   "reconciler": {
+    "verdict": "upstream-role-removed",
+    "t": 2.9,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/c2#1",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c2": {
+    "t": 5.6,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-role-removed",
+    "t": 2.9,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/c3#0",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c3": {
+    "t": 3.1,
+    "why": "role absent from new token"
+   },
+   "at_f_exp_after_event_s": 29.7,
+   "reconciler": {
+    "verdict": "upstream-role-removed",
+    "t": 2.7,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E2-role-removed/c3#1",
+   "profile": "P7-recommended",
+   "event": "E2-role-removed",
+   "offline": false,
+   "c3": {
+    "t": 3.1,
+    "why": "role absent from new token"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-role-removed",
+    "t": 2.9,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E3-sessions-revoked#0",
+   "profile": "P7-recommended",
+   "event": "E3-sessions-revoked",
+   "offline": false,
+   "a": {
+    "t": 4.1,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.1,
+    "why": "inactive before exp (revoked)"
+   },
+   "c1": {
+    "t": null,
+    "why": "n/a"
+   },
+   "c2": {
+    "t": 5.6,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "c3": {
+    "t": 3.1,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-sessions-revoked",
+    "t": 2.7,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E3-sessions-revoked#1",
+   "profile": "P7-recommended",
+   "event": "E3-sessions-revoked",
+   "offline": false,
+   "a": {
+    "t": 4.1,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.1,
+    "why": "inactive before exp (revoked)"
+   },
+   "c1": {
+    "t": null,
+    "why": "n/a"
+   },
+   "c2": {
+    "t": 5.6,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "c3": {
+    "t": 3.1,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.7,
+   "reconciler": {
+    "verdict": "upstream-sessions-revoked",
+    "t": 2.7,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E4-delete#0",
+   "profile": "P7-recommended",
+   "event": "E4-delete",
+   "offline": false,
+   "a": {
+    "t": 4.2,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.2,
+    "why": "inactive before exp (revoked)"
+   },
+   "c1": {
+    "t": 0.1,
+    "why": "login_rejected@localhost:8081:Invalid username or password."
+   },
+   "c2": {
+    "t": 5.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "c3": {
+    "t": 2.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.7,
+   "reconciler": {
+    "verdict": "upstream-deleted",
+    "t": 2.9,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E4-delete#1",
+   "profile": "P7-recommended",
+   "event": "E4-delete",
+   "offline": false,
+   "a": {
+    "t": 4.2,
+    "why": "refresh 400 Session not active"
+   },
+   "b": {
+    "t": 4.2,
+    "why": "inactive before exp (revoked)"
+   },
+   "c1": {
+    "t": 0.1,
+    "why": "login_rejected@localhost:8081:Invalid username or password."
+   },
+   "c2": {
+    "t": 5.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "c3": {
+    "t": 2.7,
+    "why": "login_rejected@localhost:8081:Sign in to fake-entra"
+   },
+   "at_f_exp_after_event_s": 29.8,
+   "reconciler": {
+    "verdict": "upstream-deleted",
+    "t": 2.8,
+    "last_scan_s": 0.29
+   }
+  },
+  {
+   "scenario": "P7-recommended/E0-control/a+b+c1+c2+c3#0",
+   "profile": "P7-recommended",
+   "event": "E0-control",
+   "offline": false,
+   "a": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "b": {
+    "t": 31.6,
+    "why": "inactive at exp (expiry only)"
+   },
+   "c1": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "c2": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "c3": {
+    "t": null,
+    "why": "not cut within 150 s"
+   },
+   "at_f_exp_after_event_s": 29.8
+  }
+ ]
+}

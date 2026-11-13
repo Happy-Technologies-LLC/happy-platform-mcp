@@ -1,0 +1,102 @@
+{
+  "description": "SN-Create-Transition basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "workflow",
+  "harnessError": null,
+  "id": "SN-Create-Transition/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp",
+    "🔗 Creating transition"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": {
+            "activity": "ad012f943ba645b7795909bc3b4350c7",
+            "condition": "answer = true;",
+            "condition_type": "standard",
+            "else_flag": false,
+            "event": false,
+            "event_name": "",
+            "name": "Transition Condition",
+            "order": 1,
+            "short_description": ""
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_condition",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        },
+        {
+          "body": {
+            "condition": "97fa59f49cd090ca9b38bf2f60469ca8",
+            "from": "ad012f943ba645b7795909bc3b4350c7",
+            "order": 1,
+            "to": "781974608cda888af1c71c12c4b07452"
+          },
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "POST",
+          "path": "/api/now/table/wf_transition",
+          "query": [],
+          "rawQuery": "",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "condition_script": "answer = true;",
+            "from_activity_sys_id": "ad012f943ba645b7795909bc3b4350c7",
+            "order": 1,
+            "to_activity_sys_id": "781974608cda888af1c71c12c4b07452"
+          },
+          "name": "SN-Create-Transition"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "✅ Transition created successfully!\n\nTransition sys_id: de20204b2013ea91f68dcf13cff15788\nFrom activity: ad012f943ba645b7795909bc3b4350c7\nTo activity: 781974608cda888af1c71c12c4b07452\nCondition sys_id: 97fa59f49cd090ca9b38bf2f60469ca8\n\nThe workflow will now transition from the source activity to the target activity when the condition is met.",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-Create-Transition"
+}

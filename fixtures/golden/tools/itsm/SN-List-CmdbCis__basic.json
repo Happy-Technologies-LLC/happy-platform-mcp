@@ -1,0 +1,75 @@
+{
+  "description": "SN-List-CmdbCis basic",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "family": "itsm",
+  "harnessError": null,
+  "id": "SN-List-CmdbCis/basic",
+  "mode": "env-credentials",
+  "stderr": [
+    "🔗 Default ServiceNow instance: default ({{INSTANCE_URL}})",
+    "💡 Use SN-Set-Instance tool to switch instances during session",
+    "✅ Loaded metadata for 94 ServiceNow tables",
+    "Happy MCP Server (stdio) started successfully",
+    "Instance: default - {{INSTANCE_URL}}",
+    "Release notes and security advisories: https://happy-tech.biz/mcp"
+  ],
+  "steps": [
+    {
+      "files": {},
+      "notifications": [],
+      "outbound": [
+        {
+          "body": null,
+          "credentials": {
+            "scheme": "basic",
+            "sessionCookie": false,
+            "userToken": false
+          },
+          "headers": {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "axios/1.20.0"
+          },
+          "method": "GET",
+          "path": "/api/now/table/cmdb_ci",
+          "query": [
+            [
+              "sysparm_query",
+              "operational_status=1"
+            ],
+            [
+              "sysparm_limit",
+              "3"
+            ]
+          ],
+          "rawQuery": "sysparm_query=operational_status%3D1&sysparm_limit=3",
+          "target": "servicenow"
+        }
+      ],
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit": 3,
+            "query": "operational_status=1"
+          },
+          "name": "SN-List-CmdbCis"
+        }
+      },
+      "response": {
+        "result": {
+          "content": [
+            {
+              "text": "Found 3 Cmdb Ci(s):\n[\n  {\n    \"sys_id\": \"d86f235c32c5ed33042172d47705ce1e\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"cmdb_ci_server\",\n    \"name\": \"golden-ci-1\",\n    \"operational_status\": \"1\"\n  },\n  {\n    \"sys_id\": \"edc5829947a4d6db6b92883e66958da6\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"cmdb_ci_server\",\n    \"name\": \"golden-ci-2\",\n    \"operational_status\": \"1\"\n  },\n  {\n    \"sys_id\": \"96a49b28497df128dd0a13fc6b84f82c\",\n    \"sys_created_on\": \"2026-01-15 12:00:00\",\n    \"sys_updated_on\": \"2026-01-15 12:00:00\",\n    \"sys_created_by\": \"golden.user\",\n    \"sys_updated_by\": \"golden.user\",\n    \"sys_class_name\": \"cmdb_ci_server\",\n    \"name\": \"golden-ci-3\",\n    \"operational_status\": \"1\"\n  }\n]",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "tool": "SN-List-CmdbCis"
+}
