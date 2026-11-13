@@ -1805,7 +1805,7 @@
   "tools70": {
     "fixture": {
       "path": "fixtures/tools-list-7.0.json",
-      "sha256": "19e7a0f291de82742d8b80540296040fd9e33b1a0b3c334380b6c9ac1b135a6f",
+      "sha256": "6b682473cf3b5317461247bf8d89dc61e0811b42cef69bb02058c571117335ea",
       "origin": "generated from the Rust registry: HPM_WRITE_TOOLS_LIST=1 cargo test -p hpm-tools --test tools_list (Q1 re-capture, plan W3 §6 item 1)"
     },
     "relation": "Registration order (tools.items); names, descriptions and inputSchemas equal to tools.fixture except deviations; plus D-05 annotation_hints (crates/hpm-types/data/tool-classification.json) as `annotations`. Enforced by crates/hpm-tools/tests/tools_list.rs.",

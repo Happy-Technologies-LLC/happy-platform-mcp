@@ -775,7 +775,7 @@
       "inputSchema": {
         "properties": {
           "allow_trigger_fallback": {
-            "description": "Allow the sys_trigger fallback when the /sys.scripts.do processor refuses the script (401/403/not authorized). The fallback runs the script as a scheduled job in the scheduler's session: no rollback context is recorded and tracked configuration writes may be captured into the Default update set. Default: false, unless the server sets HAPPY_MCP_ALLOW_TRIGGER_FALLBACK=1. An explicit false overrides the environment.",
+            "description": "Allow the sys_trigger fallback when the /sys.scripts.do processor provably did not run the script (HTTP 401/403/404, a login page, a 'not authorized' answer, or a connection error before sending). The fallback runs the script as a scheduled job in the scheduler's session: no rollback context is recorded and tracked configuration writes may be captured into the Default update set. Default: false, unless the server sets HAPPY_MCP_ALLOW_TRIGGER_FALLBACK=1. An explicit false overrides the environment.",
             "type": "boolean"
           },
           "description": {

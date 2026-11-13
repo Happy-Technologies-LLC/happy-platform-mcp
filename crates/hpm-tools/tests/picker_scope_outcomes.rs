@@ -138,6 +138,14 @@ async fn verify_naming_another_set_writes_the_fix_script() {
     )
     .await;
     assert!(text.contains("Created fix script"), "{text}");
+    // L-6: names the set the instance reported; not "not available".
+    assert!(
+        text.contains(&format!(
+            "could not be verified: Update set verification failed: the instance reports the current update set is 'Default' ({OTHER}), expected {SET}"
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("not available"), "{text}");
     assert!(has_fix_script(&files), "{files}");
 }
 

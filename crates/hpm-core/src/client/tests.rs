@@ -1204,7 +1204,7 @@ async fn set_update_set_fails_when_write_is_ignored() {
     assert_eq!(
         err.as_ref().map(|e| e.message.clone()),
         Some(format!(
-            "Update set verification failed: current is {SET_DEFAULT}, expected {SET_A}"
+            "Update set verification failed: the instance reports the current update set is 'Default' ({SET_DEFAULT}), expected {SET_A}"
         ))
     );
     // The PUT was sent: never marked as "change not sent" (review TF-10).
@@ -2099,7 +2099,7 @@ async fn picker_change_phase_classification() {
             &json!({"result": {"current": {"sysId": SET_DEFAULT, "name": "Default"}}})
         ))))
         .await,
-        Some(PickerChange::Refused)
+        Some(PickerChange::NotCurrent)
     );
     // No current set reported: unknown.
     assert_eq!(
