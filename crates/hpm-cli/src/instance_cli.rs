@@ -1449,8 +1449,10 @@ async fn credential_set_command(
 
 /// `instance credential bind <name>`: binds secrets saved without an origin
 /// (6.x, or migrated before binding existed) to the origin of the URL now
-/// registered under `name`, after the operator confirms that origin. A
-/// secret already bound elsewhere is refused (re-save it with `set`).
+/// registered under `name`. The operator re-enters each secret (masked, as
+/// `credential set` asks for it) and confirms the origin; a secret that does
+/// not match the saved one binds nothing. A secret already bound elsewhere is
+/// refused (re-save it with `set`).
 async fn credential_bind_command(name: &str, ctx: &mut CliContext<'_>) -> Result<i32, CodedError> {
     let instance = ctx.registry.get(name)?;
     let origin = origin_of_instance(&instance)?;
@@ -1487,6 +1489,19 @@ async fn credential_bind_command(name: &str, ctx: &mut CliContext<'_>) -> Result
         ));
         return Ok(0);
     }
+    // Prove possession first: every re-entered secret must match before the
+    // origin confirm, and nothing is written on a mismatch.
+    let mut entered = Vec::with_capacity(unbound.len());
+    for r in &unbound {
+        let kind = r.rsplit('/').next().unwrap_or("secret");
+        let secret = prompt_secret(
+            ctx,
+            "secret",
+            &format!("Re-enter the saved {kind} for '{name}' to bind it:"),
+        )?;
+        ctx.credentials.verify_secret(r, &secret).await?;
+        entered.push(secret);
+    }
     let confirmed = ctx.ask(
         PromptKind::Confirm,
         spec(
@@ -1501,8 +1516,8 @@ async fn credential_bind_command(name: &str, ctx: &mut CliContext<'_>) -> Result
         ctx.out("Cancelled.");
         return Ok(0);
     }
-    for r in &unbound {
-        ctx.credentials.bind_origin(r, &origin).await?;
+    for (r, secret) in unbound.iter().zip(&entered) {
+        ctx.credentials.bind_origin(r, &origin, secret).await?;
     }
     ctx.out(&format!(
         "Bound credentials for instance '{name}' to {origin}."

@@ -85,9 +85,35 @@ async fn secrets_are_bound_at_write_time_and_only_read_for_their_origin() {
             .message
             .contains("happy-platform-mcp instance credential bind old")
     );
-    s.bind_origin("keychain:instance/old/password", ORIGIN)
+    // M-D: a wrong re-entered secret binds nothing.
+    let wrong = s
+        .bind_origin("keychain:instance/old/password", ORIGIN, "guess")
+        .await
+        .unwrap_err();
+    assert_eq!(wrong.code, "CREDENTIAL_SECRET_MISMATCH");
+    assert!(!wrong.message.contains("legacy"));
+    assert!(
+        mem.value(
+            SERVICE_NAME,
+            &origin_binding_account("keychain:instance/old/password")
+        )
+        .is_none()
+    );
+    // L-8: a stale binding item is deleted before the new one is written.
+    mem.insert(
+        SERVICE_NAME,
+        &origin_binding_account("keychain:instance/old/password"),
+        "stale",
+    );
+    s.bind_origin("keychain:instance/old/password", ORIGIN, "legacy")
         .await
         .unwrap();
+    assert!(
+        mem.calls()
+            .iter()
+            .any(|(op, account)| *op == MemoryOp::Delete
+                && *account == origin_binding_account("keychain:instance/old/password"))
+    );
     assert!(
         s.get_secret_for_origin("keychain:instance/old/password", ORIGIN)
             .await
@@ -121,6 +147,47 @@ async fn secrets_are_bound_at_write_time_and_only_read_for_their_origin() {
             .is_err()
     );
     assert_eq!(s.bound_origin(r).await.unwrap(), None);
+}
+
+/// Review L-9 R2: the binding MAC covers the reference. A MAC computed
+/// without it, or a valid binding copied to another reference holding the
+/// same secret, does not verify.
+#[tokio::test]
+async fn binding_mac_requires_the_reference() {
+    let (mem, s) = store();
+    let a = "keychain:instance/a/password";
+    let b = "keychain:instance/b/password";
+    s.set_secret(a, "same-secret", ORIGIN).await.unwrap();
+    mem.insert(SERVICE_NAME, b, "same-secret");
+
+    // HMAC over label and origin only (no reference).
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"same-secret");
+    let mut msg = b"happy-platform-mcp/origin-binding/v1".to_vec();
+    msg.push(0);
+    msg.push(0);
+    msg.extend_from_slice(ORIGIN.as_bytes());
+    let mac: String = ring::hmac::sign(&key, &msg)
+        .as_ref()
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect();
+    let no_ref = serde_json::json!({"origin": ORIGIN, "mac": mac}).to_string();
+    assert_eq!(verified_binding_origin(b, "same-secret", &no_ref), None);
+    mem.insert(SERVICE_NAME, &origin_binding_account(b), &no_ref);
+    assert_eq!(s.bound_origin(b).await.unwrap(), None);
+
+    // a's valid binding copied onto b.
+    let copied = mem.value(SERVICE_NAME, &origin_binding_account(a)).unwrap();
+    assert_eq!(
+        verified_binding_origin(a, "same-secret", &copied).as_deref(),
+        Some(ORIGIN)
+    );
+    mem.insert(SERVICE_NAME, &origin_binding_account(b), &copied);
+    assert_eq!(s.bound_origin(b).await.unwrap(), None);
+    assert_eq!(
+        s.get_secret_for_origin(b, ORIGIN).await.unwrap_err().code,
+        "CREDENTIAL_ORIGIN_UNBOUND"
+    );
 }
 
 #[tokio::test]

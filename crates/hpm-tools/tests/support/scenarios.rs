@@ -79,7 +79,7 @@ static TRIGGER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"gs\.info\('([^']+):END'").expect("trigger re"));
 
 /// `processorStub(page, processorStatus)`: `/sys.scripts.do` protocol routes.
-fn processor_stub(page: fn() -> Option<String>, processor_status: u16) -> Routes {
+pub fn processor_stub(page: fn() -> Option<String>, processor_status: u16) -> Routes {
     routes(move |req, state| {
         let cookie = format!("glide_session_store={SESSION_ID}; Path=/; HttpOnly");
         let m = req.method.as_str();

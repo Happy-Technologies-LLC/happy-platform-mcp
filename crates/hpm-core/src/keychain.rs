@@ -564,6 +564,32 @@ pub fn credential_origin_unbound(name: &str) -> CodedError {
     )
 }
 
+/// `instance credential bind`: the re-entered secret is not the saved one.
+fn credential_secret_mismatch(name: &str) -> CodedError {
+    CodedError::new(
+        "CREDENTIAL_SECRET_MISMATCH",
+        format!(
+            "The secret you entered does not match the saved credential for instance '{name}'. Nothing was bound."
+        ),
+    )
+}
+
+/// Constant-time equality of two secrets: an HMAC-SHA256 tag keyed by one,
+/// checked with ring's constant-time verify under the other.
+fn secrets_equal(a: &str, b: &str) -> bool {
+    const LABEL: &[u8] = b"happy-platform-mcp/credential-bind/v1";
+    let tag = ring::hmac::sign(
+        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, a.as_bytes()),
+        LABEL,
+    );
+    ring::hmac::verify(
+        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b.as_bytes()),
+        LABEL,
+        tag.as_ref(),
+    )
+    .is_ok()
+}
+
 fn store_error(e: SecretStoreError) -> CodedError {
     match e {
         SecretStoreError::Unavailable(_) => keychain_unavailable(),
@@ -733,15 +759,44 @@ impl InstanceCredentialStore {
     }
 
     /// Binds `reference`'s existing secret to `origin`, a normalised web
-    /// origin (`instance credential bind`).
-    pub async fn bind_origin(&self, reference: &str, origin: &str) -> Result<(), CodedError> {
+    /// origin (`instance credential bind`), only when `entered` (the secret the
+    /// operator typed again) equals the saved one; on a mismatch nothing is
+    /// written. Any existing binding item is deleted before the new one is
+    /// written, so a failed write leaves the secret unbound (fail closed).
+    pub async fn bind_origin(
+        &self,
+        reference: &str,
+        origin: &str,
+        entered: &str,
+    ) -> Result<(), CodedError> {
         let parsed = parse_credential_ref(reference)?;
         if instance_origin(origin).ok().as_deref() != Some(origin) {
             return Err(invalid_instance_origin());
         }
-        let secret = self.get_secret(&parsed.reference).await?;
+        let secret = self.matching_secret(&parsed, entered).await?;
+        self.clear_origin_binding(&parsed.reference).await?;
         self.write_binding(&parsed.reference, secret.expose(), origin)
             .await
+    }
+
+    /// Checks that `entered` equals `reference`'s saved secret (constant
+    /// time); writes nothing.
+    pub async fn verify_secret(&self, reference: &str, entered: &str) -> Result<(), CodedError> {
+        let parsed = parse_credential_ref(reference)?;
+        self.matching_secret(&parsed, entered).await.map(drop)
+    }
+
+    async fn matching_secret(
+        &self,
+        parsed: &ParsedCredentialRef,
+        entered: &str,
+    ) -> Result<Secret, CodedError> {
+        let secret = self.get_secret(&parsed.reference).await?;
+        if secrets_equal(secret.expose(), entered) {
+            Ok(secret)
+        } else {
+            Err(credential_secret_mismatch(&parsed.instance_name))
+        }
     }
 
     async fn write_binding(

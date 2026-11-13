@@ -36,7 +36,8 @@ use crate::registration::ToolRegistry;
 
 const WITHHELD_COMMITTED: &str = "The operation completed on ServiceNow, but its result was withheld by data protection policy. Do not retry.";
 const PARTIAL_TEXT: &str = "Some changes were committed on ServiceNow and others were not. Do not re-run the whole call; check the affected records first.";
-const UNKNOWN_TEXT: &str = "The request reached ServiceNow but its result could not be confirmed. Do not retry; check the affected records first.";
+/// Shown for every `Unknown` outcome; handler text for one leads with it.
+pub const UNKNOWN_TEXT: &str = "The request reached ServiceNow but its result could not be confirmed. Do not retry; check the affected records first.";
 const COMMITTED_FOLLOWUP_FAILED: &str =
     "The operation completed on ServiceNow, but a follow-up step failed. Do not retry.";
 const AUDIT_COMPLETE_RETRIES: usize = 3;

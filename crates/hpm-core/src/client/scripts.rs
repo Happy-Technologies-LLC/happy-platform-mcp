@@ -570,6 +570,8 @@ impl ServiceNowClient {
                     ClientError::plain(format!("Failed to create script trigger: {}", e.message));
                 wrapped.status = e.status;
                 wrapped.code = e.code;
+                // Trigger identity ("sys_id …" / "name …") for result-unknown text.
+                wrapped.reason = e.reason;
                 wrapped
             })
     }
@@ -582,9 +584,11 @@ impl ServiceNowClient {
         options: &TriggerOptions,
     ) -> Result<Value, ClientError> {
         // Once the trigger row exists the script may run regardless of what
-        // fails next, so every later error is tagged "result unknown".
-        let inserted = |mut e: ClientError| {
+        // fails next, so every later error is tagged "result unknown" and
+        // names the trigger (its sys_id) in `reason`.
+        let inserted = |mut e: ClientError, sys_id: &str| {
             e.code = Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
+            e.reason = Some(format!("sys_id {sys_id}").into());
             e
         };
         let now = self.now_ms();
@@ -597,8 +601,9 @@ impl ServiceNowClient {
         } else {
             description
         };
+        let trigger_name = format!("MCP_Script_{}", self.now_ms());
         let base = json!({
-            "name": format!("MCP_Script_{}", self.now_ms()),
+            "name": trigger_name,
             "next_action": next_action,
             "trigger_type": "0",
             "state": "0",
@@ -609,10 +614,17 @@ impl ServiceNowClient {
             v["script"] = json!(s);
             v
         };
+        // A failed insert carries the trigger name, so an ambiguous one (5xx,
+        // timeout) can still be traced on the instance.
+        let named = |mut e: ClientError| {
+            e.reason = Some(format!("name {trigger_name}").into());
+            e
+        };
         let trigger = if auto_delete {
             let trigger = self
                 .create_record("sys_trigger", &with_script(script.to_owned()))
-                .await?;
+                .await
+                .map_err(named)?;
             let sys_id = trigger
                 .get("sys_id")
                 .and_then(Value::as_str)
@@ -621,14 +633,16 @@ impl ServiceNowClient {
             let wrapped = build_background_script_wrapper(script, &marker, true, Some(&sys_id));
             self.update_record("sys_trigger", &sys_id, &json!({"script": wrapped}))
                 .await
-                .map_err(inserted)?;
+                .map_err(|e| inserted(e, &sys_id))?;
             trigger
         } else {
             let wrapped = build_background_script_wrapper(script, &marker, false, None);
             self.create_record("sys_trigger", &with_script(wrapped))
-                .await?
+                .await
+                .map_err(named)?
         };
         let trigger_sys_id = trigger.get("sys_id").cloned().unwrap_or(Value::Null);
+        let trigger_id = trigger_sys_id.as_str().unwrap_or("undefined").to_owned();
         let mut out = Map::new();
         out.insert("trigger_sys_id".into(), trigger_sys_id.clone());
         out.insert(
@@ -680,7 +694,7 @@ impl ServiceNowClient {
                     },
                 )
                 .await
-                .map_err(inserted)?;
+                .map_err(|e| inserted(e, &trigger_id))?;
             if let Some(first) = records.as_array().and_then(|r| r.first()).cloned() {
                 break Some(first);
             }
@@ -689,7 +703,10 @@ impl ServiceNowClient {
             }
             self.sleep_ms(options.interval_ms).await;
             if options.ctx.as_ref().is_some_and(|c| !c.is_live()) {
-                return Err(inserted(ClientError::plain(TRIGGER_POLL_CANCELLED)));
+                return Err(inserted(
+                    ClientError::plain(TRIGGER_POLL_CANCELLED),
+                    &trigger_id,
+                ));
             }
         };
 
@@ -717,7 +734,7 @@ impl ServiceNowClient {
         let (logs, truncated, unverified) = self
             .collect_background_script_logs(&end_marker, &next_action, &until)
             .await
-            .map_err(inserted)?;
+            .map_err(|e| inserted(e, &trigger_id))?;
         let mut o = match &outcome {
             MarkerOutcome::Completed(output) => {
                 let mut o = with(

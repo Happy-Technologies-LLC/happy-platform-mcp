@@ -621,6 +621,67 @@ pub async fn replay(world: &World, golden: &str) -> Result<(), String> {
     replay_with(world, &tools_dir().join(golden), production).await
 }
 
+/// What one ad-hoc `tools/call` produced (flow tests outside the goldens).
+pub struct CallResult {
+    pub response: Value,
+    pub outbound: Vec<super::http::Described>,
+    /// Files the handler left in the sandbox working directory.
+    pub files: Value,
+}
+
+/// Runs one `tools/call` of `tool` with `args` through the real composition,
+/// with `sc` set up as for golden `id`.
+pub async fn call_tool(
+    world: &World,
+    id: &str,
+    sc: Scenario,
+    tool: &str,
+    args: Value,
+) -> Result<CallResult, String> {
+    let sandbox = make_sandbox(world, id, &sc)?;
+    let dispatcher = production(&sandbox, *KEY)?;
+    let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
+        .registry(sandbox.config.clone())
+        .build();
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let server = tokio::spawn(hpm_protocol::stdio::serve_io(
+        handler,
+        server_read,
+        server_write,
+    ));
+    let (client_read, client_write) = tokio::io::split(client_io);
+    let mut client = Client {
+        write: client_write,
+        lines: BufReader::new(client_read).lines(),
+        next_id: 0,
+    };
+    world.stub.reset(sc.stub.clone());
+    let init = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "flow-test", "version": "0.0.0"}
+    });
+    client.request("initialize", &init).await?;
+    client
+        .send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await?;
+    world.stub.take();
+    let (message, _) = client
+        .request("tools/call", &json!({"name": tool, "arguments": args}))
+        .await?;
+    tokio::time::sleep(SETTLE).await;
+    let outbound = world.stub.take();
+    let files = list_files(&sandbox.work);
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    Ok(CallResult {
+        response: strip_id(message),
+        outbound,
+        files,
+    })
+}
+
 /// Replays one golden file through `compose`. `Err` carries the per-golden report;
 /// a tool the composition does not register fails with `not ported: <tool>`.
 pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result<(), String> {

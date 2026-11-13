@@ -1135,6 +1135,30 @@ async fn set_application_failure_ends_session_last() {
     assert!(last.header("Cookie").is_some());
 }
 
+/// Review L-9 R6 (L-2): a landing page that answers non-2xx with Set-Cookie
+/// opened a UI session; its cookie must reach the logout that ends it.
+#[tokio::test]
+async fn non_2xx_landing_cookie_reaches_the_logout() {
+    let transport = FakeTransport::new(|r| {
+        if r.method == Method::Get && r.url.trim_start_matches(URL) == "/" {
+            return Ok(HttpResponse::new(503, "<html>busy</html>")
+                .with_header("set-cookie", "JSESSIONID=landing1; Path=/; HttpOnly"));
+        }
+        Ok(HttpResponse::json(200, &json!({})))
+    });
+    let h = harness(
+        basic(Some("inert")),
+        transport,
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    assert!(h.client.set_current_application("global").await.is_err());
+    let requests = h.transport.requests();
+    let last = requests.last().unwrap();
+    assert_eq!(last.url, format!("{URL}/logout.do"));
+    assert_eq!(last.header("Cookie"), Some("JSESSIONID=landing1"));
+}
+
 #[tokio::test]
 async fn set_update_set_verifies_in_one_session() {
     let h = harness(
@@ -1602,6 +1626,30 @@ async fn trigger_errors_after_insert_are_tagged_result_unknown() {
         .await
         .expect_err("insert refused");
     assert_ne!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+    assert!(
+        e.reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("name MCP_Script_"))
+    );
+
+    // Insert timed out: outcome unknown (no status), the trigger is named.
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(|_| Err(TransportError::new("ETIMEDOUT", "ETIMEDOUT: timed out"))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let e = h
+        .client
+        .execute_script_via_trigger("x", "", true, &TriggerOptions::default())
+        .await
+        .expect_err("insert timed out");
+    assert_eq!(e.status, None);
+    assert!(
+        e.reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("name MCP_Script_"))
+    );
 
     // Inserted, then the wrap (auto_delete) or the syslog poll fails.
     for (auto_delete, failing) in [(true, Method::Put), (false, Method::Get)] {
@@ -1633,6 +1681,7 @@ async fn trigger_errors_after_insert_are_tagged_result_unknown() {
         assert_eq!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
         assert_eq!(e.status, Some(403));
         assert_eq!(e.message, "Failed to create script trigger: 403 ACL");
+        assert_eq!(e.reason.as_deref(), Some("sys_id tid"));
     }
 }
 

@@ -14,6 +14,7 @@ use super::common::{
 use super::js_text::{
     collapse_whitespace, pretty_opt, preview, text, truthy, truthy_opt, utf16_prefix,
 };
+use crate::dispatcher::UNKNOWN_TEXT;
 use crate::families::FamilyDeps;
 use crate::families::common::failed_outcome;
 use crate::logic::generated_scripts::{FixScriptFile, file_timestamp, validate_fix_script_name};
@@ -138,7 +139,15 @@ async fn run_via_trigger(
         Err(_) if !ctx.is_live() => {
             return done(MutationOutcome::Unknown, Err(ToolError::Cancelled));
         }
-        Err(e) => return trigger_fix_script(deps, input, notice, failed_outcome(&e)).await,
+        Err(e) => match failed_outcome(&e) {
+            // Definite refusal before the trigger existed: the 6.2.0 fix script.
+            outcome @ (MutationOutcome::Failed | MutationOutcome::NotSent) => {
+                return trigger_fix_script(deps, input, notice, outcome).await;
+            }
+            // The trigger may exist and run: never offer a manual re-run
+            // (recorded 7.0 deviation, review recheck M1).
+            _ => return done(MutationOutcome::Unknown, Err(trigger_unknown(notice, &e))),
+        },
     };
     let desc = input.description_line();
     let sys_id = text(result.get("trigger_sys_id"));
@@ -189,6 +198,17 @@ async fn run_via_trigger(
             )),
         ),
     }
+}
+
+/// The sys_trigger insert, or a step after it, ended with an unknown
+/// outcome: the script may already be scheduled or have run. Leads with the
+/// dispatcher's result-unknown text so it is never hidden.
+fn trigger_unknown(notice: &str, e: &hpm_core::client::ClientError) -> ToolError {
+    let trigger = e.reason.as_deref().unwrap_or("unknown");
+    ToolError::Text(format!(
+        "{notice}{UNKNOWN_TEXT}\n\n⚠️ The sys_trigger job (trigger {trigger}) may already be scheduled or have run the script: {}\n\nDo NOT re-run the script. Check first:\n- System Definition → Scheduled Jobs (trigger {trigger})\n- System Logs → System Log → All (search for the trigger)",
+        e.message
+    ))
 }
 
 /// The sys_trigger path failed: write the script as a fix-script file.
