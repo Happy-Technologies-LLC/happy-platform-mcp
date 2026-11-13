@@ -8,24 +8,36 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use hpm_tools::dispatcher::{Dispatcher, RequiredPropertiesValidator, Services};
+use hpm_tools::dispatcher::{Dispatcher, Services};
 use hpm_tools::registration::{RegistrationError, ToolRegistry};
+use hpm_tools::schema::{CompiledSchemaValidator, SchemaCompileError};
 use hpm_tools::single_user::{
     AllowAll, LocalOnlyCredentials, PassThrough, StderrAudit, UnloadedClassification,
 };
 use hpm_types::context::{AdmissionKey, TrustedRoot};
 use hpm_types::operation::ScriptOperandGuard;
 
+pub mod cli;
+pub mod instance_cli;
+
 const NAME: &str = "happy-platform-mcp";
+
+/// Public page for release notes and advisories (`project-links.js`).
+pub const UPDATES_URL: &str = "https://happy-tech.biz/mcp";
+
+/// One-line pointer printed to stderr after a successful setup step.
+pub fn updates_hint() -> String {
+    format!("Release notes and security advisories: {UPDATES_URL}")
+}
 
 /// Every tool lane's `register`, in 6.2.0 `tools/list` order (C5).
 fn register_tools(_registry: &mut ToolRegistry) -> Result<(), RegistrationError> {
     Ok(())
 }
 
-fn single_user_services() -> Services {
-    Services {
-        validator: Arc::new(RequiredPropertiesValidator),
+fn single_user_services(registry: &ToolRegistry) -> Result<Services, SchemaCompileError> {
+    Ok(Services {
+        validator: Arc::new(CompiledSchemaValidator::new(registry.tools())?),
         classification: Arc::new(UnloadedClassification),
         policy: Arc::new(AllowAll),
         protector: Arc::new(PassThrough),
@@ -35,11 +47,18 @@ fn single_user_services() -> Services {
         script_guard: ScriptOperandGuard {
             shared_account: false,
         },
-    }
+    })
 }
 
-/// Entry point of both binaries (`happy-platform-mcp`, `servicenow-mcp-server`).
+/// Entry point of both binaries (`happy-platform-mcp`, `servicenow-mcp-server`):
+/// `cli.js` dispatch over the process arguments.
 pub fn run() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    cli::main(&args)
+}
+
+/// Serve MCP over stdio (no arguments, or `--docs-only`).
+pub fn serve_stdio() -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -62,7 +81,14 @@ pub fn run() -> ExitCode {
         eprintln!("{NAME}: admission key already minted in this process");
         return ExitCode::FAILURE;
     };
-    let dispatcher = Arc::new(Dispatcher::new(registry, single_user_services(), key));
+    let services = match single_user_services(&registry) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{NAME}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let dispatcher = Arc::new(Dispatcher::new(registry, services, key));
     match runtime.block_on(hpm_protocol::stdio::serve(
         TrustedRoot::single_user_stdio(),
         dispatcher,

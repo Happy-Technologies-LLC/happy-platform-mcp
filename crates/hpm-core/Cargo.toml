@@ -12,6 +12,31 @@ authors.workspace = true
 # No `trusted-root`: only the composition root (hpm-cli) enables it.
 hpm-types.workspace = true
 thiserror.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+keyring-core.workspace = true
+# Blocking pool for keychain / token-file I/O (review L4); zeroized tokens (L3).
+tokio.workspace = true
+zeroize.workspace = true
+# Lane A additions (exact versions; lead hoists at merge).
+url = "=2.5.8"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.31.3", default-features = false, features = ["user", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store.workspace = true
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+dbus-secret-service-keyring-store.workspace = true
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+tokio = { workspace = true }
 
 [lints]
 workspace = true
