@@ -4,6 +4,7 @@
 use super::*;
 use crate::keychain::MemorySecretStore;
 
+#[cfg(unix)]
 fn token_name(account: &str) -> String {
     format!("token-{}", hex(&Sha256::digest(account.as_bytes())))
 }
