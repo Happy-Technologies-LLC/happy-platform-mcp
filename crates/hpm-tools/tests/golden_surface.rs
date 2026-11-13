@@ -23,8 +23,11 @@ mod support;
 use serde_json::{Value, json};
 use support::harness::{self, World};
 
-/// A recorded exchange 7.0 deliberately answers differently.
+/// A recorded exchange 7.0 deliberately answers differently (and with no
+/// ServiceNow request).
 struct Deviation {
+    /// Only this golden exchange (`None`: every golden).
+    at: Option<(&'static str, usize)>,
     method: &'static str,
     /// `params.name` of the request (`""`: absent / any).
     name: Option<&'static str>,
@@ -34,12 +37,38 @@ struct Deviation {
 
 const DEVIATIONS: &[Deviation] = &[
     Deviation {
+        at: Some(("surface/docs-only", 4)),
+        method: "tools/call",
+        name: Some("SN-Query-Table"),
+        expected: |_| json!({"error": {"code": -32602, "message": "Unknown tool: SN-Query-Table"}}),
+        reason: "--docs-only registers only the docs tools; any other name is an unknown \
+                 tool, -32602 (RFC C6; 6.2.0: isError `unavailable in docs-only mode`)",
+    },
+    Deviation {
+        at: Some(("surface/full-default", 15)),
+        method: "tools/call",
+        name: Some("SN-Query-Table"),
+        expected: |_| json!({"error": {"code": -32602, "message": "missing required property: table_name"}}),
+        reason: "7.0 validates arguments against the tool schema before any request \
+                 (6.2.0 queried /api/now/table/undefined)",
+    },
+    Deviation {
+        at: Some(("surface/full-default", 16)),
+        method: "tools/call",
+        name: Some("SN-Query-Table"),
+        expected: |_| json!({"error": {"code": -32602, "message": "argument /limit must be of type number"}}),
+        reason: "7.0 validates arguments against the tool schema before any request \
+                 (6.2.0 sent sysparm_limit=not-a-number)",
+    },
+    Deviation {
+        at: None,
         method: "tools/call",
         name: Some("SN-Does-Not-Exist"),
         expected: |_| json!({"error": {"code": -32602, "message": "Unknown tool: SN-Does-Not-Exist"}}),
         reason: "RFC §10.1 step 1 (C6): unknown tool is JSON-RPC -32602, not an isError result",
     },
     Deviation {
+        at: None,
         method: "tools/call",
         name: Some(""),
         expected: |m| json!({"error": {"code": -32601, "message": m}}),
@@ -92,11 +121,13 @@ const INVALID_REQUEST_WIRE: &[&str] = &[
     r#"{"jsonrpc":"1.0","id":903,"method":"ping"}"#,
 ];
 
-fn deviation(method: &str, params: &Value) -> Option<&'static Deviation> {
+fn deviation(id: &str, i: usize, method: &str, params: &Value) -> Option<&'static Deviation> {
     let name = params["name"].as_str().unwrap_or("");
-    DEVIATIONS
-        .iter()
-        .find(|d| d.method == method && d.name.is_none_or(|n| n == name))
+    DEVIATIONS.iter().find(|d| {
+        d.at.is_none_or(|(g, n)| g == id && n == i)
+            && d.method == method
+            && d.name.is_none_or(|n| n == name)
+    })
 }
 
 fn without_annotations(tools: &Value) -> Vec<Value> {
@@ -154,19 +185,27 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
         let params = &want["request"]["params"];
         let at = format!("{id} exchange {i} ({method})");
         let mut want_response = want["response"].clone();
-        let want_outbound = if want["outbound"].is_null() {
-            json!([])
-        } else {
-            want["outbound"].clone()
+        // The surface capture recorded ServiceNow requests only.
+        let servicenow = |v: &Value| -> Value {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter(|r| r["target"] == "servicenow")
+                .cloned()
+                .collect()
         };
+        let want_outbound = servicenow(&want["outbound"]);
+        let got_outbound = servicenow(&got["outbound"]);
         let tool = params["name"].as_str().unwrap_or_default();
-        if let Some(dev) = deviation(method, params) {
+        if let Some(dev) = deviation(&id, i, method, params) {
+            let at = format!("{at} deviation ({})", dev.reason);
             diff(
                 &mut problems,
-                format!("{at} deviation ({})", dev.reason),
+                at.clone(),
                 &got["response"],
                 &(dev.expected)(method),
             );
+            diff(&mut problems, at, &got_outbound, &json!([]));
             continue;
         }
         match method {
@@ -174,6 +213,16 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
                 want_response["result"]["serverInfo"]["version"] = json!(env!("CARGO_PKG_VERSION"));
                 if let Some(caps) = want_response["result"]["capabilities"].as_object_mut() {
                     caps.remove("prompts");
+                }
+            }
+            "resources/read" if params["uri"] == "servicenow://instance" => {
+                if let Some(text) = want_response["result"]["contents"][0]["text"].as_str() {
+                    let text = text.replacen(
+                        "\"version\": \"6.2.0\"",
+                        &format!("\"version\": \"{}\"", env!("CARGO_PKG_VERSION")),
+                        1,
+                    );
+                    want_response["result"]["contents"][0]["text"] = json!(text);
                 }
             }
             "tools/list" => {
@@ -246,7 +295,7 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
         diff(
             &mut problems,
             format!("{at} outbound"),
-            &got["outbound"],
+            &got_outbound,
             &want_outbound,
         );
     }
