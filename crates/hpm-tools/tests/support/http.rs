@@ -37,6 +37,8 @@ pub struct Described {
     /// Decoded `URLSearchParams` pairs, in order.
     pub query: Vec<(String, String)>,
     pub headers: BTreeMap<String, String>,
+    /// `Host` header (not part of the golden record; checked per step for routing).
+    pub host: String,
     pub credentials: Credentials,
     /// `None`: key absent (form bodies). `Some(Null)`: empty body.
     pub body: Option<Value>,
@@ -126,9 +128,15 @@ pub fn describe(
     headers: &BTreeMap<String, String>,
     raw_body: &str,
 ) -> Described {
-    let (path, raw_query) = match target.split_once('?') {
-        Some((p, q)) => (p, q),
-        None => (target, ""),
+    // `new URL(req.url, base)`: WHATWG path/query normalization (dot segments,
+    // percent-encoding of quotes, spaces and angle brackets).
+    let url = reqwest::Url::parse(&format!("http://stub.invalid{target}"));
+    let (path, raw_query) = match &url {
+        Ok(u) => (u.path().to_owned(), u.query().unwrap_or("").to_owned()),
+        Err(_) => match target.split_once('?') {
+            Some((p, q)) => (p.to_owned(), q.to_owned()),
+            None => (target.to_owned(), String::new()),
+        },
     };
     let kept = headers
         .iter()
@@ -154,7 +162,10 @@ pub fn describe(
     } else if content_type.contains("json") {
         (
             Some(raw_body.to_owned()),
-            serde_json::from_str::<Value>(raw_body).ok(),
+            // `json ?? raw`: a literal `null` body falls back to the raw text.
+            serde_json::from_str::<Value>(raw_body)
+                .ok()
+                .filter(|v| !v.is_null()),
         )
     } else {
         (Some(raw_body.to_owned()), None)
@@ -170,10 +181,11 @@ pub fn describe(
     };
     Described {
         method: method.to_owned(),
-        path: path.to_owned(),
-        raw_query: raw_query.to_owned(),
-        query: parse_search_params(raw_query),
+        query: parse_search_params(&raw_query),
+        path,
+        raw_query,
         headers: kept,
+        host: headers.get("host").cloned().unwrap_or_default(),
         credentials,
         body,
         form,

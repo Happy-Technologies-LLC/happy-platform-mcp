@@ -29,5 +29,11 @@ regex.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time", "sync"] }
 
+# Custom runner: one named case per golden (`<group>::<tool>__<case>`), and a
+# filter that selects no golden fails instead of passing with 0 tests.
+[[test]]
+name = "golden_tools"
+harness = false
+
 [lints]
 workspace = true

@@ -1,11 +1,16 @@
 //! Tool-golden replay (plan W3 §1 G4). For each `fixtures/golden/tools/<family>/*.json`:
-//! fresh stub state and sandbox, a dispatcher built from the caller's registration
-//! function, the real MCP stdio handler over an in-memory pipe, then every
-//! `steps[].request` replayed and compared with the golden after
-//! `NORMALIZATION.json` scrubbing: `response`, `notifications`, `files`, and the
-//! ordered `outbound` list (method, path, query pairs, rawQuery, body/form,
-//! credential scheme, cookie and user-token flags; headers are transport detail and
-//! are not compared).
+//! fresh stub state and sandbox, the real single-user composition
+//! (`hpm_cli::SingleUser`: every family's `register`, `SingleUserCredentialProvider`,
+//! pinned clients) pointed at the loopback stubs, the real MCP stdio handler over an
+//! in-memory pipe, then every `steps[].request` replayed and compared with the
+//! golden after `NORMALIZATION.json` scrubbing: `response`, `notifications`,
+//! `files`, the ordered `outbound` list (method, path, query pairs, rawQuery,
+//! body/form, credential scheme, cookie and user-token flags; other headers are
+//! transport detail), and which instance (`Host`) each ServiceNow request reached.
+//!
+//! Handlers run in this process, so they must take every path from the composition
+//! (`FamilyDeps::working_dir`, `docs_base_url`, the `ConfigManager` env), never from
+//! `std::env` or the cwd: the `files` check only sees the sandbox `work` dir.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,21 +18,17 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use base64::Engine;
+use hpm_cli::SingleUser;
+use hpm_core::client::ClientDeps;
+use hpm_core::client::RawError;
+use hpm_core::client::oauth_code::{AuthCodeFlow, AuthCodeFlowConfig, TokenPoster};
+use hpm_core::config::{ConfigManager, Env};
+use hpm_core::keychain::{MemorySecretStore, SERVICE_NAME};
+use hpm_core::registry::InstanceRegistry;
 use hpm_protocol::McpHandler;
-use hpm_tools::dispatcher::{Dispatcher, Services};
-use hpm_tools::registration::{RegistrationError, ToolRegistry};
-use hpm_tools::schema::CompiledSchemaValidator;
-use hpm_tools::single_user::{AllowAll, PassThrough, StderrAudit, UnloadedClassification};
+use hpm_tools::dispatcher::Dispatcher;
 use hpm_types::BoxFut;
-use hpm_types::context::{AdmissionKey, Principal, RequestContext, TrustedRoot};
-use hpm_types::credential::{
-    Credential, CredentialBinding, CredentialError, CredentialKind, CredentialNeed,
-    CredentialProvider, Secret, UiSession, UiSessionScope,
-};
-use hpm_types::operation::ScriptOperandGuard;
-use hpm_types::registry::{
-    DefaultSource, InstanceEntry, RegistryChange, RegistryError, RegistryStore, RegistryView,
-};
+use hpm_types::context::{AdmissionKey, TrustedRoot};
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -45,9 +46,17 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(120);
 static KEY: LazyLock<AdmissionKey> =
     LazyLock::new(|| AdmissionKey::mint().expect("first AdmissionKey mint in this process"));
 
-/// How a lane puts its tools in front of the harness. Called once per golden with a
-/// fresh registry and that golden's sandbox.
-pub type Register = fn(&mut ToolRegistry, &Sandbox) -> Result<(), RegistrationError>;
+/// Builds the dispatcher for one golden. [`production`] is the real composition;
+/// self-tests pass their own to put test-only tools in front of the harness.
+pub type Compose = fn(&Sandbox, AdmissionKey) -> Result<Arc<Dispatcher>, String>;
+
+/// The real single-user composition (`hpm_cli::SingleUser`) over the sandbox.
+pub fn production(sandbox: &Sandbox, key: AdmissionKey) -> Result<Arc<Dispatcher>, String> {
+    SingleUser::new(sandbox.config.clone(), sandbox.client_deps())
+        .docs_base_url(sandbox.raw_github_base.clone())
+        .working_dir(sandbox.work.clone())
+        .dispatcher(key)
+}
 
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -57,16 +66,31 @@ pub fn tools_dir() -> PathBuf {
     repo_root().join("fixtures/golden/tools")
 }
 
-/// Sorted golden files of one family directory (`crud`, `itsm-ops`, ...).
-pub fn golden_files(family: &str) -> Vec<PathBuf> {
-    let dir = tools_dir().join(family);
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| e.expect("golden dir entry").path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+/// Every golden as `<family>/<file>.json`, sorted.
+pub fn all_goldens() -> Vec<String> {
+    let mut out = Vec::new();
+    let mut families: Vec<_> = std::fs::read_dir(tools_dir())
+        .expect("tools goldens")
+        .map(|e| e.expect("golden dir entry"))
+        .filter(|e| e.path().is_dir())
         .collect();
-    files.sort();
-    files
+    families.sort_by_key(std::fs::DirEntry::file_name);
+    for family in families {
+        let mut files: Vec<String> = std::fs::read_dir(family.path())
+            .expect("golden family dir")
+            .map(|e| {
+                e.expect("golden entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        files.sort();
+        let family = family.file_name().to_string_lossy().into_owned();
+        out.extend(files.into_iter().map(|f| format!("{family}/{f}")));
+    }
+    out
 }
 
 /// Stubs and temp root shared by the goldens of one test (`createWorld`).
@@ -88,7 +112,8 @@ impl World {
             .tempdir()
             .expect("temp root");
         // Unix: resolve `/var` → `/private/var` like `fs.realpathSync`. Windows keeps
-        // the plain form (canonicalize would add a `\\?\` prefix).
+        // the plain form (canonicalize would add a `\\?\` prefix); its long form is
+        // added as a literal below.
         #[cfg(unix)]
         let root = tmp.path().canonicalize().expect("canonical temp root");
         #[cfg(not(unix))]
@@ -99,6 +124,14 @@ impl World {
             _tmp: tmp,
             root,
         }
+    }
+
+    fn default_host(&self) -> String {
+        format!("127.0.0.1:{}", self.stub.port)
+    }
+
+    fn prod_host(&self) -> String {
+        format!("localhost:{}", self.stub.port)
     }
 
     /// `literalsFor(world)`: ephemeral values → placeholders.
@@ -112,8 +145,8 @@ impl World {
                 format!("http://localhost:{port}"),
                 "{{INSTANCE_URL_ALT}}".into(),
             ),
-            (format!("127.0.0.1:{port}"), "{{INSTANCE_HOST}}".into()),
-            (format!("localhost:{port}"), "{{INSTANCE_HOST_ALT}}".into()),
+            (self.default_host(), "{{INSTANCE_HOST}}".into()),
+            (self.prod_host(), "{{INSTANCE_HOST_ALT}}".into()),
             (self.raw.base(), "{{RAW_GITHUB_URL}}".into()),
             (
                 format!("127.0.0.1:{}", self.raw.port),
@@ -121,16 +154,23 @@ impl World {
             ),
             (FAKE_PASSWORD.into(), "{{FAKE_PASSWORD}}".into()),
             (basic, "{{BASIC_CREDENTIAL}}".into()),
-            (path_text(&self.root), "{{TMP}}".into()),
         ];
-        let repo = repo_root();
-        lits.push((path_text(&repo), "{{REPO}}".into()));
-        if let Ok(real) = repo.canonicalize() {
-            lits.push((path_text(&real), "{{REPO}}".into()));
+        for form in path_forms(&self.root) {
+            lits.push((form, "{{TMP}}".into()));
         }
+        let repo = repo_root();
+        lits.extend(
+            path_forms(&repo)
+                .into_iter()
+                .map(|f| (f, "{{REPO}}".into())),
+        );
         let os_tmp = path_text(&std::env::temp_dir());
-        let os_tmp = os_tmp.trim_end_matches(['/', '\\']).to_owned();
-        lits.push((os_tmp, "{{OS_TMPDIR}}".into()));
+        let os_tmp = os_tmp.trim_end_matches(['/', '\\']);
+        lits.extend(
+            path_forms(Path::new(os_tmp))
+                .into_iter()
+                .map(|f| (f, "{{OS_TMPDIR}}".into())),
+        );
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             lits.push((home.to_string_lossy().into_owned(), "{{REAL_HOME}}".into()));
         }
@@ -143,8 +183,8 @@ impl World {
         [
             ("{{INSTANCE_URL_ALT}}", format!("http://localhost:{port}")),
             ("{{INSTANCE_URL}}", self.stub.origin()),
-            ("{{INSTANCE_HOST_ALT}}", format!("localhost:{port}")),
-            ("{{INSTANCE_HOST}}", format!("127.0.0.1:{port}")),
+            ("{{INSTANCE_HOST_ALT}}", self.prod_host()),
+            ("{{INSTANCE_HOST}}", self.default_host()),
             ("{{RAW_GITHUB_URL}}", self.raw.base()),
             (
                 "{{RAW_GITHUB_HOST}}",
@@ -158,34 +198,66 @@ impl World {
     }
 }
 
-/// Per-golden isolated directories and configuration (`makeSandbox`). Until the
-/// composition root takes explicit configuration, lanes read what they need from
-/// here when they build their descriptors in [`Register`].
-#[allow(
-    dead_code,
-    reason = "lane registrations read these; no family is ported yet"
-)]
-pub struct Sandbox {
-    pub dir: PathBuf,
-    pub home: PathBuf,
-    /// Server cwd: fix scripts land here and are compared as `files`.
-    pub work: PathBuf,
-    pub config_path: PathBuf,
-    pub docs_cache: PathBuf,
-    /// The environment the 6.2.0 server ran with (`makeSandbox` env).
-    pub env: BTreeMap<String, String>,
-    /// Keyring seed: account → secret (service `happy-platform-mcp`).
-    pub keyring: Vec<(String, String)>,
-    pub stub_origin: String,
-    pub raw_github_base: String,
-    /// `env-credentials` or `registry-*` (golden `mode`).
-    pub mode: String,
-    /// Stand-in REST credential provider (Basic, golden user) until lane B lands.
-    pub credentials: Arc<SandboxCredentials>,
-    registry: Arc<StaticRegistry>,
+/// Spellings of `p` a port may print: as given, canonical, and (Windows) the
+/// canonical long form without `\\?\` plus each form JSON-escaped (`\` → `\\`), as it
+/// appears inside JSON-stringified tool text.
+fn path_forms(p: &Path) -> Vec<String> {
+    let mut forms = vec![path_text(p)];
+    if let Ok(real) = p.canonicalize() {
+        let real = path_text(&real);
+        forms.push(
+            real.strip_prefix(r"\\?\")
+                .map_or(real.clone(), str::to_owned),
+        );
+    }
+    if cfg!(windows) {
+        let escaped: Vec<String> = forms.iter().map(|f| f.replace('\\', r"\\")).collect();
+        forms.extend(escaped);
+    }
+    // Longest first so an escaped form wins over its plain prefix.
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    forms.dedup();
+    forms
 }
 
-fn make_sandbox(world: &World, id: &str, mode: &str, sc: &Scenario) -> Sandbox {
+/// Per-golden isolated directories and configuration (`makeSandbox`).
+pub struct Sandbox {
+    /// Server working directory: fix scripts land here and are compared as `files`.
+    pub work: PathBuf,
+    pub raw_github_base: String,
+    /// Registry file + the env the 6.2.0 server ran with.
+    pub config: Arc<ConfigManager>,
+    /// Keyring seeded from the scenario (service `happy-platform-mcp`).
+    pub secrets: Arc<MemorySecretStore>,
+}
+
+impl Sandbox {
+    /// Production client seams over the sandbox keyring, with a sign-in flow that
+    /// never opens a browser.
+    pub fn client_deps(&self) -> ClientDeps {
+        let mut deps =
+            ClientDeps::production(self.secrets.clone()).expect("reqwest transport for the replay");
+        deps.auth_flow = Arc::new(NoBrowser);
+        deps.os_user = FAKE_USER.to_owned();
+        deps.trusted_origins = Arc::new(|| None);
+        deps
+    }
+}
+
+/// Interactive OAuth is never part of a golden; fail instead of opening a browser.
+struct NoBrowser;
+
+impl AuthCodeFlow for NoBrowser {
+    fn run<'a>(
+        &'a self,
+        _config: AuthCodeFlowConfig,
+        _post: Arc<dyn TokenPoster>,
+    ) -> BoxFut<'a, Result<Value, RawError>> {
+        Box::pin(async { Err(RawError::message("golden harness: interactive sign-in")) })
+    }
+}
+
+fn make_sandbox(world: &World, id: &str, sc: &Scenario) -> Result<Sandbox, String> {
     let safe: String = id
         .chars()
         .map(|c| {
@@ -196,6 +268,10 @@ fn make_sandbox(world: &World, id: &str, mode: &str, sc: &Scenario) -> Sandbox {
             }
         })
         .collect();
+    // `remove_dir_all` below must stay inside the world root.
+    if safe.chars().all(|c| c == '.') {
+        return Err(format!("unsafe golden id {id:?}"));
+    }
     let dir = world.root.join(safe);
     let home = dir.join("home");
     let work = dir.join("work");
@@ -205,7 +281,7 @@ fn make_sandbox(world: &World, id: &str, mode: &str, sc: &Scenario) -> Sandbox {
     // A golden may be replayed more than once per world (self-tests).
     let _ = std::fs::remove_dir_all(&dir);
     for d in [&home, &work, &cfg, &dir.join("xdg"), &docs_cache, &tmp] {
-        std::fs::create_dir_all(d).expect("sandbox dir");
+        std::fs::create_dir_all(d).map_err(|e| format!("sandbox dir: {e}"))?;
     }
     let config_path = cfg.join("instances.json");
     let endpoints = Endpoints {
@@ -214,11 +290,8 @@ fn make_sandbox(world: &World, id: &str, mode: &str, sc: &Scenario) -> Sandbox {
     };
     let instances = sc.instances.map(|f| f(&endpoints));
     if let Some(reg) = &instances {
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(reg).expect("registry json"),
-        )
-        .expect("write registry");
+        let text = serde_json::to_string_pretty(reg).map_err(|e| e.to_string())?;
+        std::fs::write(&config_path, text).map_err(|e| format!("write registry: {e}"))?;
     }
     let mut env: BTreeMap<String, String> = [
         ("HOME", path_text(&home)),
@@ -230,8 +303,6 @@ fn make_sandbox(world: &World, id: &str, mode: &str, sc: &Scenario) -> Sandbox {
         ("NO_COLOR", "1".into()),
         ("HAPPY_CONFIG_PATH", path_text(&config_path)),
         ("HAPPY_DOCS_CACHE_DIR", path_text(&docs_cache)),
-        ("GOLDEN_KEYRING_FILE", path_text(&dir.join("keyring.json"))),
-        ("GOLDEN_RAW_GITHUB_BASE", world.raw.base()),
         ("SERVICENOW_TOKEN_STORE", "file".into()),
     ]
     .into_iter()
@@ -245,156 +316,18 @@ fn make_sandbox(world: &World, id: &str, mode: &str, sc: &Scenario) -> Sandbox {
     for (k, v) in &sc.env {
         env.insert((*k).to_owned(), (*v).to_owned());
     }
-    Sandbox {
-        registry: Arc::new(StaticRegistry::new(
-            &world.stub.origin(),
-            instances.as_ref(),
-        )),
-        dir,
-        home,
+    let env = Env::from_fn(move |k| env.get(k).cloned());
+    let registry = InstanceRegistry::at_paths(&config_path, &config_path, env.clone());
+    let secrets = Arc::new(MemorySecretStore::new());
+    for (account, secret) in &sc.keyring {
+        secrets.insert(SERVICE_NAME, account, secret);
+    }
+    Ok(Sandbox {
         work,
-        config_path,
-        docs_cache,
-        env,
-        keyring: sc
-            .keyring
-            .iter()
-            .map(|(a, s)| ((*a).to_owned(), (*s).to_owned()))
-            .collect(),
-        stub_origin: world.stub.origin(),
         raw_github_base: world.raw.base(),
-        mode: mode.to_owned(),
-        credentials: Arc::new(SandboxCredentials),
-    }
-}
-
-/// Read-only registry view built from the sandbox: env mode has the one instance
-/// `default`; registry modes take the file's instances and its `default: true` entry.
-struct StaticRegistry(Arc<RegistryView>);
-
-impl StaticRegistry {
-    fn new(origin: &str, file: Option<&Value>) -> Self {
-        let entry = |name: &str, url: &str| InstanceEntry {
-            instance_id: name.to_owned(),
-            name: name.to_owned(),
-            canonical_url: url.to_owned(),
-            auth: json!({}),
-            config_version: 1,
-        };
-        let (instances, selected_default, default_source) = match file {
-            None => (
-                vec![entry("default", origin)],
-                Some("default".to_owned()),
-                DefaultSource::Env,
-            ),
-            Some(reg) => {
-                let list = reg["instances"].as_array().cloned().unwrap_or_default();
-                let entries: Vec<InstanceEntry> = list
-                    .iter()
-                    .map(|i| {
-                        entry(
-                            i["name"].as_str().unwrap_or(""),
-                            i["url"].as_str().unwrap_or(""),
-                        )
-                    })
-                    .collect();
-                let default = list
-                    .iter()
-                    .find(|i| i["default"] == json!(true))
-                    .or(list.first())
-                    .and_then(|i| i["name"].as_str())
-                    .map(str::to_owned);
-                (entries, default, DefaultSource::Registry)
-            }
-        };
-        Self(Arc::new(RegistryView {
-            registry_version: 1,
-            instances,
-            selected_default,
-            default_source,
-        }))
-    }
-}
-
-impl RegistryStore for StaticRegistry {
-    fn snapshot_for(&self, _principal: &Principal) -> Arc<RegistryView> {
-        self.0.clone()
-    }
-    fn apply<'a>(
-        &'a self,
-        _expected_version: u64,
-        _change: RegistryChange,
-    ) -> BoxFut<'a, Result<u64, RegistryError>> {
-        Box::pin(async { Err(RegistryError::ReadOnly) })
-    }
-}
-
-/// Basic credentials of the golden user for whichever instance the call resolved.
-/// UI sessions are not wired (scripts/update-set goldens need lane B's provider).
-pub struct SandboxCredentials;
-
-impl SandboxCredentials {
-    fn no_ui() -> CredentialError {
-        CredentialError::Backend("golden harness: UI sessions need the real provider".into())
-    }
-}
-
-impl CredentialProvider for SandboxCredentials {
-    fn prepare<'a>(
-        &'a self,
-        ctx: &'a RequestContext,
-        need: CredentialNeed,
-    ) -> BoxFut<'a, Result<Option<CredentialBinding>, CredentialError>> {
-        Box::pin(async move {
-            if need == CredentialNeed::None {
-                return Ok(None);
-            }
-            let instance = ctx.instance().ok_or_else(|| {
-                CredentialError::Backend("golden harness: no instance resolved".into())
-            })?;
-            Ok(Some(CredentialBinding::new(
-                ctx.principal().clone(),
-                instance.instance_id.clone(),
-                instance.config_version,
-                1,
-                None,
-                format!("golden:{}", instance.instance_id),
-            )))
-        })
-    }
-    fn authorize<'a>(
-        &'a self,
-        binding: &'a CredentialBinding,
-    ) -> BoxFut<'a, Result<Credential, CredentialError>> {
-        Box::pin(async move {
-            let token = base64::engine::general_purpose::STANDARD
-                .encode(format!("{FAKE_USER}:{FAKE_PASSWORD}"));
-            Ok(Credential {
-                kind: CredentialKind::Authorization(Secret::new(format!("Basic {token}"))),
-                generation: binding.generation(),
-                expires_at: None,
-            })
-        })
-    }
-    fn invalidate<'a>(
-        &'a self,
-        _binding: &'a CredentialBinding,
-    ) -> BoxFut<'a, Result<(), CredentialError>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn ui_session<'a>(
-        &'a self,
-        _binding: &'a CredentialBinding,
-        _scope: UiSessionScope,
-    ) -> BoxFut<'a, Result<UiSession, CredentialError>> {
-        Box::pin(async { Err(Self::no_ui()) })
-    }
-    fn end_ui_session<'a>(
-        &'a self,
-        _session: UiSession,
-    ) -> BoxFut<'a, Result<(), CredentialError>> {
-        Box::pin(async { Err(Self::no_ui()) })
-    }
+        config: Arc::new(ConfigManager::new(Arc::new(registry), env)),
+        secrets,
+    })
 }
 
 /// `listFiles(work)`: every file under `dir` as `{ "rel/posix/path": content }`.
@@ -445,7 +378,22 @@ impl Client {
             .map_err(|e| format!("write to server: {e}"))
     }
 
-    /// Sends a request; returns the response and the messages that arrived before it.
+    async fn next_message(&mut self) -> Result<Option<Value>, String> {
+        let Some(line) = self
+            .lines
+            .next_line()
+            .await
+            .map_err(|e| format!("read from server: {e}"))?
+        else {
+            return Ok(None);
+        };
+        serde_json::from_str(&line)
+            .map(Some)
+            .map_err(|_| format!("non-JSON line from server: {line:?}"))
+    }
+
+    /// Sends a request; returns the response and the messages that arrived before it
+    /// (`notifications.slice(mark)`).
     async fn request(
         &mut self,
         method: &str,
@@ -458,15 +406,10 @@ impl Client {
         let mut notifications = Vec::new();
         let read = async {
             loop {
-                let line = self
-                    .lines
-                    .next_line()
-                    .await
-                    .map_err(|e| format!("read from server: {e}"))?
+                let msg = self
+                    .next_message()
+                    .await?
                     .ok_or_else(|| format!("server closed before answering {method}"))?;
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
                 let is_response = msg.get("id") == Some(&json!(id))
                     && (msg.get("result").is_some() || msg.get("error").is_some());
                 if is_response {
@@ -480,6 +423,17 @@ impl Client {
             .map_err(|_| format!("timeout waiting for {method}"))??;
         Ok((msg, notifications))
     }
+
+    /// Messages that arrive after a response belong to no step (JS slices from the
+    /// next send); read and drop what is already buffered.
+    async fn drain(&mut self) -> Result<(), String> {
+        while let Ok(next) = tokio::time::timeout(Duration::ZERO, self.next_message()).await {
+            if next?.is_none() {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn strip_id(mut msg: Value) -> Value {
@@ -490,8 +444,9 @@ fn strip_id(mut msg: Value) -> Value {
     msg
 }
 
-/// Goldens are platform-neutral: on Windows fold the `\` separators of paths that
-/// follow `{{TMP}}` (as `golden_cli.rs` does).
+/// Goldens are platform-neutral: on Windows fold each run of `\` in the path that
+/// follows `{{TMP}}` into one `/` (as `golden_cli.rs` `normalize_tmp`). A run right
+/// before `"` is a JSON escape of the quote and stays.
 #[cfg(windows)]
 fn fold_tmp(v: Value) -> Value {
     fn fold(text: &str) -> String {
@@ -506,7 +461,29 @@ fn fold_tmp(v: Value) -> Value {
                     c.is_whitespace() || matches!(c, ')' | '"' | '\'' | ',' | ']' | '}')
                 })
                 .unwrap_or(rest.len());
-            out.push_str(&rest[..end].replace('\\', "/"));
+            let path = &rest[..end];
+            let trailing = path.len() - path.trim_end_matches('\\').len();
+            let quote_escape = trailing > 0 && rest[end..].starts_with('"');
+            let body = if quote_escape {
+                &path[..path.len() - trailing]
+            } else {
+                path
+            };
+            let mut prev_backslash = false;
+            for c in body.chars() {
+                if c == '\\' {
+                    if !prev_backslash {
+                        out.push('/');
+                    }
+                    prev_backslash = true;
+                } else {
+                    out.push(c);
+                    prev_backslash = false;
+                }
+            }
+            if quote_escape {
+                out.push_str(&path[path.len() - trailing..]);
+            }
             rest = &rest[end..];
         }
         out.push_str(rest);
@@ -566,16 +543,26 @@ fn diff_outbound(step: usize, got: &[Value], want: &[Value], problems: &mut Vec<
     problems.push(lines.join("\n"));
 }
 
-/// Replays one golden file. `Err` carries the per-golden report.
-pub async fn replay(world: &World, file: &Path, register: Register) -> Result<(), String> {
-    let name = file.strip_prefix(tools_dir()).map_or_else(
+/// Display name of a golden: `<family>/<file>.json` with `/` on every OS.
+fn golden_name(file: &Path) -> String {
+    file.strip_prefix(tools_dir()).map_or_else(
         |_| path_text(file),
         |p| p.to_string_lossy().replace('\\', "/"),
-    );
+    )
+}
+
+/// Replays one golden through the real composition.
+pub async fn replay(world: &World, golden: &str) -> Result<(), String> {
+    replay_with(world, &tools_dir().join(golden), production).await
+}
+
+/// Replays one golden file through `compose`. `Err` carries the per-golden report;
+/// a tool the composition does not register fails with `not ported: <tool>`.
+pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result<(), String> {
+    let name = golden_name(file);
     let text = std::fs::read_to_string(file).map_err(|e| format!("{name}: {e}"))?;
     let golden: Value = serde_json::from_str(&text).map_err(|e| format!("{name}: {e}"))?;
     let id = golden["id"].as_str().unwrap_or_default();
-    let mode = golden["mode"].as_str().unwrap_or("env-credentials");
     let steps = golden["steps"].as_array().cloned().unwrap_or_default();
     let sc = scenarios::scenario(id);
 
@@ -599,36 +586,20 @@ pub async fn replay(world: &World, file: &Path, register: Register) -> Result<()
         requests.push((method.to_owned(), params));
     }
 
-    let sandbox = make_sandbox(world, id, mode, &sc);
-    let mut registry = ToolRegistry::new().map_err(|e| format!("{name}: {e}"))?;
-    register(&mut registry, &sandbox).map_err(|e| format!("{name}: registration: {e}"))?;
-    let missing: Vec<String> = requests
+    let sandbox = make_sandbox(world, id, &sc).map_err(|e| format!("{name}: {e}"))?;
+    let dispatcher = compose(&sandbox, *KEY).map_err(|e| format!("{name}: {e}"))?;
+    let mut missing: Vec<&str> = requests
         .iter()
         .filter(|(m, _)| m == "tools/call")
         .filter_map(|(_, p)| p["name"].as_str())
-        .filter(|t| !registry.tools().iter().any(|d| d.name == *t))
-        .map(str::to_owned)
+        .filter(|t| dispatcher.get_tool(t).is_none())
         .collect();
+    missing.dedup();
     if !missing.is_empty() {
         return Err(format!("{name}: not ported: {}", missing.join(", ")));
     }
-
-    let services = Services {
-        validator: Arc::new(
-            CompiledSchemaValidator::new(registry.tools()).map_err(|e| format!("{name}: {e}"))?,
-        ),
-        classification: Arc::new(UnloadedClassification),
-        policy: Arc::new(AllowAll),
-        protector: Arc::new(PassThrough),
-        credentials: sandbox.credentials.clone(),
-        audit: Arc::new(StderrAudit),
-        script_guard: ScriptOperandGuard {
-            shared_account: false,
-        },
-    };
-    let dispatcher = Arc::new(Dispatcher::new(registry, services, *KEY));
     let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
-        .registry(sandbox.registry.clone())
+        .registry(sandbox.config.clone())
         .build();
 
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
@@ -662,17 +633,19 @@ pub async fn replay(world: &World, file: &Path, register: Register) -> Result<()
         .map_err(|e| format!("{name}: {e}"))?;
 
     let mut got_steps = Vec::new();
+    let mut hosts: Vec<Vec<String>> = Vec::new();
     for (method, params) in &requests {
         world.stub.take();
         world.raw.take();
+        client.drain().await.map_err(|e| format!("{name}: {e}"))?;
         let (message, notifications) = client
             .request(method, params)
             .await
             .map_err(|e| format!("{name}: {e}"))?;
         tokio::time::sleep(SETTLE).await;
-        let outbound: Vec<Value> = world
-            .stub
-            .take()
+        let sn = world.stub.take();
+        hosts.push(sn.iter().map(|r| r.host.clone()).collect());
+        let outbound: Vec<Value> = sn
             .iter()
             .map(|r| r.to_json("servicenow"))
             .chain(world.raw.take().iter().map(|r| r.to_json("github-raw")))
@@ -702,6 +675,18 @@ pub async fn replay(world: &World, file: &Path, register: Register) -> Result<()
             &comparable_outbound(&want["outbound"]),
             &mut problems,
         );
+        let expected = if sc.prod_steps.contains(&i) {
+            world.prod_host()
+        } else {
+            world.default_host()
+        };
+        if let Some(wrong) = hosts[i].iter().find(|h| **h != expected) {
+            problems.push(format!(
+                "step {i} instance: a ServiceNow request reached {}, expected {}",
+                scrubber.string(wrong),
+                scrubber.string(&expected)
+            ));
+        }
     }
     if problems.is_empty() {
         Ok(())
@@ -711,19 +696,19 @@ pub async fn replay(world: &World, file: &Path, register: Register) -> Result<()
 }
 
 /// First mismatch as `at <json-pointer>: got X, want Y`; strings show the first
-/// differing line so long tool texts stay readable.
-fn first_difference(got: &Value, want: &Value, at: String) -> Option<String> {
+/// differing line so long tool texts stay readable. A key present on one side only
+/// is a mismatch even when the other side's value is `null`.
+pub fn first_difference(got: &Value, want: &Value, at: String) -> Option<String> {
     match (got, want) {
         (Value::Object(g), Value::Object(w)) => {
             let mut keys: Vec<&String> = g.keys().chain(w.keys()).collect();
             keys.sort();
             keys.dedup();
-            keys.into_iter().find_map(|k| {
-                first_difference(
-                    g.get(k).unwrap_or(&Value::Null),
-                    w.get(k).unwrap_or(&Value::Null),
-                    format!("{at}/{k}"),
-                )
+            keys.into_iter().find_map(|k| match (g.get(k), w.get(k)) {
+                (Some(gv), Some(wv)) => first_difference(gv, wv, format!("{at}/{k}")),
+                (Some(gv), None) => Some(format!("at {at}/{k}: only in got: {gv}")),
+                (None, Some(wv)) => Some(format!("at {at}/{k}: only in golden: {wv}")),
+                (None, None) => None,
             })
         }
         (Value::Array(g), Value::Array(w)) if g.len() == w.len() => g
@@ -747,25 +732,4 @@ fn first_difference(got: &Value, want: &Value, at: String) -> Option<String> {
         _ if got != want => Some(format!("at {at}:\n  got:  {got}\n  want: {want}")),
         _ => None,
     }
-}
-
-/// Replays every golden of `family` and panics with one report listing each golden
-/// that differs (`golden_cli.rs` style).
-pub async fn replay_family(family: &str, register: Register) {
-    let files = golden_files(family);
-    assert!(!files.is_empty(), "no goldens for family {family}");
-    let world = World::start().await;
-    let mut failures = Vec::new();
-    for file in &files {
-        if let Err(e) = replay(&world, file, register).await {
-            failures.push(e);
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{} of {} {family} goldens differ:\n\n{}",
-        failures.len(),
-        files.len(),
-        failures.join("\n\n")
-    );
 }

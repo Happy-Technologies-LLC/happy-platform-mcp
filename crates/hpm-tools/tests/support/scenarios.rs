@@ -30,6 +30,11 @@ pub struct Scenario {
     pub env: Vec<(&'static str, &'static str)>,
     /// `params` per step, for goldens whose recorded request was normalized.
     pub requests: Option<Vec<Value>>,
+    /// Steps whose ServiceNow requests must reach the `prod` instance
+    /// (`localhost:P`, `{{INSTANCE_HOST_ALT}}`). Every other step must reach the
+    /// default (`127.0.0.1:P`, `{{INSTANCE_HOST}}`). The capture never recorded the
+    /// host, so this is how the routing goldens prove the instance choice.
+    pub prod_steps: &'static [usize],
 }
 
 fn u(n: u32) -> String {
@@ -347,11 +352,17 @@ pub fn scenario(id: &str) -> Scenario {
                     .then(|| json_answer(403, error_body("User is not authorized", "golden")))
             }));
         }
+        "SN-Query-Table/per-call-instance-override" => {
+            s.instances = Some(registry);
+            s.prod_steps = &[0];
+        }
+        "SN-Set-Instance/switch-then-current" => {
+            s.instances = Some(registry);
+            s.prod_steps = &[2];
+        }
         "SN-Get-Current-Instance/registry-default"
         | "SN-Set-Instance/list"
-        | "SN-Set-Instance/switch-then-current"
         | "SN-Set-Instance/unknown-instance"
-        | "SN-Query-Table/per-call-instance-override"
         | "SN-Query-Table/unknown-instance-override"
         | "SN-Register-Instance/secret-field-rejected"
         | "SN-Register-Instance/insecure-url-rejected" => {

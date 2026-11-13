@@ -1,9 +1,9 @@
 //! Rust port of `scripts/golden/lib/stub-sn.mjs`: deterministic loopback stand-in
 //! for a ServiceNow instance (Table API, update-set/application pickers, session
 //! bootstrap) and for raw.githubusercontent.com. Records every request in order.
-//! Keep in step with the JS; `stub_selftest` in `golden_tools.rs` pins its answers.
+//! Keep in step with the JS; `stub_selftest` in `golden_harness.rs` pins its answers.
 
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -139,13 +139,28 @@ impl StubSn {
         let s = shared.clone();
         let port = http::serve(Arc::new(move |raw: RawRequest| {
             let described = http::describe(&raw.method, &raw.target, &raw.headers, &raw.body);
-            let mut guard = s.lock().expect("stub lock");
+            let mut guard = s.lock().unwrap_or_else(PoisonError::into_inner);
             let Shared { routes, state } = &mut *guard;
             state.requests.push(described.clone());
-            let answer = routes
-                .as_ref()
-                .and_then(|r| r(&described, state))
-                .unwrap_or_else(|| default_routes(&described, state));
+            // JS turns a throwing route into a 500 `stub failure: …`.
+            let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                routes
+                    .as_ref()
+                    .and_then(|r| r(&described, state))
+                    .unwrap_or_else(|| default_routes(&described, state))
+            }))
+            .unwrap_or_else(|panic| {
+                let why = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                    .unwrap_or_default();
+                Answer {
+                    status: 500,
+                    body: Body::Json(json!({"error": {"message": format!("stub failure: {why}"), "detail": "golden stub"}})),
+                    headers: Vec::new(),
+                }
+            });
             to_reply(answer)
         }))
         .await;
@@ -158,14 +173,21 @@ impl StubSn {
 
     /// `reset(routes)`: fresh state for one scenario.
     pub fn reset(&self, routes: Option<Routes>) {
-        let mut g = self.shared.lock().expect("stub lock");
+        let mut g = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
         g.routes = routes;
         g.state = State::default();
     }
 
     /// `take()`: requests since the last take, in arrival order.
     pub fn take(&self) -> Vec<Described> {
-        std::mem::take(&mut self.shared.lock().expect("stub lock").state.requests)
+        std::mem::take(
+            &mut self
+                .shared
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .state
+                .requests,
+        )
     }
 }
 
@@ -304,6 +326,10 @@ pub fn default_routes(req: &Described, state: &mut State) -> Answer {
             }
             ("PATCH" | "PUT", _) => {
                 let mut row = make_row(table, 1, &obj(json!({"sys_id": id})));
+                // JS `{sys_id: undefined}` drops the key from the JSON.
+                if id.is_none() {
+                    row.remove("sys_id");
+                }
                 if let Some(Value::Object(b)) = &req.body {
                     for (k, v) in b {
                         row.insert(k.clone(), v.clone());
@@ -410,7 +436,9 @@ impl RawStub {
         let port = http::serve(Arc::new(move |raw: RawRequest| {
             // The JS records `describeRequest(req, '')`: the body is never kept.
             let described = http::describe(&raw.method, &raw.target, &raw.headers, "");
-            r.lock().expect("raw stub lock").push(described);
+            r.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(described);
             match routes.iter().find(|(p, _)| *p == raw.target) {
                 Some((_, body)) => Reply {
                     status: 200,
@@ -433,6 +461,6 @@ impl RawStub {
     }
 
     pub fn take(&self) -> Vec<Described> {
-        std::mem::take(&mut *self.requests.lock().expect("raw stub lock"))
+        std::mem::take(&mut *self.requests.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
