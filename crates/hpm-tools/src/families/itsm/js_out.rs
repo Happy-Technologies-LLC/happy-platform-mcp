@@ -1,6 +1,5 @@
 //! JavaScript value semantics the 6.2.0 handlers rely on: truthiness, template
-//! coercion (`${x}`, `undefined` for a missing value), `JSON.stringify(x, null, 2)`
-//! and the encoded-query facts the normalizers report.
+//! coercion (`${x}`, `undefined` for a missing value) and `JSON.stringify(x, null, 2)`.
 
 use serde_json::{Map, Value};
 
@@ -127,97 +126,6 @@ pub(super) fn length(v: &Value) -> String {
     }
 }
 
-/// Facts an encoded query exposes to policy: referenced fields, ordering fields
-/// and `javascript:` operands (whitespace-normalized, prefix stripped).
-#[derive(Default, Debug, PartialEq, Eq)]
-pub(super) struct QueryFacts {
-    pub predicate: Vec<String>,
-    pub ordering: Vec<String>,
-    pub operands: Vec<String>,
-}
-
-impl QueryFacts {
-    /// Scans the query as sent and, when it holds `%` escapes, its decoded
-    /// form too, so an encoded `javascript%3A` operand cannot slip past the guard.
-    pub(super) fn add(&mut self, query: &str) {
-        self.scan(query);
-        if query.contains('%') {
-            let decoded = percent_decode(query);
-            if decoded != query {
-                self.scan(&decoded);
-            }
-        }
-    }
-
-    fn scan(&mut self, query: &str) {
-        for seg in query.split('^') {
-            if let Some(field) = seg
-                .strip_prefix("ORDERBYDESC")
-                .or_else(|| seg.strip_prefix("ORDERBY"))
-                .or_else(|| seg.strip_prefix("GROUPBY"))
-            {
-                push_unique(&mut self.ordering, field_prefix(field));
-                continue;
-            }
-            let cond = seg
-                .strip_prefix("NQ")
-                .or_else(|| seg.strip_prefix("OR"))
-                .unwrap_or(seg);
-            let end = cond
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-                .unwrap_or(cond.len());
-            push_unique(&mut self.predicate, &cond[..end]);
-            let lower = seg.to_ascii_lowercase();
-            if let Some(at) = lower.find("javascript:") {
-                let operand = seg[at + "javascript:".len()..]
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                self.operands.push(operand);
-            }
-        }
-    }
-}
-
-/// Copied from lane A's `crud::normalize`; the lead dedupes on merge.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| (b as char).to_digit(16);
-        if bytes[i] == b'%'
-            && let (Some(h), Some(l)) = (
-                bytes.get(i + 1).copied().and_then(hex),
-                bytes.get(i + 2).copied().and_then(hex),
-            )
-        {
-            out.push(u8::try_from(h * 16 + l).unwrap_or(b'?'));
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// The leading field name (`[A-Za-z0-9_.]*`) of a condition or ordering term.
-fn field_prefix(s: &str) -> &str {
-    let s = s.trim_start();
-    let end = s
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-        .unwrap_or(s.len());
-    &s[..end]
-}
-
-fn push_unique(v: &mut Vec<String>, s: &str) {
-    let s = s.trim();
-    if !s.is_empty() && !v.iter().any(|x| x == s) {
-        v.push(s.to_owned());
-    }
-}
-
 /// `sysparm_order_by` / comma-separated field list.
 pub(super) fn field_list(v: Option<&Value>) -> Vec<String> {
     param(v)
@@ -254,22 +162,5 @@ mod tests {
         assert_eq!(tpl(None), "undefined");
         assert_eq!(tpl(Some(&json!(3))), "3");
         assert_eq!(param(Some(&json!(0))), None);
-    }
-
-    #[test]
-    fn query_facts() {
-        let mut f = QueryFacts::default();
-        f.add("active=true^ORpriority=1^assigned_to=javascript:gs.getUserID()^ORDERBYDESCnumber");
-        assert_eq!(f.predicate, ["active", "priority", "assigned_to"]);
-        assert_eq!(f.ordering, ["number"]);
-        assert_eq!(f.operands, ["gs.getUserID()"]);
-    }
-
-    #[test]
-    fn query_facts_decode_escapes_and_trim_ordering() {
-        let mut f = QueryFacts::default();
-        f.add("caller_id=javascript%3Ags.getSession()^GROUPBYstate^ORDERBYnumber DESC");
-        assert_eq!(f.operands, ["gs.getSession()"]);
-        assert_eq!(f.ordering, ["state", "number"]);
     }
 }

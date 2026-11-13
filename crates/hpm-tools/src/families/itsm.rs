@@ -31,7 +31,9 @@ mod js_out;
 mod ops;
 mod schemas;
 
-use js_out::{QueryFacts, field_list, param, pretty, prop, tpl, truthy};
+use crate::families::common::failed_outcome;
+use crate::logic::encoded_query::{QueryInfo, analyze_query, query_value};
+use js_out::{field_list, param, pretty, prop, tpl, truthy};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -342,23 +344,6 @@ impl<S: Sn> Call<'_, S> {
     }
 }
 
-/// What a failed single write proves about the server side: stale or
-/// credential errors are raised before the send; an HTTP status means
-/// ServiceNow answered; anything else (transport) may have committed.
-fn failed_outcome(e: &ClientError) -> MutationOutcome {
-    let pre_send = e.is_stale()
-        || e.code
-            .as_deref()
-            .is_some_and(hpm_core::client::error::is_credential_error_code);
-    if pre_send {
-        MutationOutcome::NotSent
-    } else if e.status.is_some_and(|s| s != 0) {
-        MutationOutcome::Failed
-    } else {
-        MutationOutcome::Unknown
-    }
-}
-
 fn query(q: impl Into<String>, limit: &str) -> RecordQuery {
     RecordQuery {
         query: Some(q.into()),
@@ -414,7 +399,42 @@ impl ToolHandler for Handler {
     }
 }
 
+/// Arguments a tool interpolates into an encoded query (owner decision on
+/// review B M3): each must stay one operand, so `^` and control characters
+/// are refused before any request.
+fn query_args(kind: Kind) -> &'static [&'static str] {
+    use Kind::*;
+    match kind {
+        AddComment | AddWorkNotes | ResolveIncident | CloseIncident => &["incident_number"],
+        AssignIncident => &["incident_number", "assigned_to", "assignment_group"],
+        AddChangeComment | ApproveChange => &["change_number"],
+        AssignChange => &["change_number", "assigned_to", "assignment_group"],
+        AddProblemComment | CloseProblem => &["problem_number"],
+        CatalogGetItem => &["sys_id"],
+        CatalogSearchItems => &["keyword", "category"],
+        ValidateConfiguration => &["catalog_item"],
+        _ => &[],
+    }
+}
+
+fn guard_query_args(kind: Kind, args: &Value) -> Result<(), ToolError> {
+    for name in query_args(kind) {
+        if let Some(Value::String(v)) = args.get(*name) {
+            query_value(name, v)?;
+        }
+    }
+    Ok(())
+}
+
 async fn run<S: Sn>(kind: Kind, sn: &S, args: &Value) -> HandlerCompletion {
+    if let Err(e) = guard_query_args(kind, args) {
+        let outcome = if kind.mutates() {
+            MutationOutcome::NotSent
+        } else {
+            MutationOutcome::NotAMutation
+        };
+        return HandlerCompletion::new(outcome, Vec::new(), Err(e));
+    }
     let mut call = Call {
         sn,
         outcome: if kind.mutates() {
@@ -574,15 +594,27 @@ fn read(
     returned: Vec<String>,
     input: &NormalizeInput<'_>,
 ) -> Operation {
-    let mut facts = QueryFacts::default();
+    let mut facts = QueryInfo::default();
     for q in queries {
-        facts.add(q);
+        let info = analyze_query(q);
+        // Fields are a set; every script operand is reported.
+        for (into, from) in [
+            (&mut facts.predicate_fields, info.predicate_fields),
+            (&mut facts.ordering_fields, info.ordering_fields),
+        ] {
+            for v in from {
+                if !into.contains(&v) {
+                    into.push(v);
+                }
+            }
+        }
+        facts.script_operands.extend(info.script_operands);
     }
     op(kind, Action::Read, table, input)
         .returned_fields(returned)
-        .predicate_fields(facts.predicate)
-        .ordering_fields(facts.ordering)
-        .query_script_operands(facts.operands)
+        .predicate_fields(facts.predicate_fields)
+        .ordering_fields(facts.ordering_fields)
+        .query_script_operands(facts.script_operands)
 }
 
 /// A write of `data`'s fields; script values are reported (escalated centrally).
@@ -750,6 +782,79 @@ mod tests {
         assert_eq!(o.query_script_operands, ["gs.getUserID()"]);
         assert_eq!(o.returned_fields, ["number", "short_description"]);
         assert_eq!(o.ordering_fields, ["opened_at"]);
+    }
+
+    #[tokio::test]
+    async fn query_arguments_with_caret_or_control_chars_are_refused_unsent() {
+        let cases = [
+            (
+                Kind::AddComment,
+                json!({"incident_number": "INC1^ORnumberSTARTSWITHINC", "comment": "c"}),
+                "incident_number must not contain '^' (it would add encoded-query conditions)",
+            ),
+            (
+                Kind::AssignIncident,
+                json!({"incident_number": "INC1", "assigned_to": "bob\nx"}),
+                "assigned_to must not contain line breaks or other control characters",
+            ),
+            (
+                Kind::AssignChange,
+                json!({"change_number": "CHG1", "assigned_to": "bob", "assignment_group": "a^NQx"}),
+                "assignment_group must not contain '^' (it would add encoded-query conditions)",
+            ),
+            (
+                Kind::CloseProblem,
+                json!({"problem_number": "P^ORDERBYnumber", "resolution_notes": "n"}),
+                "problem_number must not contain '^' (it would add encoded-query conditions)",
+            ),
+            (
+                Kind::CatalogSearchItems,
+                json!({"keyword": "lap^active=false"}),
+                "keyword must not contain '^' (it would add encoded-query conditions)",
+            ),
+            (
+                Kind::CatalogGetItem,
+                json!({"sys_id": "a^ORactive=false"}),
+                "sys_id must not contain '^' (it would add encoded-query conditions)",
+            ),
+            (
+                Kind::ValidateConfiguration,
+                json!({"catalog_item": "a\u{0}"}),
+                "catalog_item must not contain line breaks or other control characters",
+            ),
+        ];
+        for (kind, args, text) in cases {
+            let sn = Fake::new();
+            let done = run(kind, &sn, &args).await;
+            assert!(
+                matches!(&done.result, Err(ToolError::InvalidParams(m)) if m == text),
+                "{kind:?}: {:?}",
+                done.result
+            );
+            let want = if kind.mutates() {
+                MutationOutcome::NotSent
+            } else {
+                MutationOutcome::NotAMutation
+            };
+            assert_eq!(done.outcome, want, "{kind:?}");
+            assert!(sn.calls().is_empty(), "{kind:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn plain_values_pass_the_guard() {
+        let sn = Fake::new().ok(json!([{"sys_id": "abc"}]));
+        let done = run(
+            Kind::AddComment,
+            &sn,
+            &json!({"incident_number": "INC 0010001", "comment": "a^b is fine here"}),
+        )
+        .await;
+        assert_eq!(done.outcome, MutationOutcome::Committed);
+        assert_eq!(
+            sn.calls()[0],
+            "GET incident query=number=INC 0010001 limit=1"
+        );
     }
 
     #[test]
