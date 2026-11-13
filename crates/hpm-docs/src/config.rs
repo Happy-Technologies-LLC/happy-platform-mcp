@@ -72,8 +72,9 @@ impl DocsSystemProperties {
 /// Loads `docs` from the config file at `config_path`. A missing or syntactically invalid
 /// file yields defaults; any other failure is an error (as in 6.2.0).
 pub fn read_system_docs_properties(config_path: &Path) -> Result<DocsSystemProperties, DocsError> {
-    let text = match std::fs::read_to_string(config_path) {
-        Ok(text) => text,
+    let text = match std::fs::read(config_path) {
+        // JS decoded with replacement characters; the JSON parse then decides.
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(DocsSystemProperties::default());
         }
@@ -351,6 +352,13 @@ mod tests {
         std::fs::write(&broken, "{ not json").unwrap();
         assert_eq!(
             read_system_docs_properties(&broken).unwrap(),
+            DocsSystemProperties::default()
+        );
+        // Non-UTF-8 bytes decode lossily like JS, then fail JSON parsing: defaults.
+        let binary = dir.path().join("binary.json");
+        std::fs::write(&binary, [0xff, 0xfe, 0x7b, 0x80]).unwrap();
+        assert_eq!(
+            read_system_docs_properties(&binary).unwrap(),
             DocsSystemProperties::default()
         );
         // A directory is not ENOENT/SyntaxError: surfaced as an error.

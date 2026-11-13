@@ -171,7 +171,8 @@ impl DocsStore {
         self.vector.ensure_tables(&self.conn);
         self.discard_legacy_cache()?;
         self.conn.execute_batch(SCHEMA)?;
-        self.vector.reconcile(&mut self.conn)
+        self.vector.reconcile(&mut self.conn);
+        Ok(())
     }
 
     /// Caches written before branch provenance existed cannot prove which ref their content
@@ -295,7 +296,10 @@ impl DocsStore {
         if !self.vector.available() {
             return self.fts_results(query, family, limit);
         }
-        let mut merged = self.vector.search(&self.conn, query, family, limit)?;
+        // A failing vector query must not take text search down with it.
+        let Ok(mut merged) = self.vector.search(&self.conn, query, family, limit) else {
+            return self.fts_results(query, family, limit);
+        };
         let seen: HashSet<i64> = merged.iter().map(|result| result.id).collect();
         merged.extend(
             self.fts_results(query, family, limit)?
@@ -594,6 +598,72 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_vector_rebuild_disables_vector_search_with_a_reason_and_keeps_text_search() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut store = open(&dir, "index.sqlite", &VectorConfig::default());
+            store.begin_family_sync("australia", "australia").unwrap();
+            let markdown = "# Flow Designer\n\nCreate actions.";
+            store
+                .replace_document(
+                    &record("a.md", "australia", markdown),
+                    &[chunk("a.md", markdown)],
+                )
+                .unwrap();
+        }
+        let broken = VectorConfig {
+            enable_vector: true,
+            embedding_provider: "custom".to_owned(),
+            embed_text: Some(std::sync::Arc::new(|_| vec![0.0; 3])),
+            ..VectorConfig::default()
+        };
+
+        let store = open(&dir, "index.sqlite", &broken);
+
+        let status = store.status().unwrap();
+        assert!(!status.vector_available);
+        assert!(
+            status.vector_reason.unwrap().starts_with(
+                "Vector index rebuild failed: Embedding has 3 dimensions; expected 128"
+            )
+        );
+        assert_eq!(
+            store.search("actions", Some("australia"), 5).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn opening_an_up_to_date_vector_cache_does_not_need_the_write_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut store = open(&dir, "index.sqlite", &local_vector());
+            store.begin_family_sync("australia", "australia").unwrap();
+            let markdown = "# Flow Designer\n\nCreate actions.";
+            store
+                .replace_document(
+                    &record("a.md", "australia", markdown),
+                    &[chunk("a.md", markdown)],
+                )
+                .unwrap();
+        }
+        // Another process holds the write lock (for instance a sync on the same cache).
+        let writer = Connection::open(dir.path().join("index.sqlite")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let started = std::time::Instant::now();
+        let store = open(&dir, "index.sqlite", &local_vector());
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(store.status().unwrap().vector_available);
+        assert_eq!(
+            store.search("actions", Some("australia"), 5).unwrap().len(),
+            1
+        );
+        writer.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
     fn begin_family_sync_purges_content_from_another_ref_and_reports_it() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open(&dir, "index.sqlite", &local_vector());
@@ -698,6 +768,20 @@ mod tests {
     }
 
     #[test]
+    fn the_js_fixture_carries_a_sqlite_vec_table_that_the_rust_store_never_touches() {
+        let (dir, _store) = js_fixture(&VectorConfig::default());
+        let raw = Connection::open(dir.path().join("index.sqlite")).unwrap();
+        let vec0: String = raw
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'docs_chunk_vectors'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(vec0.to_lowercase().contains("vec0"));
+    }
+
+    #[test]
     fn rebuilds_the_vector_index_on_first_run_over_a_js_database() {
         let (_dir, mut store) = js_fixture(&local_vector());
 
@@ -708,14 +792,28 @@ mod tests {
         assert_eq!(results[0].path, "platform/flow-designer.md");
         assert!(results[0].vector_distance.is_some());
 
-        // Removing a document also removes its embeddings.
-        let keep: HashSet<String> = ["platform/flow-designer.md".to_owned()].into();
+        // Resync over the 6.x database: replace a document, add one, drop another.
+        assert!(!store.begin_family_sync("australia", "australia").unwrap());
+        let markdown = "# Flow Designer\n\nRewritten reusable flow actions.";
         store
+            .replace_document(
+                &record("platform/flow-designer.md", "australia", markdown),
+                &[chunk("platform/flow-designer.md", markdown)],
+            )
+            .unwrap();
+        let keep: HashSet<String> = ["platform/flow-designer.md".to_owned()].into();
+        let removed = store
             .complete_family_sync("australia", "australia", "2026-02-03T04:05:06.789Z", &keep)
             .unwrap();
+
+        assert_eq!(removed, ["platform/old.md"]);
         let after = store
             .search("legacy workflows", Some("australia"), 5)
             .unwrap();
         assert!(after.iter().all(|hit| hit.path != "platform/old.md"));
+        let rewritten = store.search("rewritten", Some("australia"), 5).unwrap();
+        assert_eq!(rewritten[0].path, "platform/flow-designer.md");
+        assert!(rewritten[0].vector_distance.is_some());
+        store.close().unwrap();
     }
 }

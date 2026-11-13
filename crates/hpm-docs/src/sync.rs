@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -355,8 +356,8 @@ pub async fn sync_docs_family_with<T, S, F>(
 ) -> Result<SyncResult, DocsError>
 where
     T: DocsTransport,
-    S: SyncStore,
-    F: FnOnce(&Path, &VectorConfig) -> Result<S, DocsError>,
+    S: SyncStore + 'static,
+    F: FnOnce(&Path, &VectorConfig) -> Result<S, DocsError> + Send + 'static,
 {
     assert_docs_family_name(options.family)?;
     if let Some(branch) = options.branch {
@@ -376,14 +377,47 @@ where
     }
 }
 
+/// Runs blocking SQLite (and embedding) work off the async workers so the sync deadline,
+/// cancellation and unrelated requests on the shared runtime stay responsive. A job that is
+/// already running cannot be interrupted: when the deadline drops the sync, the job finishes
+/// its current transaction and the store is closed right after it.
+async fn run_blocking<R, F>(job: F) -> Result<R, DocsError>
+where
+    R: Send + 'static,
+    F: FnOnce() -> Result<R, DocsError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(job)
+        .await
+        .map_err(|_| DocsError::plain("ServiceNow docs cache task failed"))?
+}
+
+/// The store, shared with the blocking jobs. Dropped (and so closed) once the sync and any
+/// job still running have finished.
+struct StoreCell<S>(Arc<Mutex<S>>);
+
+impl<S: SyncStore + 'static> StoreCell<S> {
+    async fn run<R, F>(&self, job: F) -> Result<R, DocsError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut S) -> Result<R, DocsError> + Send + 'static,
+    {
+        let store = Arc::clone(&self.0);
+        run_blocking(move || {
+            let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
+            job(&mut guard)
+        })
+        .await
+    }
+}
+
 async fn run_sync<T, S, F>(
     options: &SyncOptions<'_, T>,
     store_factory: F,
 ) -> Result<SyncResult, DocsError>
 where
     T: DocsTransport,
-    S: SyncStore,
-    F: FnOnce(&Path, &VectorConfig) -> Result<S, DocsError>,
+    S: SyncStore + 'static,
+    F: FnOnce(&Path, &VectorConfig) -> Result<S, DocsError> + Send + 'static,
 {
     let SyncOptions {
         family,
@@ -430,9 +464,19 @@ where
         "the cache directory",
         tokio::fs::create_dir_all(cache_dir).await,
     )?;
-    let mut store = store_factory(&cache_dir.join(INDEX_DB_FILE), vector_config)?;
-    store.initialize()?;
-    let invalidated = store.begin_family_sync(family, &approved.branch)?;
+    let (store, invalidated) = {
+        let db_path = cache_dir.join(INDEX_DB_FILE);
+        let vector_config = vector_config.clone();
+        let (family, branch) = (family.to_owned(), approved.branch.clone());
+        let (store, invalidated) = run_blocking(move || {
+            let mut store = store_factory(&db_path, &vector_config)?;
+            store.initialize()?;
+            let invalidated = store.begin_family_sync(&family, &branch)?;
+            Ok((store, invalidated))
+        })
+        .await?;
+        (StoreCell(Arc::new(Mutex::new(store))), invalidated)
+    };
     if invalidated {
         let family_dir = resolve_docs_cache_path(cache_dir, family, None)?;
         cache_io(family, remove_path(&family_dir).await)?;
@@ -470,21 +514,26 @@ where
         }
         cache_io(&label, tokio::fs::write(&output_path, &markdown).await)?;
 
-        let chunks = chunk_markdown(family, link, &markdown);
-        let title = chunks
-            .first()
-            .map_or_else(|| link.clone(), |chunk| chunk.title.clone());
-        store.replace_document(
-            &DocumentRecord {
-                family: family.to_owned(),
-                branch: approved.branch.clone(),
-                path: link.clone(),
-                sha: None,
-                title,
-                markdown,
-            },
-            &chunks,
-        )?;
+        let (family, branch, path) = (family.to_owned(), approved.branch.clone(), link.clone());
+        store
+            .run(move |store| {
+                let chunks = chunk_markdown(&family, &path, &markdown);
+                let title = chunks
+                    .first()
+                    .map_or_else(|| path.clone(), |chunk| chunk.title.clone());
+                store.replace_document(
+                    &DocumentRecord {
+                        family,
+                        branch,
+                        path,
+                        sha: None,
+                        title,
+                        markdown,
+                    },
+                    &chunks,
+                )
+            })
+            .await?;
         documents_synced += 1;
     }
 
@@ -495,12 +544,13 @@ where
     }
 
     let keep: HashSet<String> = links.into_iter().collect();
-    let removed_paths = store.complete_family_sync(
-        family,
-        &approved.branch,
-        &iso8601_millis(SystemTime::now()),
-        &keep,
-    )?;
+    let removed_paths = {
+        let (family, branch) = (family.to_owned(), approved.branch.clone());
+        let synced_at = iso8601_millis(SystemTime::now());
+        store
+            .run(move |store| store.complete_family_sync(&family, &branch, &synced_at, &keep))
+            .await?
+    };
     for removed in &removed_paths {
         let path = resolve_docs_cache_path(cache_dir, family, Some(removed))?;
         cache_io(&format!("{family}/{removed}"), remove_path(&path).await)?;
@@ -758,12 +808,15 @@ mod tests {
                     limits: self.limits.clone(),
                     cancel: None,
                 },
-                |path, vector| {
-                    stats.opened.fetch_add(1, Ordering::SeqCst);
-                    Ok(Tracked {
-                        inner: DocsStore::open(path, vector)?,
-                        closed: Arc::clone(&stats.closed),
-                    })
+                {
+                    let (opened, closed) = (Arc::clone(&stats.opened), Arc::clone(&stats.closed));
+                    move |path: &Path, vector: &VectorConfig| {
+                        opened.fetch_add(1, Ordering::SeqCst);
+                        Ok(Tracked {
+                            inner: DocsStore::open(path, vector)?,
+                            closed,
+                        })
+                    }
                 },
             )
             .await
@@ -772,7 +825,7 @@ mod tests {
 
     #[derive(Default)]
     struct Stats {
-        opened: AtomicUsize,
+        opened: Arc<AtomicUsize>,
         closed: Arc<AtomicUsize>,
     }
 
@@ -1077,6 +1130,74 @@ mod tests {
             error.message(),
             "ServiceNow docs sync exceeded its 150 ms deadline"
         );
+        assert_eq!(stats.counts(), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn the_deadline_fires_on_time_while_a_slow_embedder_blocks_the_store_work() {
+        let limits = DocsLimits {
+            sync_timeout: Duration::from_millis(150),
+            ..DocsLimits::default()
+        };
+        let env = Env::with_limits(
+            &[
+                (FAMILY_LLMS, "- [slow](slow.md)"),
+                (&doc("slow.md"), "# Slow\n\nBody that must be embedded."),
+            ],
+            limits,
+        );
+        let stats = Stats::default();
+        let client = env.client();
+        let vector_config = VectorConfig {
+            enable_vector: true,
+            embedding_provider: "custom".to_owned(),
+            embed_text: Some(Arc::new(|_| {
+                std::thread::sleep(Duration::from_millis(800));
+                vec![0.0; crate::vector::DEFAULT_VECTOR_DIMENSIONS]
+            })),
+            ..VectorConfig::default()
+        };
+
+        let started = Instant::now();
+        let error = sync_docs_family_with(
+            SyncOptions {
+                family: "australia",
+                branch: None,
+                cache_dir: env.cache.path(),
+                client: &client,
+                vector_config,
+                limits: env.limits.clone(),
+                cancel: None,
+            },
+            {
+                let (opened, closed) = (Arc::clone(&stats.opened), Arc::clone(&stats.closed));
+                move |path: &Path, vector: &VectorConfig| {
+                    opened.fetch_add(1, Ordering::SeqCst);
+                    Ok(Tracked {
+                        inner: DocsStore::open(path, vector)?,
+                        closed,
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+        let elapsed = started.elapsed();
+
+        assert_eq!(error.code_str(), Some("DOCS_SYNC_DEADLINE"));
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "deadline fired after {elapsed:?}"
+        );
+        // The running transaction finishes, then the store is closed.
+        let wait = Instant::now();
+        while stats.counts().1 == 0 {
+            assert!(
+                wait.elapsed() < Duration::from_secs(5),
+                "store was never closed"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert_eq!(stats.counts(), (1, 1));
     }
 

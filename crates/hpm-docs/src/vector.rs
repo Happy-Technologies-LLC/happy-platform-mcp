@@ -6,6 +6,9 @@
 //! default metric). Existing caches are upgraded transparently: on first use every chunk
 //! without an embedding is embedded ("rebuilt on first run"); a leftover `vec0` table from
 //! 6.x is never touched and stays inert.
+//!
+//! After a downgrade to 6.x, resync the families to restore vector results: a Rust resync
+//! changes chunk ids, so the old `vec0` rows are stale (text search is unaffected).
 
 use std::fmt;
 use std::sync::Arc;
@@ -225,10 +228,39 @@ impl VectorIndex {
     /// Brings the embeddings in line with the chunks: drops everything when the embedding
     /// signature changed, removes orphans and embeds every chunk that has no embedding yet.
     /// This is the one-time rebuild of an index that came from the JS server.
-    pub fn reconcile(&self, conn: &mut Connection) -> Result<(), DocsError> {
+    ///
+    /// Opening a cache that is already in line performs no write (so a search-only process
+    /// needs no write lock and works on a read-only file). Any failure disables the vector
+    /// index with a reason instead of failing the store: text search keeps working.
+    pub fn reconcile(&mut self, conn: &mut Connection) {
+        if let Err(error) = self.try_reconcile(conn) {
+            self.embedder = None;
+            self.reason = Some(format!("Vector index rebuild failed: {}", error.message()));
+        }
+    }
+
+    fn try_reconcile(&self, conn: &mut Connection) -> Result<(), DocsError> {
         let Some(embedder) = &self.embedder else {
             return Ok(());
         };
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM docs_vector_meta WHERE key = ?1",
+                [SIGNATURE_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let exists = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, bool>(0));
+        if stored.as_deref() == Some(embedder.signature.as_str())
+            && !exists(
+                "SELECT EXISTS(SELECT 1 FROM docs_chunk_embeddings WHERE chunk_id NOT IN (SELECT id FROM chunks))",
+            )?
+            && !exists(
+                "SELECT EXISTS(SELECT 1 FROM chunks WHERE id NOT IN (SELECT chunk_id FROM docs_chunk_embeddings))",
+            )?
+        {
+            return Ok(());
+        }
         let tx = conn.transaction()?;
         let stored: Option<String> = tx
             .query_row(

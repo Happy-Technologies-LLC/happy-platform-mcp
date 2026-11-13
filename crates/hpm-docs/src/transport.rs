@@ -21,6 +21,8 @@ impl ReqwestTransport {
     pub(crate) fn with_origin(origin: &str) -> Result<Self, DocsError> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            // 6.2.0's fetch ignored HTTP(S)_PROXY/ALL_PROXY; keep docs traffic direct.
+            .no_proxy()
             .user_agent(concat!("happy-platform-mcp/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| {

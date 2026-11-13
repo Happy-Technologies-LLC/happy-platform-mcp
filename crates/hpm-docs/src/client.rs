@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{assert_docs_family_name, normalize_docs_document_path};
@@ -446,7 +446,7 @@ async fn fetch_bounded_text<T: DocsTransport>(
 pub struct DocsClient<T> {
     transport: T,
     limits: DocsLimits,
-    families: Mutex<Option<Vec<DocsFamily>>>,
+    families: OnceCell<Vec<DocsFamily>>,
 }
 
 impl<T: DocsTransport> DocsClient<T> {
@@ -454,7 +454,7 @@ impl<T: DocsTransport> DocsClient<T> {
         Self {
             transport,
             limits,
-            families: Mutex::new(None),
+            families: OnceCell::new(),
         }
     }
 
@@ -500,24 +500,35 @@ impl<T: DocsTransport> DocsClient<T> {
         &self,
         options: RequestOptions<'_>,
     ) -> Result<Vec<DocsFamily>, DocsError> {
-        let mut cached = self.families.lock().await;
-        if let Some(families) = cached.as_ref() {
-            return Ok(families.clone());
-        }
-        let text = self
-            .request(
-                DOCS_INDEX_REF,
-                "llms.txt",
-                self.limits.index_bytes,
-                RequestOptions {
-                    budget: None,
-                    ..options
-                },
-            )
-            .await?;
-        let families = parse_families_from_llms(&text, self.limits.max_families)?;
-        *cached = Some(families.clone());
-        Ok(families)
+        let load = self.families.get_or_try_init(|| async {
+            let text = self
+                .request(
+                    DOCS_INDEX_REF,
+                    "llms.txt",
+                    self.limits.index_bytes,
+                    RequestOptions {
+                        budget: None,
+                        ..options
+                    },
+                )
+                .await?;
+            parse_families_from_llms(&text, self.limits.max_families)
+        });
+        // The wait for a concurrent first fetch is cancellable too, not only the fetch itself.
+        let families = match options.cancel {
+            Some(cancel) => tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    return Err(DocsError::coded(
+                        DocsErrorCode::Aborted,
+                        format!("ServiceNow docs request for {DOCS_INDEX_REF}/llms.txt was aborted"),
+                    ));
+                }
+                result = load => result?,
+            },
+            None => load.await?,
+        };
+        Ok(families.clone())
     }
 
     pub async fn resolve_family(
@@ -925,6 +936,42 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), Some(DocsErrorCode::Aborted));
+    }
+
+    #[tokio::test]
+    async fn a_waiter_on_the_shared_index_fetch_can_be_cancelled_independently() {
+        let fake = FakeGithub::default();
+        fake.set(INDEX_PATH, Route::Hang);
+        let client = std::sync::Arc::new(client_for(&fake, DocsLimits::default()));
+
+        // The first caller starts (and hangs on) the shared fetch.
+        let first = tokio::spawn({
+            let client = std::sync::Arc::clone(&client);
+            async move { client.list_families(opts()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            canceller.cancel();
+        });
+        let started = Instant::now();
+        let waiter = RequestOptions {
+            cancel: Some(&token),
+            budget: None,
+        };
+        let error = client.list_families(waiter).await.unwrap_err();
+
+        assert_eq!(error.code(), Some(DocsErrorCode::Aborted));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            fake.paths(),
+            [INDEX_PATH],
+            "the waiter must not start a second fetch"
+        );
+        first.abort();
     }
 
     #[tokio::test]
