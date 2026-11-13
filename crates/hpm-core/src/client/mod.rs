@@ -398,9 +398,7 @@ pub fn resolve_instance_request(instance_url: &str, request: &str) -> Option<Str
 /// authority or `..` traversal.
 pub fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
     if value.is_empty() || value == "." || value == ".." {
-        return Err(ClientError::plain(format!(
-            "{field} is not a valid path segment"
-        )));
+        return Err(ClientError::invalid_path_segment(field));
     }
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
@@ -1401,7 +1399,11 @@ impl ServiceNowClient {
         request: HttpRequest,
     ) -> Result<HttpResponse, ClientError> {
         let result = self.inner.deps.transport.send(request).await;
-        self.assert_current(st)?;
+        // The request already left: a moved generation now means "outcome
+        // unknown", not "never sent".
+        if self.assert_current(st).is_err() {
+            return Err(ClientError::stale_after_send());
+        }
         result.map_err(|e| {
             self.sanitize(
                 st,
