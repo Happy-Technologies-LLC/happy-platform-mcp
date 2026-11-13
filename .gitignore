@@ -18,8 +18,8 @@ scripts/*
 !scripts/secret-scan.sh
 !scripts/oauth-signin-smoke.mjs
 !scripts/extract-table-metadata.js
-!scripts/compat/
-!scripts/golden/
+!scripts/perf/
+!scripts/oauth-signin-smoke.mjs
 
 # Logs
 logs/
