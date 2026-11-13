@@ -2,8 +2,8 @@
 //! it mints the `TrustedRoot` for the protocol adapter and the `AdmissionKey` for the
 //! dispatcher, chooses the service implementations and registers the tools.
 //!
-//! Baseline: single-user stdio, zero tools. Diagnostics go to stderr; stdout carries
-//! only JSON-RPC (C10).
+//! Baseline: single-user stdio (`src/stdio-server.js`) and HTTP (`src/server.js`),
+//! zero tools. In stdio mode diagnostics go to stderr; stdout carries only JSON-RPC (C10).
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use hpm_types::context::{AdmissionKey, TrustedRoot};
 use hpm_types::operation::ScriptOperandGuard;
 
 pub mod cli;
+pub mod http;
 pub mod instance_cli;
 
 const NAME: &str = "happy-platform-mcp";
@@ -50,6 +51,25 @@ fn single_user_services(registry: &ToolRegistry) -> Result<Services, SchemaCompi
     })
 }
 
+/// Registers the tools, mints the process's one `AdmissionKey` and builds the
+/// shared dispatcher. Errors are ready to print after the `NAME: ` prefix.
+fn single_user_dispatcher() -> Result<Arc<Dispatcher>, String> {
+    let registry = ToolRegistry::new()
+        .and_then(|mut r| register_tools(&mut r).map(|()| r))
+        .map_err(|e| format!("tool registration failed: {e}"))?;
+    let key = AdmissionKey::mint()
+        .ok_or_else(|| "admission key already minted in this process".to_string())?;
+    let services = single_user_services(&registry).map_err(|e| e.to_string())?;
+    Ok(Arc::new(Dispatcher::new(registry, services, key)))
+}
+
+fn multi_thread_runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("runtime start failed: {e}"))
+}
+
 /// Entry point of both binaries (`happy-platform-mcp`, `servicenow-mcp-server`):
 /// `cli.js` dispatch over the process arguments.
 pub fn run() -> ExitCode {
@@ -59,36 +79,20 @@ pub fn run() -> ExitCode {
 
 /// Serve MCP over stdio (no arguments, or `--docs-only`).
 pub fn serve_stdio() -> ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match multi_thread_runtime() {
         Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("{NAME}: runtime start failed: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let registry = ToolRegistry::new().and_then(|mut r| register_tools(&mut r).map(|()| r));
-    let registry = match registry {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("{NAME}: tool registration failed: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let Some(key) = AdmissionKey::mint() else {
-        eprintln!("{NAME}: admission key already minted in this process");
-        return ExitCode::FAILURE;
-    };
-    let services = match single_user_services(&registry) {
-        Ok(s) => s,
         Err(e) => {
             eprintln!("{NAME}: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let dispatcher = Arc::new(Dispatcher::new(registry, services, key));
+    let dispatcher = match single_user_dispatcher() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{NAME}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     match runtime.block_on(hpm_protocol::stdio::serve(
         TrustedRoot::single_user_stdio(),
         dispatcher,
