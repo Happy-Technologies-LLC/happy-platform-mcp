@@ -356,6 +356,15 @@ impl ToolDescriptor {
     }
 }
 
+/// A read-only resource (CO-5). The descriptor has no credential need and no
+/// access class: the dispatcher admits every `resources/read` as one
+/// `Action::Read` with [`CredentialNeed::None`], so the handler's context never
+/// carries a [`CredentialBinding`](crate::credential::CredentialBinding) and
+/// [`ServiceNowAccess::client`](crate::servicenow::ServiceNowAccess::client)
+/// fails with `NoInstance`: a resource handler cannot obtain a ServiceNow client
+/// through `ServiceNowAccess`, while policy sees a read. Resources serve local
+/// data only. Handlers built from `FamilyDeps` can still reach configuration
+/// and the credential store until CO-6 narrows the family dependencies.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct ResourceDescriptor {
@@ -365,7 +374,6 @@ pub struct ResourceDescriptor {
     pub description: &'static str,
     pub mime_type: &'static str,
     pub output: OutputClass,
-    pub credentials: CredentialNeed,
     pub handler: Arc<dyn ResourceHandler>,
 }
 
@@ -376,7 +384,6 @@ impl ResourceDescriptor {
         description: &'static str,
         mime_type: &'static str,
         output: OutputClass,
-        credentials: CredentialNeed,
         handler: Arc<dyn ResourceHandler>,
     ) -> Self {
         Self {
@@ -385,7 +392,6 @@ impl ResourceDescriptor {
             description,
             mime_type,
             output,
-            credentials,
             handler,
         }
     }

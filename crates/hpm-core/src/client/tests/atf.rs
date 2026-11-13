@@ -563,6 +563,147 @@ async fn results_require_a_valid_result_type() {
     assert!(h.transport.requests().is_empty());
 }
 
+// ---- P4-4: failing step of a failed test ------------------------------------
+
+fn failed_result(r: &Req) -> Answer {
+    (r.path == format!("/api/sn_cicd/tests/test/results/{RESULT_ID}")).then(|| {
+        (
+            200,
+            Body::Json(json!({"result": {"test_name": "Agent", "test_status": "failure", "test_duration": "1"}})),
+        )
+    })
+}
+
+#[tokio::test]
+async fn failed_test_result_adds_the_failing_step_message() {
+    let h = fake(|r| {
+        failed_result(r).or_else(|| {
+            (r.path == "/api/now/table/sys_atf_test_result_step").then(|| {
+                (200, Body::Json(json!({"result": [
+                    {"step": "Assert", "status": "Skipped", "summary": "Skipped"},
+                    {"step": "Run server script", "status": "Failure", "summary": "", "output": "ERR014: ML Object not found", "start_time": "2026-11-13 10:00:00"}
+                ]})))
+            })
+        })
+    });
+    let out = handle_atf_tool(
+        "SN-Get-ATF-Results",
+        &json!({"result_id": RESULT_ID, "result_type": "test"}),
+        &h.client,
+    )
+    .await
+    .expect("results");
+    let p = payload(&out);
+    // Existing fields unchanged.
+    assert_subset(
+        &p,
+        &json!({"result_type": "test", "result_id": RESULT_ID, "test_name": "Agent", "test_status": "failure", "duration": "1"}),
+    );
+    assert!(p["links"].is_object());
+    assert_eq!(p["failure_message"], "ERR014: ML Object not found");
+    assert_eq!(p["failing_steps"].as_array().map(Vec::len), Some(2));
+    assert_eq!(p["failing_steps"][1]["step"], "Run server script");
+    let sent = reqs(&h);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].path, "/api/now/table/sys_atf_test_result_step");
+    assert_eq!(
+        sent[1].query,
+        q(&[
+            (
+                "sysparm_query",
+                &format!("test_result={RESULT_ID}^status!=success^ORDERBYstart_time^ORDERBYsys_id")
+            ),
+            ("sysparm_fields", "step,status,summary,output,start_time"),
+            ("sysparm_display_value", "true"),
+            ("sysparm_exclude_reference_link", "true"),
+            ("sysparm_limit", "5"),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn failed_run_results_carry_the_failing_step() {
+    let h = fake(|r| {
+        if r.method == Method::Post && r.path == "/api/sn_cicd/tests/run_test" {
+            return started();
+        }
+        if r.path == format!("/api/sn_cicd/progress/{PROGRESS_ID}") {
+            return ok(
+                json!({"result": {"status": "3", "percent_complete": 100, "links": {"results": {"id": RESULT_ID, "url": "x"}}}}),
+            );
+        }
+        failed_result(r).or_else(|| {
+            (r.path == "/api/now/table/sys_atf_test_result_step").then(|| {
+                (
+                    200,
+                    Body::Json(
+                        json!({"result": [{"step": "S", "status": "Error", "summary": "boom"}]}),
+                    ),
+                )
+            })
+        })
+    });
+    let out = handle_atf_tool(
+        "SN-Run-ATF-Test",
+        &json!({"test_sys_id": TEST_ID}),
+        &h.client,
+    )
+    .await
+    .expect("run");
+    let p = payload(&out);
+    assert_eq!(out["isError"], true);
+    assert_eq!(p["results"]["test_status"], "failure");
+    assert_eq!(p["results"]["failure_message"], "boom");
+    let steps = reqs(&h)
+        .into_iter()
+        .filter(|r| r.path == "/api/now/table/sys_atf_test_result_step")
+        .count();
+    assert_eq!(steps, 1);
+}
+
+#[tokio::test]
+async fn failing_step_read_failure_keeps_the_result_with_a_note() {
+    let h = fake(failed_result);
+    let out = handle_atf_tool(
+        "SN-Get-ATF-Results",
+        &json!({"result_id": RESULT_ID, "result_type": "test"}),
+        &h.client,
+    )
+    .await
+    .expect("results despite the step read failure");
+    let p = payload(&out);
+    assert_eq!(p["test_status"], "failure");
+    assert!(p.get("failing_steps").is_none());
+    assert!(
+        p["failing_steps_error"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("Could not read the failing step results: ")),
+        "{p}"
+    );
+    assert_eq!(h.transport.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn passing_test_result_reads_no_steps() {
+    let h = fake(|r| {
+        (r.path == format!("/api/sn_cicd/tests/test/results/{RESULT_ID}")).then(|| {
+            (
+                200,
+                Body::Json(json!({"result": {"test_status": "success", "output": "ok"}})),
+            )
+        })
+    });
+    let out = handle_atf_tool(
+        "SN-Get-ATF-Results",
+        &json!({"result_id": RESULT_ID, "result_type": "test"}),
+        &h.client,
+    )
+    .await
+    .expect("results");
+    assert!(payload(&out).get("failing_steps").is_none());
+    assert_eq!(h.transport.requests().len(), 1);
+}
+
 // ---- logs -------------------------------------------------------------------
 
 #[tokio::test]

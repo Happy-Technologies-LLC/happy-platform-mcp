@@ -11,8 +11,10 @@ use serde_json::Value;
 /// What 7.0 must do instead of the recorded 6.2.0 behavior.
 #[derive(Debug, Clone, Copy)]
 pub enum Expected {
-    /// JSON-RPC `-32602` (invalid params) before any ServiceNow request.
-    InvalidParamsNoOutbound,
+    /// JSON-RPC `-32602` (invalid params) before any ServiceNow request, with an
+    /// error message that names `arg`, the deviating argument (CO-2: an
+    /// unrelated `-32602` must not satisfy the entry).
+    InvalidParamsNoOutbound { arg: &'static str },
     /// The recorded outbound requests and the recorded single error text, then
     /// exactly `\nAlready created and not rolled back: {...}. Do not re-run the
     /// whole batch.` naming `operation_0..operation_{created-1}` (full text
@@ -33,7 +35,7 @@ pub const DEVIATIONS: &[Deviation] = &[
     Deviation {
         golden: "SN-Create-Workflow/two-activities",
         step: 0,
-        expected: Expected::InvalidParamsNoOutbound,
+        expected: Expected::InvalidParamsNoOutbound { arg: "transitions" },
         reason: "6.2.0 accepted numbers for string fields, sent 7 writes, then crashed \
                  (`Cannot read properties of undefined`); owner rule: 7.0 rejects the \
                  schema-invalid input up front with -32602 and sends nothing",
@@ -45,6 +47,14 @@ pub const DEVIATIONS: &[Deviation] = &[
         reason: "6.2.0 hid that operation 0 was already created although the call \
                  asked for a transaction; 7.0 names the records it did not roll back \
                  and says not to re-run the whole batch (partially committed)",
+    },
+    Deviation {
+        golden: "SN-Query-Table/invalid-table-arg",
+        step: 0,
+        expected: Expected::InvalidParamsNoOutbound { arg: "table_name" },
+        reason: "hardening (TF-1, review lane A L2): 6.2.0 sent `bad table!` to \
+                 ServiceNow; 7.0 applies the 6.2.0 table-name pattern before \
+                 classification and rejects it with -32602, sending nothing",
     },
 ];
 
@@ -64,6 +74,15 @@ fn single_text(response: &Value) -> Option<&str> {
     }
 }
 
+/// `message` names `arg` as a whole word (so `to` does not match `total`).
+fn names_arg(message: &str, arg: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    message.match_indices(arg).any(|(i, _)| {
+        !message[..i].chars().next_back().is_some_and(word)
+            && !message[i + arg.len()..].chars().next().is_some_and(word)
+    })
+}
+
 impl Expected {
     /// Problems with `got` (one replayed step) against this expectation;
     /// `want` is the recorded 6.2.0 step.
@@ -76,9 +95,15 @@ impl Expected {
     ) -> Vec<String> {
         let mut problems = Vec::new();
         match self {
-            Self::InvalidParamsNoOutbound => {
-                if got["response"]["error"]["code"] != -32602 {
+            Self::InvalidParamsNoOutbound { arg } => {
+                let error = &got["response"]["error"];
+                if error["code"] != -32602 {
                     problems.push(format!("expected -32602, got {}", got["response"]));
+                } else if !error["message"].as_str().is_some_and(|m| names_arg(m, arg)) {
+                    problems.push(format!(
+                        "expected a -32602 message naming argument {arg:?}, got {}",
+                        error["message"]
+                    ));
                 }
                 if !outbound.is_empty() {
                     problems.push(format!(

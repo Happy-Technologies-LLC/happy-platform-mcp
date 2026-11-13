@@ -11,7 +11,8 @@ use hpm_types::tool::{NormalizeInput, ToolError};
 use serde_json::Value;
 
 use crate::logic::bulk_limits::{
-    resolve_batch_placeholders, validate_batch_create_operations, validate_batch_updates,
+    MAX_TABLE_NAME_LENGTH, assert_sys_id, assert_table_name, resolve_batch_placeholders,
+    validate_batch_create_operations, validate_batch_updates,
 };
 use crate::logic::encoded_query::analyze_query;
 use crate::logic::nl::parse_natural_language_value;
@@ -60,10 +61,32 @@ fn written(data: Option<&Value>) -> (Vec<String>, Vec<String>) {
     (fields, scripts)
 }
 
+/// TF-1: the 6.2.0 `TABLE_NAME_PATTERN` (`^[A-Za-z0-9_]{1,80}$`), so
+/// classification only ever sees a plain table name. Fixed text naming the key.
 fn table_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
+    let value = string_arg(args, key)?;
+    if assert_table_name(args.get(key), key).is_err() {
+        return Err(ToolError::InvalidParams(format!(
+            "{key} must be a table name of 1-{MAX_TABLE_NAME_LENGTH} letters, digits or underscores"
+        )));
+    }
+    Ok(value)
+}
+
+/// A string argument (metadata tools check identifiers separately).
+fn string_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::InvalidParams(format!("{key} must be a string")))
+}
+
+/// TF-1: Get and Update address one record; `sys_id` must be a sys_id.
+fn sys_id_arg(args: &Value) -> Result<(), ToolError> {
+    assert_sys_id(args.get("sys_id"), "sys_id").map_err(|_| {
+        ToolError::InvalidParams(
+            "sys_id must be a 32-character lowercase hexadecimal sys_id".into(),
+        )
+    })
 }
 
 /// Table and field names the metadata tools interpolate into encoded queries:
@@ -154,6 +177,7 @@ pub fn natural_language_search(
 
 pub fn get_record(args: &Value, input: &NormalizeInput<'_>) -> Result<OperationSet, ToolError> {
     let table = table_arg(args, "table_name")?;
+    sys_id_arg(args)?;
     one(base("SN-Get-Record", Action::Read, input)
         .on_table(table, input.classification)
         .returned_fields(csv(args.get("fields"))))
@@ -178,6 +202,7 @@ pub fn create_record(args: &Value, input: &NormalizeInput<'_>) -> Result<Operati
 }
 
 pub fn update_record(args: &Value, input: &NormalizeInput<'_>) -> Result<OperationSet, ToolError> {
+    sys_id_arg(args)?;
     write_one("SN-Update-Record", Action::Update, args, input)
 }
 
@@ -188,7 +213,7 @@ fn metadata(
     args: &Value,
     input: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
-    let table = table_arg(args, key)?;
+    let table = string_arg(args, key)?;
     for k in keys {
         if let Some(e) = identifier_error(args, k) {
             return Err(ToolError::InvalidParams(e));
@@ -393,12 +418,12 @@ mod tests {
         assert_eq!(set.0[0].action, Action::Execute);
         let set = run(
             update_record,
-            json!({"table_name": "sys_user", "sys_id": "a", "data": {"roles": "admin"}}),
+            json!({"table_name": "sys_user", "sys_id": "0123456789abcdef0123456789abcdef", "data": {"roles": "admin"}}),
         );
         assert_eq!(set.0[0].action, Action::AdminWrite);
         let set = run(
             update_record,
-            json!({"table_name": "u_unknown", "sys_id": "a", "data": {}}),
+            json!({"table_name": "u_unknown", "sys_id": "0123456789abcdef0123456789abcdef", "data": {}}),
         );
         assert_eq!(
             (set.0[0].action, set.0[0].class),
@@ -442,6 +467,56 @@ mod tests {
         assert_eq!(set.0.len(), 1);
         assert!(set.0[0].action.is_mutation());
         assert!(set.0[0].table.is_none());
+    }
+
+    #[test]
+    fn record_tools_need_a_table_name_and_a_sys_id() {
+        let snap = snapshot();
+        let input = NormalizeInput::new(None, &snap);
+        let id = "0123456789abcdef0123456789abcdef";
+        type Norm = fn(&Value, &NormalizeInput<'_>) -> Result<OperationSet, ToolError>;
+        let table_msg = "table_name must be a table name of 1-80 letters, digits or underscores";
+        let sys_id_msg = "sys_id must be a 32-character lowercase hexadecimal sys_id";
+        let long = "a".repeat(81);
+        let cases: [(Norm, Value, &str); 7] = [
+            (query_table, json!({"table_name": "bad table!"}), table_msg),
+            (query_table, json!({"table_name": long}), table_msg),
+            (
+                create_record,
+                json!({"table_name": "incident.x", "data": {}}),
+                table_msg,
+            ),
+            (
+                get_record,
+                json!({"table_name": "", "sys_id": id}),
+                table_msg,
+            ),
+            (
+                get_record,
+                json!({"table_name": "incident", "sys_id": "../x"}),
+                sys_id_msg,
+            ),
+            (
+                update_record,
+                json!({"table_name": "incident", "data": {}}),
+                sys_id_msg,
+            ),
+            (
+                update_record,
+                json!({"table_name": "incident", "sys_id": id.to_uppercase(), "data": {}}),
+                sys_id_msg,
+            ),
+        ];
+        for (f, args, msg) in cases {
+            assert!(
+                matches!(f(&args, &input), Err(ToolError::InvalidParams(m)) if m == msg),
+                "{args}"
+            );
+        }
+        run(
+            get_record,
+            json!({"table_name": "u_Custom_1", "sys_id": id}),
+        );
     }
 
     #[test]

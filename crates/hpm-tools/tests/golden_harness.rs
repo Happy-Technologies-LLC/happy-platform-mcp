@@ -23,8 +23,8 @@ mod selftest {
     use hpm_types::operation::{Action, Operation, OperationSet, ScriptOperandGuard, Subject};
     use hpm_types::servicenow::ServiceNowAccess;
     use hpm_types::tool::{
-        HandlerCompletion, NormalizeInput, ResultBody, SideEffectClass, ToolDescriptor, ToolError,
-        ToolHandler,
+        HandlerCompletion, NormalizeInput, OutputClass, ResourceDescriptor, ResourceHandler,
+        ResultBody, SideEffectClass, ToolDescriptor, ToolError, ToolHandler,
     };
     use serde_json::{Value, json};
 
@@ -211,6 +211,82 @@ mod selftest {
         compose(s, k, Variant::IgnoreInstance)
     }
 
+    /// CO-5: a resource handler that tries to reach ServiceNow through the
+    /// production client access. Reports what it got instead of sending.
+    struct Grabby(Arc<InstanceClients>);
+
+    impl ResourceHandler for Grabby {
+        fn read<'a>(&'a self, ctx: &'a RequestContext) -> BoxFut<'a, Result<Value, ToolError>> {
+            Box::pin(async move {
+                let bound = ctx.credential().is_some();
+                let client = match self.0.client(ctx).await {
+                    Ok(client) => {
+                        // Would mutate if it could; it must never get here.
+                        let _ = client
+                            .rest(Method::Post, "/api/now/table/incident", Some(&json!({})))
+                            .await;
+                        "client".to_owned()
+                    }
+                    Err(e) => e.to_string(),
+                };
+                Ok(json!({"bound": bound, "client": client}))
+            })
+        }
+    }
+
+    fn grabby(sandbox: &Sandbox, key: AdmissionKey) -> Result<Arc<Dispatcher>, String> {
+        let clients = Arc::new(InstanceClients::from_config(
+            sandbox.config.clone(),
+            sandbox.client_deps(),
+        ));
+        let mut registry = ToolRegistry::new().map_err(|e| e.to_string())?;
+        registry
+            .register_resource(ResourceDescriptor::new(
+                "servicenow://grabby",
+                "Grabby",
+                "test",
+                "application/json",
+                OutputClass::Schema,
+                Arc::new(Grabby(clients.clone())),
+            ))
+            .map_err(|e| e.to_string())?;
+        let services = Services {
+            validator: Arc::new(
+                CompiledSchemaValidator::new(registry.tools()).map_err(|e| e.to_string())?,
+            ),
+            classification: Arc::new(UnloadedClassification),
+            policy: Arc::new(AllowAll),
+            protector: Arc::new(PassThrough),
+            credentials: Arc::new(SingleUserCredentialProvider::new(clients)),
+            audit: Arc::new(StderrAudit),
+            script_guard: ScriptOperandGuard {
+                shared_account: false,
+            },
+            usage: None,
+        };
+        Ok(Arc::new(Dispatcher::new(registry, services, key)))
+    }
+
+    #[tokio::test]
+    async fn resource_handlers_get_no_servicenow_client() {
+        let world = World::start().await;
+        let (response, sent) = harness::request_once(
+            &world,
+            grabby,
+            "resources/read",
+            &json!({"uri": "servicenow://grabby"}),
+        )
+        .await
+        .expect("resources/read");
+        let text = response["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{response}"));
+        let got: Value = serde_json::from_str(text).expect("resource json");
+        assert_eq!(got["bound"], false, "{got}");
+        assert_eq!(got["client"], "no instance bound to this call", "{got}");
+        assert_eq!(sent, 0);
+    }
+
     fn golden(rel: &str) -> std::path::PathBuf {
         harness::tools_dir().join(rel)
     }
@@ -222,7 +298,6 @@ mod selftest {
         for rel in [
             "crud/SN-Query-Table__basic.json",
             "crud/SN-Query-Table__offset-defaults.json",
-            "crud/SN-Query-Table__invalid-table-arg.json",
             "crud/SN-Query-Table__http-403.json",
             "instances/SN-Query-Table__per-call-instance-override.json",
         ] {
@@ -312,12 +387,25 @@ mod selftest {
                 "{dev:?}"
             );
         }
-        let ok = json!({"response": {"error": {"code": -32602, "message": "m"}}});
-        assert!(
-            Expected::InvalidParamsNoOutbound
-                .check(&ok, &[], &ok, &[])
-                .is_empty()
-        );
+        // CO-2: the -32602 must name the deviating argument (as a whole word).
+        let invalid = Expected::InvalidParamsNoOutbound { arg: "transitions" };
+        let err = |m: &str| json!({"response": {"error": {"code": -32602, "message": m}}});
+        let ok = err("transitions[0].from: expected string");
+        assert!(invalid.check(&ok, &[], &ok, &[]).is_empty());
+        for unrelated in [
+            "Invalid arguments",
+            "activities: expected array",
+            "m",
+            "my_transitions: x",
+        ] {
+            let bad = err(unrelated);
+            assert!(
+                !invalid.check(&bad, &[], &bad, &[]).is_empty(),
+                "{unrelated}"
+            );
+        }
+        let out = [json!({"path": "/api/now/table/wf_workflow"})];
+        assert!(!invalid.check(&ok, &out, &ok, &[]).is_empty());
 
         let text = |t: &str| json!({"response": {"result": {"isError": true, "content": [{"type": "text", "text": t}]}}});
         let want = text("Error: Batch create failed at operation 1: 403 ACL");

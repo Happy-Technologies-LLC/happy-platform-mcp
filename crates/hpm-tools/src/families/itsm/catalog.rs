@@ -64,15 +64,6 @@ fn rq(query: String, fields: &str, limit: &str) -> RecordQuery {
     }
 }
 
-/// `for (const x of v)` / `v.map(...)`: arrays only.
-fn items<'a>(v: &'a Value, name: &str) -> Result<&'a [Value], Fail> {
-    match v {
-        Value::Array(a) => Ok(a),
-        Value::Null => Err(Fail::Js(format!("{name} is not iterable"))),
-        _ => Err(Fail::Js(format!("{name} is not iterable"))),
-    }
-}
-
 /// `typeof x === 'object' ? x.value : x`.
 fn ref_value(v: Option<&Value>) -> Option<&Value> {
     match v {
@@ -81,8 +72,10 @@ fn ref_value(v: Option<&Value>) -> Option<&Value> {
     }
 }
 
-/// `parseInt(String(v), 10) || 0`.
-fn parse_int(v: Option<&Value>) -> i64 {
+/// `parseInt(String(v), 10) || 0` as JSON: an i64 when it fits, else the
+/// correctly rounded double JS computes (TF-4); a digit run past the double
+/// range is `Infinity`, which `JSON.stringify` writes as `null`.
+fn parse_int(v: Option<&Value>) -> Value {
     let s = tpl(v);
     let s = crate::logic::js::trim(&s);
     let (neg, digits) = match s.as_bytes().first() {
@@ -93,8 +86,58 @@ fn parse_int(v: Option<&Value>) -> i64 {
     let end = digits
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(digits.len());
-    let n: i64 = digits[..end].parse().unwrap_or(0);
-    if neg { -n } else { n }
+    let digits = &digits[..end];
+    if digits.is_empty() {
+        return json!(0);
+    }
+    if let Ok(n) = digits.parse::<i64>() {
+        return json!(if neg { -n } else { n });
+    }
+    let f: f64 = digits.parse().unwrap_or(f64::INFINITY);
+    serde_json::Number::from_f64(if neg { -f } else { f }).map_or(Value::Null, Value::Number)
+}
+
+/// `for (const x of v)`: arrays iterate their items, strings their UTF-16
+/// code points (as one-character strings); anything else throws V8's
+/// `<name> is not iterable`.
+fn for_of<'a>(v: &'a Value, name: &str) -> Result<std::borrow::Cow<'a, [Value]>, Fail> {
+    match v {
+        Value::Array(a) => Ok(std::borrow::Cow::Borrowed(a)),
+        Value::String(s) => Ok(std::borrow::Cow::Owned(
+            s.chars().map(|c| Value::String(c.to_string())).collect(),
+        )),
+        _ => Err(Fail::Js(format!("{name} is not iterable"))),
+    }
+}
+
+/// `v.<method>(...)` for an array method (`filter`, `map`, `forEach`): V8's
+/// TypeError text when `v` is not an array (TF-3). The client maps a missing
+/// `result` (JS `undefined`, the common malformed shape) and an explicit
+/// `"result": null` both to `Value::Null`; the text follows the common case,
+/// so only an explicit `null` result reads `undefined` instead of `null`.
+fn array_method<'a>(v: &'a Value, name: &str, method: &str) -> Result<&'a [Value], Fail> {
+    match v {
+        Value::Array(a) => Ok(a),
+        Value::Null => Err(Fail::Js(format!(
+            "Cannot read properties of undefined (reading '{method}')"
+        ))),
+        _ => Err(Fail::Js(format!("{name}.{method} is not a function"))),
+    }
+}
+
+/// The `if (v.length > 0) { ... v.map(...) ... }` branch: `undefined` throws
+/// on `.length`; a non-empty string reaches `.map` and throws there; any other
+/// non-array has no positive `length` and skips the branch (`Ok(&[])`). The
+/// later unconditional `v.map` is checked separately with [`array_method`].
+fn non_empty_then_map<'a>(v: &'a Value, name: &str) -> Result<&'a [Value], Fail> {
+    match v {
+        Value::Array(a) => Ok(a),
+        Value::Null => Err(Fail::Js(
+            "Cannot read properties of undefined (reading 'length')".to_owned(),
+        )),
+        Value::String(s) if !s.is_empty() => Err(Fail::Js(format!("{name}.map is not a function"))),
+        _ => Ok(&[]),
+    }
 }
 
 /// `list.map(v => v.sys_id).join(',')`: null and undefined join as empty.
@@ -140,11 +183,16 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
             ),
         )
         .await?;
-    let vars = items(&variables, "variables")?;
+    let vars = array_method(&variables, "variables", "filter")?;
     let choice_vars = choice_var_ids(vars);
 
+    // TF-5: 6.2.0 starts these four reads together (`Promise.all`). They run
+    // here one after another in source order, and every one is sent even when
+    // an earlier one failed, so the outbound requests match 6.2.0. When more
+    // than one fails, the error shown is the first in source order; 6.2.0
+    // shows the first to reject, which depends on response timing.
     let choices = if choice_vars.is_empty() {
-        Value::Array(Vec::new())
+        Ok(Value::Array(Vec::new()))
     } else {
         call.records(
             "question_choice",
@@ -154,14 +202,14 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
                 "2000",
             ),
         )
-        .await?
+        .await
     };
     let set_links = call
         .records(
             "io_set_item",
             rq(format!("sc_cat_item={sys_id}"), "sys_id,variable_set", "50"),
         )
-        .await?;
+        .await;
     let policies = call
         .records(
             "catalog_ui_policy",
@@ -171,7 +219,7 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
                 "100",
             ),
         )
-        .await?;
+        .await;
     let scripts = call
         .records(
             "catalog_script_client",
@@ -181,10 +229,11 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
                 "100",
             ),
         )
-        .await?;
+        .await;
+    let (choices, set_links, policies, scripts) = (choices?, set_links?, policies?, scripts?);
 
     let mut by_var: HashMap<String, Vec<Value>> = HashMap::new();
-    for c in items(&choices, "allChoicesRaw")? {
+    for c in array_method(&choices, "allChoicesRaw", "forEach")? {
         let key = tpl(ref_value(prop(Some(c), "question")));
         by_var.entry(key).or_default().push(object(vec![
             ("text", prop(Some(c), "text").cloned()),
@@ -192,7 +241,8 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
         ]));
     }
 
-    let policies = items(&policies, "uiPolicies")?;
+    let policies_value = policies;
+    let policies = non_empty_then_map(&policies_value, "uiPolicies")?;
     let actions = if policies.is_empty() {
         Value::Array(Vec::new())
     } else {
@@ -206,7 +256,6 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
         )
         .await?
     };
-    let actions = items(&actions, "policyActions")?;
 
     let enriched: Vec<Value> = vars
         .iter()
@@ -231,7 +280,7 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
             m.insert("type".into(), json!(name));
             m.insert("type_code".into(), json!(code));
             m.insert("mandatory".into(), json!(mandatory));
-            m.insert("order".into(), json!(parse_int(f("order"))));
+            m.insert("order".into(), parse_int(f("order")));
             put(&mut m, "default_value", or_null("default_value").as_ref());
             put(&mut m, "help_text", or_null("help_text").as_ref());
             put(&mut m, "reference_table", or_null("reference").as_ref());
@@ -242,13 +291,19 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
         })
         .collect();
 
+    // The return literal reads `item.sys_id` first.
+    if item.is_null() {
+        return Err(Fail::Js(
+            "Cannot read properties of undefined (reading 'sys_id')".to_owned(),
+        ));
+    }
     let ip = |k: &str| prop(Some(&item), k).cloned();
     let item_type = if prop(Some(&item), "sys_class_name") == Some(&json!("sc_cat_item_producer")) {
         "record_producer"
     } else {
         "catalog_item"
     };
-    let sets: Vec<Value> = items(&set_links, "varSetLinks")?
+    let sets: Vec<Value> = array_method(&set_links, "varSetLinks", "map")?
         .iter()
         .map(|l| {
             let vs = prop(Some(l), "variable_set");
@@ -262,6 +317,16 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
             ])
         })
         .collect();
+    // `policyActions.filter` runs once per policy, so it only throws when
+    // there is a policy.
+    let actions: &[Value] = if policies.is_empty() {
+        &[]
+    } else {
+        array_method(&actions, "policyActions", "filter")?
+    };
+    // F1: the return literal's `uiPolicies.map` runs after `variable_sets`
+    // and throws for any non-array.
+    let policies = array_method(&policies_value, "uiPolicies", "map")?;
     let ui_policies: Vec<Value> = policies
         .iter()
         .map(|p| {
@@ -291,7 +356,7 @@ pub(super) async fn get_item<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<
             ])
         })
         .collect();
-    let client_scripts: Vec<Value> = items(&scripts, "clientScripts")?
+    let client_scripts: Vec<Value> = array_method(&scripts, "clientScripts", "map")?
         .iter()
         .map(|s| {
             object(vec![
@@ -390,12 +455,12 @@ pub(super) async fn search<S: Sn>(call: &Call<'_, S>, args: &Value) -> Result<St
             ("item_type", Some(json!(item_type))),
         ])
     };
-    let mut out: Vec<Value> = items(&found, "items")?
+    let mut out: Vec<Value> = array_method(&found, "items", "map")?
         .iter()
         .map(|i| normalize(i, "catalog_item"))
         .collect();
     out.extend(
-        items(&producers, "producers")?
+        array_method(&producers, "producers", "map")?
             .iter()
             .map(|p| normalize(p, "record_producer")),
     );
@@ -519,7 +584,7 @@ async fn check<S: Sn>(
                 },
             )
             .await?;
-        for v in items(&variables, "variables")? {
+        for v in for_of(&variables, "variables")?.iter() {
             let f = |k: &str| prop(Some(v), k);
             if truthy(prop(cv, "check_linked")) && !truthy(f("cat_item")) {
                 r.error(issue(
@@ -554,7 +619,18 @@ async fn check<S: Sn>(
                         },
                     )
                     .await?;
-                if choices.as_array().is_some_and(Vec::is_empty) {
+                // `choices.length === 0` (TF-3): a missing result throws.
+                let no_choices = match &choices {
+                    Value::Null => {
+                        return Err(Fail::Js(
+                            "Cannot read properties of undefined (reading 'length')".to_owned(),
+                        ));
+                    }
+                    Value::Array(a) => a.is_empty(),
+                    Value::String(t) => t.is_empty(),
+                    _ => false,
+                };
+                if no_choices {
                     let name = if ty == Some("1") {
                         "Choice"
                     } else {
@@ -586,7 +662,7 @@ async fn check<S: Sn>(
                 },
             )
             .await?;
-        for p in items(&policies, "policies")? {
+        for p in for_of(&policies, "policies")?.iter() {
             if !truthy(prop(cp, "check_actions_linked")) {
                 continue;
             }
@@ -600,7 +676,7 @@ async fn check<S: Sn>(
                     },
                 )
                 .await?;
-            for a in items(&actions, "actions")? {
+            for a in for_of(&actions, "actions")?.iter() {
                 if !truthy(prop(Some(a), "catalog_variable")) {
                     r.error(issue(
                         "error",
@@ -937,5 +1013,109 @@ mod tests {
         )
         .await;
         assert!(text(&done).contains("\"issue\": \"Validation failed: 403 denied\""));
+    }
+
+    fn shown(done: &hpm_types::tool::HandlerCompletion) -> String {
+        format!("{:?}", done.result)
+    }
+
+    #[test]
+    fn parse_int_follows_js_past_i64() {
+        assert_eq!(parse_int(Some(&json!("42abc"))), json!(42));
+        assert_eq!(parse_int(Some(&json!(" -7"))), json!(-7));
+        assert_eq!(parse_int(Some(&json!("x"))), json!(0));
+        assert_eq!(parse_int(Some(&json!("-0"))), json!(0));
+        let big = parse_int(Some(&json!("99999999999999999999")));
+        assert_eq!(big.as_f64(), Some(1e20));
+        assert_eq!(
+            super::super::js_out::pretty(Some(&big)),
+            "100000000000000000000"
+        );
+        assert_eq!(parse_int(Some(&json!("9".repeat(400)))), Value::Null);
+    }
+
+    #[tokio::test]
+    async fn get_item_malformed_results_throw_the_620_text() {
+        let id = json!({"sys_id": "0123456789abcdef0123456789abcdef"});
+        // `variables.filter` on a missing result.
+        let sn = Fake::new().ok(json!({"sys_id": "i"})).ok(Value::Null);
+        let done = run_tool(Kind::CatalogGetItem, &sn, &id).await;
+        assert!(
+            shown(&done).contains("Cannot read properties of undefined (reading 'filter')"),
+            "{}",
+            shown(&done)
+        );
+        let sn = Fake::new().ok(json!({"sys_id": "i"})).ok(json!({"a": 1}));
+        let done = run_tool(Kind::CatalogGetItem, &sn, &id).await;
+        assert!(shown(&done).contains("variables.filter is not a function"));
+        // `uiPolicies.length` on a missing result.
+        let sn = Fake::new()
+            .ok(json!({"sys_id": "i"}))
+            .ok(json!([]))
+            .ok(json!([]))
+            .ok(Value::Null)
+            .ok(json!([]));
+        let done = run_tool(Kind::CatalogGetItem, &sn, &id).await;
+        assert!(shown(&done).contains("Cannot read properties of undefined (reading 'length')"));
+        // F1: a non-array without `length` skips the branch, then the return
+        // literal's `uiPolicies.map` throws.
+        let sn = Fake::new()
+            .ok(json!({"sys_id": "i"}))
+            .ok(json!([]))
+            .ok(json!([]))
+            .ok(json!({"a": 1}))
+            .ok(json!([]));
+        let done = run_tool(Kind::CatalogGetItem, &sn, &id).await;
+        assert!(
+            shown(&done).contains("uiPolicies.map is not a function"),
+            "{}",
+            shown(&done)
+        );
+    }
+
+    #[tokio::test]
+    async fn get_item_sends_every_parallel_read_and_reports_the_first_failure() {
+        let id = json!({"sys_id": "0123456789abcdef0123456789abcdef"});
+        let sn = Fake::new()
+            .ok(json!({"sys_id": "i"}))
+            .ok(json!([]))
+            .http(403, "403 io_set_item")
+            .http(500, "500 policy")
+            .ok(json!([]));
+        let done = run_tool(Kind::CatalogGetItem, &sn, &id).await;
+        let tables: Vec<String> = sn
+            .calls()
+            .iter()
+            .map(|c| c.split(' ').nth(1).unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(
+            tables,
+            [
+                "sc_cat_item/0123456789abcdef0123456789abcdef",
+                "item_option_new",
+                "io_set_item",
+                "catalog_ui_policy",
+                "catalog_script_client"
+            ]
+        );
+        assert!(shown(&done).contains("403 io_set_item"), "{}", shown(&done));
+    }
+
+    #[tokio::test]
+    async fn validate_choices_length_on_a_missing_result_throws() {
+        let sn = Fake::new()
+            .ok(json!([{"sys_id": "v", "name": "n", "cat_item": "c", "type": "5"}]))
+            .ok(Value::Null);
+        let done = run_tool(
+            Kind::ValidateConfiguration,
+            &sn,
+            &json!({"catalog_item": "c", "checks": {"variables": {"check_choices": true}}}),
+        )
+        .await;
+        assert!(
+            shown(&done).contains("Cannot read properties of undefined (reading 'length')"),
+            "{}",
+            shown(&done)
+        );
     }
 }

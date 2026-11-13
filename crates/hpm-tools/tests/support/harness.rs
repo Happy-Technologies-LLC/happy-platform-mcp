@@ -790,6 +790,19 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
     let mut problems = Vec::new();
     for (i, (got, want)) in got_steps.iter().zip(&steps).enumerate() {
         let got = fold_tmp(scrubber.deep(got));
+        // The host check runs for every step, deviated or not.
+        let expected = if sc.prod_steps.contains(&i) {
+            world.prod_host()
+        } else {
+            world.default_host()
+        };
+        if let Some(wrong) = hosts[i].iter().find(|h| **h != expected) {
+            problems.push(format!(
+                "step {i} instance: a ServiceNow request reached {}, expected {}",
+                scrubber.string(wrong),
+                scrubber.string(&expected)
+            ));
+        }
         if let Some(dev) = super::deviations::lookup(id, i) {
             let outbound = comparable_outbound(&got["outbound"]);
             let want_outbound = comparable_outbound(&want["outbound"]);
@@ -809,24 +822,58 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
             &comparable_outbound(&want["outbound"]),
             &mut problems,
         );
-        let expected = if sc.prod_steps.contains(&i) {
-            world.prod_host()
-        } else {
-            world.default_host()
-        };
-        if let Some(wrong) = hosts[i].iter().find(|h| **h != expected) {
-            problems.push(format!(
-                "step {i} instance: a ServiceNow request reached {}, expected {}",
-                scrubber.string(wrong),
-                scrubber.string(&expected)
-            ));
-        }
     }
     if problems.is_empty() {
         Ok(())
     } else {
         Err(format!("{name}\n{}", problems.join("\n")))
     }
+}
+
+/// One MCP request (after `initialize`) against `compose` over a default
+/// sandbox; returns the response and how many ServiceNow requests it sent.
+pub async fn request_once(
+    world: &World,
+    compose: Compose,
+    method: &str,
+    params: &Value,
+) -> Result<(Value, usize), String> {
+    let sc = Scenario::default();
+    let sandbox = make_sandbox(world, &format!("once-{method}"), &sc)?;
+    let dispatcher = compose(&sandbox, *KEY)?;
+    let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
+        .registry(sandbox.config.clone())
+        .build();
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let server = tokio::spawn(hpm_protocol::stdio::serve_io(
+        handler,
+        server_read,
+        server_write,
+    ));
+    let (client_read, client_write) = tokio::io::split(client_io);
+    let mut client = Client {
+        write: client_write,
+        lines: BufReader::new(client_read).lines(),
+        next_id: 0,
+    };
+    world.stub.reset(None);
+    let init = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "golden-capture", "version": "0.0.0"}
+    });
+    client.request("initialize", &init).await?;
+    client
+        .send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await?;
+    world.stub.take();
+    let (message, _) = client.request(method, params).await?;
+    tokio::time::sleep(SETTLE).await;
+    let sent = world.stub.take().len();
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    Ok((message, sent))
 }
 
 /// First mismatch as `at <json-pointer>: got X, want Y`; strings show the first
