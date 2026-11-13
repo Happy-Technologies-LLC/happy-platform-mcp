@@ -76,6 +76,7 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
             Arc::new(RegisterInstance {
                 config: deps.config.clone(),
                 credentials: deps.credentials.clone(),
+                docs_only: deps.docs_only,
             }),
             render,
         )
@@ -731,6 +732,8 @@ async fn check_credentials(
 struct RegisterInstance {
     config: Arc<ConfigManager>,
     credentials: InstanceCredentialStore,
+    /// Docs-only mode: live tools load only after a restart (6.2.0 `docsOnly`).
+    docs_only: bool,
 }
 
 impl ToolHandler for RegisterInstance {
@@ -924,14 +927,27 @@ impl RegisterInstance {
             );
         }
 
-        // Deviation: 6.2.0 reports `restartRequired: true` in docs-only mode;
-        // FamilyDeps carries no docs-only flag, so it is always false here.
-        committed(text(&json!({
-            "success": true,
-            "restartRequired": false,
-            "metadata": output_metadata(&registered.entry, &input),
-        })))
+        committed(text(&success_payload(
+            self.docs_only,
+            output_metadata(&registered.entry, &input),
+        )))
     }
+}
+
+/// 6.2.0 success body: docs-only servers need a restart to load live tools.
+fn success_payload(restart_required: bool, metadata: Value) -> Value {
+    let mut payload = obj(vec![
+        ("success", true.into()),
+        ("restartRequired", restart_required.into()),
+    ]);
+    if restart_required {
+        payload.insert(
+            "message".into(),
+            "Instance registered. Restart the MCP server to enable live ServiceNow tools.".into(),
+        );
+    }
+    payload.insert("metadata".into(), metadata);
+    Value::Object(payload)
 }
 
 #[cfg(test)]
@@ -1165,5 +1181,23 @@ mod tests {
             "https://a.example.com"
         );
         assert_eq!(url_origin("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn docs_only_success_requires_restart() {
+        let m = json!({"name":"dev"});
+        assert_eq!(
+            pretty(&success_payload(true, m.clone())),
+            pretty(&json!({
+                "success": true,
+                "restartRequired": true,
+                "message": "Instance registered. Restart the MCP server to enable live ServiceNow tools.",
+                "metadata": {"name":"dev"},
+            }))
+        );
+        assert_eq!(
+            pretty(&success_payload(false, m)),
+            pretty(&json!({"success": true, "restartRequired": false, "metadata": {"name":"dev"}}))
+        );
     }
 }
