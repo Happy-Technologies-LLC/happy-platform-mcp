@@ -28,7 +28,7 @@ impl InstanceInfo {
         let env = self.config.env();
         let mut instance = Map::new();
         if let Some(url) = env.get("SERVICENOW_INSTANCE_URL") {
-            instance.insert("url".into(), Value::String(url));
+            instance.insert("url".into(), Value::String(without_userinfo(url)));
         }
         if let Some(username) = env.get("SERVICENOW_USERNAME") {
             instance.insert("username".into(), Value::String(username));
@@ -46,6 +46,33 @@ impl InstanceInfo {
                 "tools": self.tool_count.get().copied().unwrap_or(0),
             },
         })
+    }
+}
+
+/// TF-7: the instance URL without any `user:password@` part. A URL without
+/// userinfo is echoed verbatim (6.2.0 text); one with userinfo is re-serialized
+/// by `url::Url` with the userinfo removed. A value that does not parse as a URL
+/// (or parses without a host, like `user:pass@host`) loses everything up to
+/// the last `@` of its authority.
+fn without_userinfo(raw: String) -> String {
+    if let Ok(mut url) = reqwest::Url::parse(&raw)
+        && url.has_host()
+    {
+        if url.username().is_empty() && url.password().is_none() {
+            return raw;
+        }
+        if url.set_username("").is_ok() && url.set_password(None).is_ok() {
+            return url.into();
+        }
+    }
+    let (scheme, rest) = raw
+        .split_once("://")
+        .map_or(("", raw.as_str()), |(s, r)| (s, r));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..end].rfind('@') {
+        Some(at) if scheme.is_empty() => rest[at + 1..].to_owned(),
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+        None => raw,
     }
 }
 
@@ -124,6 +151,31 @@ mod tests {
             payload["capabilities"]["total_tables"],
             table_metadata::tables().len()
         );
+    }
+
+    #[test]
+    fn instance_url_userinfo_is_never_echoed() {
+        let url = |raw: &str| {
+            info(&[("SERVICENOW_INSTANCE_URL", raw)], 1).payload()["instance_info"]["url"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(url("https://dev.example"), "https://dev.example");
+        assert_eq!(
+            url("https://admin:s3cret@dev.example"),
+            "https://dev.example/"
+        );
+        assert_eq!(
+            url("https://admin@dev.example/x?y"),
+            "https://dev.example/x?y"
+        );
+        assert_eq!(
+            url("https://:pw@dev.example:8443/"),
+            "https://dev.example:8443/"
+        );
+        assert_eq!(url("admin:s3cret@dev.example/path"), "dev.example/path");
+        assert_eq!(url("dev.example/a@b"), "dev.example/a@b");
     }
 
     #[test]
