@@ -210,7 +210,7 @@ impl SetInstance {
         }
         let mut last = None;
         for _ in 0..SELECT_ATTEMPTS {
-            let version = self.config.snapshot_for(ctx.principal()).registry_version;
+            let version = self.config.registry_version();
             let change = RegistryChange::SetPrincipalDefault {
                 principal: ctx.principal().clone(),
                 instance_id: instance_name.clone(),
