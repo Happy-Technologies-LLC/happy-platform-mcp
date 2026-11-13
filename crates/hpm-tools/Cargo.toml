@@ -19,6 +19,15 @@ jsonschema.workspace = true # C6; root pin disables remote `$ref` fetching
 
 [dev-dependencies]
 tempfile.workspace = true # root pin =3.27.0; fix-script containment tests
+# Tool-golden replay (tests/golden_tools.rs). hpm-cli is here only so this test
+# binary may mint the AdmissionKey and build the stdio root: the composition root
+# owns that capability, and a dev-dependency never reaches the lib or release builds.
+hpm-cli.path = "../hpm-cli"
+hpm-protocol.workspace = true
+base64.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "time", "sync"] }
 
 [lints]
 workspace = true
