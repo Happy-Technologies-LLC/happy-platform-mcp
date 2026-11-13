@@ -96,6 +96,9 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
                 .side_effect(SideEffectClass::None)
                 .retry(RetryEligibility::Idempotent)
         };
+        // 6.2.0 validated SN-Get-ATF-Results in the handler (`result_type must be
+        // one of: …`), ignoring unknown keys; the core handler does the same.
+        let tool = tool.handler_validates_input(name == RESULTS);
         registry.register_tool(tool)?;
     }
     Ok(())

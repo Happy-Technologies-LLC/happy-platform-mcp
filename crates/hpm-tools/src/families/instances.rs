@@ -83,7 +83,10 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
         .output(OutputClass::Schema)
         .side_effect(SideEffectClass::Local)
         .retry(RetryEligibility::BeforeSendOnly)
-        .credentials(CredentialNeed::None),
+        .credentials(CredentialNeed::None)
+        // The handler refuses unknown, secret-shaped and nested fields with the
+        // 6.2.0 INVALID_INSTANCE_CONFIG texts; the registry validates values.
+        .handler_validates_input(true),
     )
 }
 
