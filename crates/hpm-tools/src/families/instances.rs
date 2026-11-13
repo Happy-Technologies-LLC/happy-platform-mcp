@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use hpm_core::config::{CodedError, ConfigManager, resolve_path};
 use hpm_core::credential::{InstanceCredentialStore, credential_ref_for};
-use hpm_core::registry::RegisterOptions;
+use hpm_core::registry::{RegisterOptions, canonicalize_instance_url};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
 use hpm_types::credential::CredentialNeed;
@@ -509,15 +509,33 @@ fn display_name(name: Option<&Value>) -> String {
     }
 }
 
-fn credential_commands(name: &str, types: &[&str]) -> Value {
-    types
-        .iter()
-        .map(|t| {
-            Value::String(format!(
-                "happy-platform-mcp instance credential set {name} --type {t}"
-            ))
-        })
-        .collect()
+/// The working path for a missing credential: `instance add` registers the
+/// instance and prompts for its secret(s) together. (6.2.0 pointed to
+/// `instance credential set`, which refuses an unregistered name.)
+fn credential_commands(name: &str) -> Value {
+    json!([format!("happy-platform-mcp instance add --name {name}")])
+}
+
+/// Origin of a canonical instance URL (`scheme://host[:port]`), the form the
+/// credential origin binding stores.
+fn url_origin(canonical_url: &str) -> &str {
+    let after_scheme = canonical_url.find("://").map_or(0, |i| i + 3);
+    canonical_url[after_scheme..]
+        .find('/')
+        .map_or(canonical_url, |i| &canonical_url[..after_scheme + i])
+}
+
+const ORIGIN_MISMATCH: &str = "CREDENTIAL_ORIGIN_MISMATCH";
+
+fn origin_mismatch(name: &str) -> ToolError {
+    error_response(
+        ORIGIN_MISMATCH,
+        "A credential is already stored for this name and is bound to a different instance URL; it will not be reused. Re-save it locally for the new URL first.",
+        obj(vec![(
+            "commands",
+            json!([format!("happy-platform-mcp instance credential set {name}")]),
+        )]),
+    )
 }
 
 /// `safeRegistryDetails`.
@@ -589,6 +607,7 @@ fn registry_error(error: &CodedError) -> ToolError {
             safe_registry_details(error),
         ),
         "REGISTRY_ROLLBACK_REQUIRED" => rollback_required(),
+        ORIGIN_MISMATCH => origin_mismatch(error.detail_str("name").unwrap_or("the-instance")),
         "REGISTRY_RELOAD_FAILED" | "REGISTRY_EMPTY" => {
             let message = if code == "REGISTRY_EMPTY" {
                 "No registered instances are available. Register an instance with the local CLI, then restart the MCP server."
@@ -649,18 +668,36 @@ fn log_diagnostic(operation: &str, code: &str, name: Option<&Value>) {
     eprintln!("{}", Value::Object(diagnostic));
 }
 
-/// `checkCredentials`: `Err((code, response))`.
+/// `checkCredentials`: `Err((code, response))`. A stored secret already bound
+/// to another origin fails closed (`CREDENTIAL_ORIGIN_MISMATCH`): registering
+/// its name at a new URL would otherwise send that secret there.
 async fn check_credentials(
     store: &InstanceCredentialStore,
     requirements: &[Requirement],
     name: &str,
+    origin: &str,
 ) -> Result<(), (String, ToolError)> {
-    let mut missing: Vec<&str> = Vec::new();
-    for (reference, kind) in requirements {
-        match store.has_secret(reference).await {
-            Ok(true) => {}
-            Ok(false) => missing.push(kind),
-            Err(e) if e.code() == "CREDENTIAL_NOT_FOUND" => missing.push(kind),
+    let mut missing = false;
+    for (reference, _) in requirements {
+        let present = match store.has_secret(reference).await {
+            Err(e) if e.code() == "CREDENTIAL_NOT_FOUND" => Ok(false),
+            other => other,
+        };
+        // `Ok(true)`: stored but bound to another origin.
+        let mismatched = match present {
+            Ok(true) => store
+                .bound_origin(reference)
+                .await
+                .map(|bound| bound.is_some_and(|b| b != origin)),
+            Ok(false) => {
+                missing = true;
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        };
+        match mismatched {
+            Ok(false) => {}
+            Ok(true) => return Err((ORIGIN_MISMATCH.to_owned(), origin_mismatch(name))),
             Err(e) => {
                 let code = if e.code().starts_with("KEYCHAIN_") {
                     e.code()
@@ -678,21 +715,15 @@ async fn check_credentials(
             }
         }
     }
-    if missing.is_empty() {
+    if !missing {
         return Ok(());
-    }
-    let mut unique: Vec<&str> = Vec::new();
-    for m in missing {
-        if !unique.contains(&m) {
-            unique.push(m);
-        }
     }
     Err((
         "CREDENTIAL_NOT_FOUND".to_owned(),
         error_response(
             "CREDENTIAL_NOT_FOUND",
-            "Store the required credential(s) locally, then retry registration.",
-            obj(vec![("commands", credential_commands(name, &unique))]),
+            "No credential is stored for this instance. Register it with the local CLI, which prompts for the credential(s) and saves them with the instance.",
+            obj(vec![("commands", credential_commands(name))]),
         ),
     ))
 }
@@ -760,8 +791,18 @@ impl RegisterInstance {
             Err(e) if e.code == "INSTANCE_NOT_FOUND" => {}
             Err(e) => return not_sent(registry_error(&e)),
         }
+        let origin = match canonical
+            .metadata
+            .get("url")
+            .and_then(Value::as_str)
+            .map(canonicalize_instance_url)
+        {
+            Some(Ok(url)) => url_origin(&url).to_owned(),
+            Some(Err(e)) => return not_sent(registry_error(&e)),
+            None => return not_sent(invalid("Instance metadata failed canonical validation")),
+        };
         if let Err((_, e)) =
-            check_credentials(&self.credentials, &canonical.requirements, &name).await
+            check_credentials(&self.credentials, &canonical.requirements, &name, &origin).await
         {
             return not_sent(e);
         }
@@ -776,6 +817,7 @@ impl RegisterInstance {
             let metadata = canonical.metadata.clone();
             let requirements = canonical.requirements.clone();
             let name = name.clone();
+            let origin = origin.clone();
             let handle = tokio::runtime::Handle::current();
             tokio::task::spawn_blocking(move || {
                 let mut prior_default = None;
@@ -794,8 +836,11 @@ impl RegisterInstance {
                 };
                 let mut precommit = |_: &Value| {
                     handle
-                        .block_on(check_credentials(&store, &requirements, &name))
-                        .map_err(|(code, _)| CodedError::new(code, "credential check failed"))
+                        .block_on(check_credentials(&store, &requirements, &name, &origin))
+                        .map_err(|(code, _)| {
+                            CodedError::new(code, "credential check failed")
+                                .with("name", name.as_str())
+                        })
                 };
                 let entry = registry.register(
                     &metadata,
@@ -831,7 +876,7 @@ impl RegisterInstance {
             .map(|(n, d)| (n.as_str(), *d));
 
         if let Err((_, response)) =
-            check_credentials(&self.credentials, &canonical.requirements, &name).await
+            check_credentials(&self.credentials, &canonical.requirements, &name, &origin).await
         {
             return match registry.compensate_registration(&name, Some(&expected), prior) {
                 Ok(()) => outcome(MutationOutcome::Failed, Err(response)),
@@ -1045,5 +1090,80 @@ mod tests {
             set_target(&json!({"instance_name":"prod"})).as_deref(),
             Some("prod")
         );
+    }
+
+    fn store() -> InstanceCredentialStore {
+        InstanceCredentialStore::new(Arc::new(hpm_core::keychain::MemorySecretStore::new()))
+    }
+
+    const REF: &str = "keychain:instance/dev/password";
+
+    fn reqs() -> Vec<Requirement> {
+        vec![(REF.to_owned(), "password")]
+    }
+
+    #[tokio::test]
+    async fn reregistering_a_name_at_a_new_url_fails_closed() {
+        let store = store();
+        store
+            .set_secret(REF, hpm_types::credential::Secret::new("pw".into()))
+            .await
+            .unwrap();
+        store
+            .bind_origin(REF, "https://old.example.com")
+            .await
+            .unwrap();
+        let (code, e) = check_credentials(&store, &reqs(), "dev", "https://new.example.com")
+            .await
+            .unwrap_err();
+        assert_eq!(code, ORIGIN_MISMATCH);
+        let body = text_of(e);
+        assert_eq!(body["code"], ORIGIN_MISMATCH);
+        assert_eq!(
+            body["commands"],
+            json!(["happy-platform-mcp instance credential set dev"])
+        );
+        // Same origin, or a secret not bound yet, is accepted.
+        assert!(
+            check_credentials(&store, &reqs(), "dev", "https://old.example.com")
+                .await
+                .is_ok()
+        );
+        let unbound = self::store();
+        unbound
+            .set_secret(REF, hpm_types::credential::Secret::new("pw".into()))
+            .await
+            .unwrap();
+        assert!(
+            check_credentials(&unbound, &reqs(), "dev", "https://new.example.com")
+                .await
+                .is_ok()
+        );
+        // Precommit's error re-maps to the same response.
+        let mapped = text_of(registry_error(
+            &CodedError::new(ORIGIN_MISMATCH, "x").with("name", "dev"),
+        ));
+        assert_eq!(mapped["code"], ORIGIN_MISMATCH);
+    }
+
+    #[tokio::test]
+    async fn missing_credential_points_to_instance_add() {
+        let (code, e) = check_credentials(&store(), &reqs(), "dev", "https://dev.example.com")
+            .await
+            .unwrap_err();
+        assert_eq!(code, "CREDENTIAL_NOT_FOUND");
+        assert_eq!(
+            text_of(e)["commands"],
+            json!(["happy-platform-mcp instance add --name dev"])
+        );
+    }
+
+    #[test]
+    fn url_origin_drops_the_path() {
+        assert_eq!(
+            url_origin("https://a.example.com/sub"),
+            "https://a.example.com"
+        );
+        assert_eq!(url_origin("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
     }
 }
