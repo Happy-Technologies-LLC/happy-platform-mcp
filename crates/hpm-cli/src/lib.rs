@@ -180,6 +180,58 @@ impl SingleUser {
     }
 }
 
+/// 6.2.0 `booleanEnv` (`src/stdio-server.js:31-33`).
+fn boolean_env(value: Option<&str>) -> bool {
+    matches!(
+        value.unwrap_or("").to_lowercase().as_str(),
+        "true" | "1" | "yes"
+    )
+}
+
+/// 6.2.0 `hasServiceNowEnvCredentials` (`src/stdio-server.js:35-45`).
+fn has_servicenow_env_credentials(env: &hpm_core::config::Env) -> bool {
+    let set = |k: &str| env.get(k).is_some_and(|v| !v.is_empty());
+    let grant = env.get("SERVICENOW_OAUTH_GRANT_TYPE");
+    let passwordless = matches!(
+        grant.as_deref(),
+        Some("client_credentials" | "authorization_code")
+    );
+    set("SERVICENOW_INSTANCE_URL")
+        && (passwordless || (set("SERVICENOW_USERNAME") && set("SERVICENOW_PASSWORD")))
+}
+
+/// 6.2.0 `createConfiguredMcpServer` mode decision (`src/stdio-server.js:47-100`):
+/// `HAPPY_MCP_DOCS_ONLY` true/1/yes (any case) forces docs-only; otherwise the
+/// default instance is resolved and a "Missing ServiceNow credentials" /
+/// "servicenow-instances.json not found" error falls back to docs-only unless
+/// `HAPPY_MCP_DOCS_ONLY=false` (any case) or env credentials are set. Any other
+/// resolution error aborts startup. `--docs-only` itself is not read (`src/cli.js:34`
+/// only routes it to `main()`), so it serves docs-only only through this fallback.
+fn stdio_docs_only(config: &ConfigManager) -> Result<bool, String> {
+    let env = config.env();
+    let flag = env.get("HAPPY_MCP_DOCS_ONLY");
+    if boolean_env(flag.as_deref()) {
+        return Ok(true);
+    }
+    let instance = env.get("SERVICENOW_INSTANCE");
+    match config.get_instance_or_default(instance.as_deref()) {
+        Ok(_) => Ok(false),
+        Err(e) => {
+            let msg = e.message.to_lowercase();
+            let explicitly_disabled = flag.as_deref().unwrap_or("").to_lowercase() == "false";
+            if !explicitly_disabled
+                && !has_servicenow_env_credentials(env)
+                && (msg.contains("missing servicenow credentials")
+                    || msg.contains("servicenow-instances.json not found"))
+            {
+                Ok(true)
+            } else {
+                Err(format!("Failed to start Happy MCP Server: {}", e.message))
+            }
+        }
+    }
+}
+
 /// Mints the process's one `AdmissionKey` and builds the shared dispatcher over the
 /// OS keychain and the instance registry of `config`. Errors are ready to print
 /// after the `NAME: ` prefix. `usage` counts the calls (6.2.0 `defaultUsageTracker()`).
@@ -187,9 +239,15 @@ fn single_user_dispatcher(
     config: Arc<ConfigManager>,
     usage: &UsageTracker,
 ) -> Result<Arc<Dispatcher>, String> {
+    let docs_only = stdio_docs_only(&config)?;
+    if docs_only {
+        // `src/stdio-server.js:80`
+        eprintln!("📚 Starting Happy MCP in docs-only mode");
+    }
     let key = AdmissionKey::mint()
         .ok_or_else(|| "admission key already minted in this process".to_string())?;
     SingleUser::from_process(config)?
+        .docs_only(docs_only)
         .usage(usage.clone())
         .dispatcher(key)
 }

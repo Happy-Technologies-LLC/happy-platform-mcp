@@ -28,6 +28,8 @@ pub fn route(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         let _ = writeln!(stderr, "{SECRET_ARGUMENT_ERROR}");
         return Dispatch::Exit(2);
     }
+    // `src/cli.js:34`: `--docs-only` only routes to the server; the mode itself is
+    // decided from env and config (`crate::stdio_docs_only`, `src/stdio-server.js:47-100`).
     if args.is_empty() || (args.len() == 1 && args[0] == "--docs-only") {
         return Dispatch::Serve;
     }
