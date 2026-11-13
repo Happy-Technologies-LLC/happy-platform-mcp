@@ -92,7 +92,9 @@ struct AppState {
 }
 
 /// The HTTP application. `streamable` must come from
-/// `TrustedRoot::streamable_http`, `sse` from `TrustedRoot::legacy_sse`.
+/// `TrustedRoot::streamable_http`, `sse` from `TrustedRoot::legacy_sse`. Clones
+/// share one listener state (keep one to call [`HttpApp::close_all_sessions`]).
+#[derive(Clone)]
 pub struct HttpApp {
     state: Arc<AppState>,
     shutdown: CancellationToken,
