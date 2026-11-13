@@ -66,9 +66,53 @@ struct ScriptSession {
     state: Arc<State>,
     auth_header: String,
     jar: tokio::sync::Mutex<CookieJar>,
+    /// Set once `/logout.do` was sent (RFC §4 per-operation UI logout).
+    ended: std::sync::atomic::AtomicBool,
+}
+
+/// `GET /logout.do` for a UI session; the caller adds the cookie.
+pub(crate) fn logout_request(base_url: &str, auth_header: &str) -> HttpRequest {
+    let mut req = HttpRequest::new(Method::Get, format!("{base_url}/logout.do"));
+    req.set_header("Authorization", auth_header);
+    req.set_header("User-Agent", UI_USER_AGENT);
+    req.timeout = Some(UI_TIMEOUT);
+    req.max_redirects = 0;
+    req
+}
+
+/// Best-effort logout when a session is dropped without [`ScriptSession::end`]
+/// (early return, error or cancellation): sent on the current runtime.
+pub(crate) fn spawn_logout(client: &ServiceNowClient, req: HttpRequest) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let transport = client.deps().transport.clone();
+        handle.spawn(async move {
+            let _ = transport.send(req).await;
+        });
+    }
+}
+
+impl Drop for ScriptSession {
+    fn drop(&mut self) {
+        if self.ended.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let mut req = logout_request(&self.state.url, &self.auth_header);
+        let cookie = self.jar.get_mut().serialize();
+        if !cookie.is_empty() {
+            req.set_header("Cookie", cookie);
+        }
+        spawn_logout(&self.client, req);
+    }
 }
 
 impl ScriptSession {
+    /// Ends the UI session (`GET /logout.do`); failures are ignored.
+    async fn end(&self) {
+        self.ended.store(true, std::sync::atomic::Ordering::Release);
+        let req = logout_request(&self.state.url, &self.auth_header);
+        let _ = self.request(req).await;
+    }
+
     async fn request(
         &self,
         mut req: HttpRequest,
@@ -290,6 +334,7 @@ impl ServiceNowClient {
             Ok(response) => classify_processor_outcome(&Ok(response)),
             Err(e) => classify_processor_outcome(&Err(e)),
         };
+        session.end().await;
         let result = match result {
             ProcessorOutcome::Ran(r) => r,
             ProcessorOutcome::NotRun(reason) => return Err(not_run_error(&reason)),
@@ -437,6 +482,7 @@ impl ServiceNowClient {
             state: state.clone(),
             auth_header,
             jar: tokio::sync::Mutex::new(CookieJar::default()),
+            ended: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -652,6 +698,10 @@ impl ServiceNowClient {
         }
         self.assert_current(&state)?;
         let cookie = session.jar.lock().await.serialize();
+        // Ownership passes to the caller, who ends it with `logout_ui_session`.
+        session
+            .ended
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok((cookie, token, state.generation))
     }
 

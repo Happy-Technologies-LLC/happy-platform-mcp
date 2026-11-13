@@ -894,6 +894,16 @@ async fn current_update_set_reads_picker() {
             .iter()
             .any(|r| r.url.contains("/api/now/ui/preferences/"))
     );
+    // RFC §4: the picker UI session is ended per operation, with its cookie.
+    let last = h.transport.requests().pop();
+    assert_eq!(
+        last.as_ref().map(|r| r.url.clone()),
+        Some(format!("{URL}/logout.do"))
+    );
+    assert!(
+        last.and_then(|r| r.header("Cookie").map(str::to_owned))
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -1061,6 +1071,12 @@ async fn processor_posts_once_with_session_and_parses() {
         .unwrap_or_default();
     assert_eq!(r["status"], "completed");
     assert_eq!(r["output"], json!(["hi"]));
+    assert!(
+        h.transport
+            .requests()
+            .iter()
+            .any(|r| r.url == format!("{URL}/logout.do"))
+    );
     assert_eq!(r["scopeId"], "global");
     assert_eq!(r["rollbackContextId"], ROLLBACK);
     assert_eq!(

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::error::{ClientError, RawError};
 use super::http::{HttpRequest, Method, format_iso};
+use super::scripts::{logout_request, spawn_logout};
 use super::{RecordParams, RecordQuery, ServiceNowClient, State, UI_USER_AGENT};
 
 const UPDATE_SET_PICKER: &str = "/api/now/ui/concoursepicker/updateset";
@@ -26,9 +27,33 @@ pub(crate) struct PickerSession {
     state: Arc<State>,
     pub auth_header: String,
     cookie: String,
+    /// Set once `/logout.do` was sent (RFC §4 per-operation UI logout).
+    ended: bool,
+}
+
+impl Drop for PickerSession {
+    fn drop(&mut self) {
+        if !self.ended {
+            spawn_logout(&self.client, self.logout());
+        }
+    }
 }
 
 impl PickerSession {
+    fn logout(&self) -> HttpRequest {
+        let mut req = logout_request(&self.state.url, &self.auth_header);
+        if !self.cookie.is_empty() {
+            req.set_header("Cookie", self.cookie.clone());
+        }
+        req
+    }
+
+    /// Ends the UI session (`GET /logout.do`); failures are ignored.
+    pub async fn end(mut self) {
+        self.ended = true;
+        let _ = self.client.send(&self.state, self.logout()).await;
+    }
+
     fn request(&self, method: Method, path: &str) -> HttpRequest {
         let mut req = HttpRequest::new(method, format!("{}{path}", self.state.url));
         req.set_header("Authorization", self.auth_header.clone());
@@ -82,6 +107,7 @@ impl ServiceNowClient {
             state,
             auth_header,
             cookie: String::new(),
+            ended: false,
         };
         let mut landing = session.request(Method::Get, "/");
         landing.set_header("Accept", "text/html");
@@ -119,7 +145,9 @@ impl ServiceNowClient {
             .put(UPDATE_SET_PICKER, &json!({"name": name, "sysId": sys_id}))
             .await?;
         self.sleep_ms(500).await;
-        let current = session.get(UPDATE_SET_PICKER).await?;
+        let current = session.get(UPDATE_SET_PICKER).await;
+        session.end().await;
+        let current = current?;
         let current_id = str_at(&current, &["result", "current", "sysId"]);
         if current_id != Some(sys_id) {
             return Err(ClientError::plain(format!(
@@ -147,7 +175,9 @@ impl ServiceNowClient {
     /// `getCurrentUpdateSet`.
     pub async fn get_current_update_set(&self) -> Result<Value, ClientError> {
         let session = self.open_ui_picker_session().await?;
-        let data = session.get(UPDATE_SET_PICKER).await?;
+        let data = session.get(UPDATE_SET_PICKER).await;
+        session.end().await;
+        let data = data?;
         let current = data
             .pointer("/result/current")
             .cloned()
@@ -270,7 +300,9 @@ impl ServiceNowClient {
             .put(APPLICATION_PICKER, &json!({"app_id": app_sys_id}))
             .await?;
         self.sleep_ms(500).await;
-        let (verified, verification_error) = match session.get(APPLICATION_PICKER).await {
+        let verification = session.get(APPLICATION_PICKER).await;
+        session.end().await;
+        let (verified, verification_error) = match verification {
             Ok(v) => {
                 let current = str_at(&v, &["result", "current"]);
                 if current == Some(app_sys_id) {
