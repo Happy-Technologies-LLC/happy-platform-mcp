@@ -13,11 +13,17 @@
  *
  * Prints a markdown table and writes /tmp/hpm-specs/p4/perf.md.
  *
- * v2 (verified): every phase counts non-success responses (HTTP status not
- * 2xx, a JSON-RPC `error`, or `result.isError`) for both servers. HTTP runs
- * in two variants: (a) new TCP connection per request, (b) a shared
- * http.Agent({keepAlive:true, maxSockets:8}). The 8x concurrent phase reports
- * distinct session ids per server.
+ * v3 (verified):
+ *   - `notifications/initialized` is sent as a real JSON-RPC notification
+ *     (no id). Error counts should be 0/0; any remaining error is reported.
+ *   - HTTP runs in two variants: (a) new TCP connection per request,
+ *     (b) a shared http.Agent({keepAlive:true, maxSockets:8}).
+ *   - Legacy SSE transport (GET /mcp + POST /mcp?sessionId=<id>) for both
+ *     servers.
+ *   - Streamable HTTP (POST /mcp with Mcp-Session-Id header, 2025-11-25
+ *     session mode and 2026-07-28 stateless) for Rust 7.0 only — Node 6.2.0
+ *     does not support Streamable HTTP (answers 400).
+ *   - The 8x concurrent phase reports distinct session ids per server.
  */
 
 import { startStub } from '../golden/lib/stub-sn.mjs';
@@ -29,10 +35,10 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 
 const REPO = '/Users/nczitzer/WebstormProjects/hpm-w4-e';
-const RUST_STDIO = `${REPO}/target/release/servicenow-mcp-server`;
-const RUST_HTTP = `${REPO}/target/release/happy-platform-mcp-http`;
-const NODE_STDIO = `${REPO}/src/stdio-server.js`;
-const NODE_HTTP = `${REPO}/src/server.js`;
+const RUST_STDIO = REPO + '/target/release/servicenow-mcp-server';
+const RUST_HTTP = REPO + '/target/release/happy-platform-mcp-http';
+const NODE_STDIO = REPO + '/src/stdio-server.js';
+const NODE_HTTP = REPO + '/src/server.js';
 
 const FAKE_USER = 'golden.user';
 const FAKE_PASSWORD = 'golden-fake-password-4f9a1c';
@@ -58,7 +64,7 @@ function median(values) {
 }
 
 function rssKb(pid) {
-  const out = execSync(`ps -o rss= -p ${pid}`, { encoding: 'utf8' }).trim();
+  const out = execSync('ps -o rss= -p ' + pid, { encoding: 'utf8' }).trim();
   return Number(out) || 0;
 }
 function fileSize(path) {
@@ -76,6 +82,20 @@ function isJsonRpcSuccess(msg) {
   return true;
 }
 
+// Parse a response body into the JSON-RPC message, or null. Tries plain JSON
+// first, then SSE `data: ` lines (trying each, not just the first).
+function parseResponseBody(text) {
+  try { return JSON.parse(text); } catch { }
+  const lines = text.split('\n');
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue;
+    const payload = line.slice(6);
+    if (!payload.trim()) continue;
+    try { return JSON.parse(payload); } catch { continue; }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Stub
 // ---------------------------------------------------------------------------
@@ -83,7 +103,7 @@ function isJsonRpcSuccess(msg) {
 let stub;
 async function startStubServer() {
   stub = await startStub({ host: '127.0.0.1' });
-  return `http://127.0.0.1:${stub.port}`;
+  return 'http://127.0.0.1:' + stub.port;
 }
 async function stopStubServer() { if (stub) await stub.close(); }
 
@@ -109,17 +129,8 @@ function mkdirRecursive(p) {
   }
 }
 
-// Parse a Streamable-HTTP / SSE response body into the JSON-RPC message, or null.
-function parseStreamableBody(text) {
-  // Try plain JSON first (some initialize responses are not SSE).
-  try { return JSON.parse(text); } catch { }
-  // Fall back to SSE data: lines.
-  const line = text.split('\n').find(l => l.startsWith('data: '));
-  if (!line) return null;
-  try { return JSON.parse(line.slice(6)); } catch { return null; }
-}
-
-function baseEnv(home, configPath, stubUrl, extra = {}) {
+function baseEnv(home, configPath, stubUrl, extra) {
+  if (extra === void 0) extra = {};
   return {
     PATH: process.env.PATH,
     HOME: home,
@@ -158,7 +169,7 @@ class StdioSession {
     this.pending = new Map();
     this.lines = [];
     this.errors = 0;
-    this.sessionId = null; // stdio has no session id
+    this.sessionId = null;
     child.stdout.on('data', d => { this.buf += d.toString(); this._drain(); });
   }
 
@@ -182,14 +193,16 @@ class StdioSession {
     }
   }
 
-  async request(method, params = {}, timeoutMs = 10000) {
+  async request(method, params, timeoutMs) {
+    if (params === void 0) params = {};
+    if (timeoutMs === void 0) timeoutMs = 10000;
     const id = ++this.id;
     const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
     this.child.stdin.write(msg);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`timeout waiting for ${id}:${method}`));
+        reject(new Error('timeout waiting for ' + id + ':' + method));
       }, timeoutMs);
       this.pending.set(id, (msg) => {
         clearTimeout(timer);
@@ -199,7 +212,8 @@ class StdioSession {
     });
   }
 
-  async notify(method, params = {}) {
+  async notify(method, params) {
+    if (params === void 0) params = {};
     const msg = JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n';
     this.child.stdin.write(msg);
   }
@@ -221,8 +235,8 @@ class StdioSession {
 async function spawnStdio(cmd, stubUrl, extraEnv) {
   const sandbox = makeSandbox();
   const env = baseEnv(sandbox.home, sandbox.configPath, stubUrl, extraEnv);
-  const [bin, binArg] = spawnCmd(cmd);
-  const child = spawnServer(bin, binArg ? [binArg] : [], env);
+  const sc = spawnCmd(cmd);
+  const child = spawnServer(sc[0], sc[1] ? [sc[1]] : [], env);
   const session = new StdioSession(child);
   return { session, child, pid: child.pid, sandbox, stop: () => killServer(child) };
 }
@@ -260,10 +274,10 @@ async function stdioConcurrentSessions(cmd, stubUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// MCP HTTP session (Streamable HTTP)
+// MCP HTTP session (legacy SSE: GET /mcp + POST /mcp?sessionId=<id>)
 // ---------------------------------------------------------------------------
 
-class HttpSession {
+class SseSession {
   constructor(baseUrl, token, agent) {
     this.baseUrl = baseUrl;
     this.token = token;
@@ -276,21 +290,17 @@ class HttpSession {
     this._sseReader = null;
   }
 
-  // SSE legacy transport: GET /mcp opens a persistent stream whose first event
-  // carries the session id; POST /mcp?sessionId=<id> answers 202 and delivers
-  // JSON-RPC responses through the same SSE stream.
   async openSseSession() {
     const url = new URL('/mcp', this.baseUrl);
     const res = await fetch(url, {
       headers: {
-        'Authorization': `Bearer ${this.token}`,
+        'Authorization': 'Bearer ' + this.token,
         'Accept': 'text/event-stream',
       },
     });
-    if (!res.ok) throw new Error(`SSE session failed: ${res.status}`);
+    if (!res.ok) throw new Error('SSE session failed: ' + res.status);
     this._sseReader = res.body.getReader();
     const dec = new TextDecoder();
-    // Continuously drain the SSE stream in the background.
     (async () => {
       let buf = '';
       try {
@@ -313,10 +323,9 @@ class HttpSession {
             }
           }
         }
-      } catch { /* stream closed */ }
+      } catch { }
     })();
 
-    // Wait for the endpoint event to learn the session id.
     await new Promise((resolve, reject) => {
       const poll = () => {
         const m = this.sseBuf.match(/data:\s*(\/mcp\?sessionId=[^\s\n]+)/);
@@ -332,31 +341,28 @@ class HttpSession {
     if (!this.sessionId) throw new Error('SSE session id not found');
   }
 
-  async rpc(method, params = {}) {
+  async rpc(method, params) {
+    if (params === void 0) params = {};
     if (!this.sessionId) await this.openSseSession();
     const id = ++this.id;
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
-    const path = `/mcp?sessionId=${encodeURIComponent(this.sessionId)}`;
-    // Register the SSE callback BEFORE posting so the response can't arrive
-    // before we're listening.
+    const path = '/mcp?sessionId=' + encodeURIComponent(this.sessionId);
     let rpcResult = null;
     const rpcReady = new Promise((resolve, reject) => {
       this.pending.set(id, (msg) => { rpcResult = msg; resolve(msg); });
       setTimeout(() => {
-        if (this.pending.has(id)) { this.pending.delete(id); reject(new Error(`timeout waiting for ${id}:${method}`)); }
+        if (this.pending.has(id)) { this.pending.delete(id); reject(new Error('timeout waiting for ' + id + ':' + method)); }
       }, 10000);
     });
-    // Fire the POST; its HTTP 202 just means "accepted".
     const res = await fetch(new URL(path, this.baseUrl), {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${this.token}`,
+        'Authorization': 'Bearer ' + this.token,
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
       },
       body,
     });
-    // Wait for the JSON-RPC response on the SSE stream.
     await rpcReady;
     let responseError = false;
     if (res.status < 200 || res.status >= 300) {
@@ -371,17 +377,147 @@ class HttpSession {
     return { status: res.status, parsed: rpcResult };
   }
 
+  async notify(method, params) {
+    if (params === void 0) params = {};
+    if (!this.sessionId) await this.openSseSession();
+    const body = JSON.stringify({ jsonrpc: '2.0', method, params });
+    const path = '/mcp?sessionId=' + encodeURIComponent(this.sessionId);
+    const res = await fetch(new URL(path, this.baseUrl), {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + this.token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
+      body,
+    });
+    let responseError = false;
+    if (res.status < 200 || res.status >= 300) {
+      if (!(method.startsWith('notifications/') && res.status === 202)) {
+        responseError = true;
+      }
+    }
+    if (responseError) this.errors++;
+    return { status: res.status };
+  }
+
   async init() {
     await this.rpc('initialize', {
       protocolVersion: '2025-11-25',
       capabilities: {},
       clientInfo: { name: 'perf-bench', version: '1' },
     });
-    await this.rpc('notifications/initialized', {});
+    await this.notify('notifications/initialized', {});
   }
   async toolsList() { return this.rpc('tools/list'); }
   async toolsCall(name, args) { return this.rpc('tools/call', { name, arguments: args }); }
-  close() { /* killed externally */ }
+  close() { }
+}
+
+// ---------------------------------------------------------------------------
+// MCP HTTP session (Streamable HTTP: POST /mcp with Mcp-Session-Id header)
+// ---------------------------------------------------------------------------
+
+class StreamableSession {
+  constructor(baseUrl, token, agent, mode) {
+    this.baseUrl = baseUrl;
+    this.token = token;
+    this.sessionId = null;
+    this.id = 0;
+    this.errors = 0;
+    this.agent = agent;
+    this.mode = mode;
+  }
+
+  async rpc(method, params) {
+    if (params === void 0) params = {};
+    const isNotify = method.startsWith('notifications/');
+    const id = isNotify ? null : ++this.id;
+    const headers = {
+      'Authorization': 'Bearer ' + this.token,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+    };
+    let body;
+    if (this.mode === 'session') {
+      headers['MCP-Protocol-Version'] = '2025-11-25';
+      if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
+      body = JSON.stringify({ jsonrpc: '2.0', ...(id ? { id } : {}), method, params });
+    } else {
+      headers['MCP-Protocol-Version'] = '2026-07-28';
+      headers['Mcp-Method'] = method;
+      if (method === 'tools/call' && typeof params === 'object' && params !== null && params.name) {
+        headers['Mcp-Name'] = params.name;
+      }
+      if (isNotify) {
+        body = JSON.stringify({ jsonrpc: '2.0', method, params });
+      } else {
+        const p = typeof params === 'object' && params !== null ? { ...params } : {};
+        p._meta = {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientInfo': { name: 'perf-bench', version: '1' },
+          'io.modelcontextprotocol/clientCapabilities': {},
+        };
+        body = JSON.stringify({ jsonrpc: '2.0', id, method, params: p });
+      }
+    }
+    const res = await fetch(new URL('/mcp', this.baseUrl), {
+      method: 'POST',
+      headers,
+      body,
+    });
+
+    if (isNotify) {
+      let responseError = false;
+      if (res.status < 200 || res.status >= 300) responseError = true;
+      if (responseError) this.errors++;
+      return { status: res.status, parsed: null };
+    }
+
+    const text = await res.text();
+    let parsed = parseResponseBody(text);
+    if (parsed === null) {
+      if (!(res.status === 202 && !text.trim())) {
+        parsed = { error: { message: 'unparseable: ' + text.slice(0, 200) } };
+      }
+    }
+
+    if (this.mode === 'session') {
+      const sid = res.headers.get('mcp-session-id');
+      if (sid && !this.sessionId) this.sessionId = sid;
+    }
+
+    let responseError = false;
+    if (res.status < 200 || res.status >= 300) responseError = true;
+    if (parsed && (parsed.error || (parsed.result && parsed.result.isError))) responseError = true;
+    if (responseError) this.errors++;
+    return { status: res.status, parsed };
+  }
+
+  async notify(method, params) {
+    if (params === void 0) params = {};
+    return this.rpc(method, params);
+  }
+
+  async init() {
+    if (this.mode === 'session') {
+      await this.rpc('initialize', {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'perf-bench', version: '1' },
+      });
+    } else {
+      await this.rpc('initialize', {
+        protocolVersion: '2026-07-28',
+        capabilities: {},
+        clientInfo: { name: 'perf-bench', version: '1' },
+      });
+    }
+    await this.notify('notifications/initialized', {});
+  }
+  async toolsList() { return this.rpc('tools/list'); }
+  async toolsCall(name, args) { return this.rpc('tools/call', { name, arguments: args }); }
+  close() { }
 }
 
 async function findFreePort() {
@@ -392,26 +528,24 @@ async function findFreePort() {
   });
 }
 
-// HTTP: spawn the server process (no client yet).
 async function spawnHttpServer(cmd, stubUrl, port, extraEnv) {
   const sandbox = makeSandbox();
   const token = crypto.randomBytes(32).toString('hex');
   const env = baseEnv(sandbox.home, sandbox.configPath, stubUrl, {
     PORT: String(port),
     HAPPY_MCP_API_TOKEN: token,
-    HAPPY_MCP_ALLOWED_HOSTS: `127.0.0.1:${port}`,
-    HAPPY_MCP_ALLOWED_ORIGINS: `http://127.0.0.1:${port}`,
+    HAPPY_MCP_ALLOWED_HOSTS: '127.0.0.1:' + port,
+    HAPPY_MCP_ALLOWED_ORIGINS: 'http://127.0.0.1:' + port,
     ...extraEnv,
   });
-  const [bin, binArg] = spawnCmd(cmd);
-  const child = spawnServer(bin, binArg ? [binArg] : [], env);
-  const baseUrl = `http://127.0.0.1:${port}`;
+  const sc = spawnCmd(cmd);
+  const child = spawnServer(sc[0], sc[1] ? [sc[1]] : [], env);
+  const baseUrl = 'http://127.0.0.1:' + port;
   return { child, pid: child.pid, sandbox, token, baseUrl, stop: () => killServer(child) };
 }
 
-// HTTP: create one inited client session against a running server (with retry).
-async function createHttpSession(baseUrl, token, agent) {
-  const session = new HttpSession(baseUrl, token, agent);
+async function createSseSession(baseUrl, token, agent) {
+  const session = new SseSession(baseUrl, token, agent);
   let ready = false;
   for (let i = 0; i < 100; i++) {
     try {
@@ -420,40 +554,71 @@ async function createHttpSession(baseUrl, token, agent) {
       break;
     } catch { await new Promise(r => setTimeout(r, 100)); }
   }
-  if (!ready) throw new Error(`HTTP session did not become ready on ${baseUrl}`);
+  if (!ready) throw new Error('SSE session did not become ready on ' + baseUrl);
   return { session };
 }
 
-// HTTP: spawn server + one inited client session.
-async function startHttp(cmd, stubUrl, port, extraEnv, agent) {
-  const server = await spawnHttpServer(cmd, stubUrl, port, extraEnv);
-  const { session } = await createHttpSession(server.baseUrl, server.token, agent);
-  return { session, child: server.child, pid: server.pid, token: server.token, baseUrl: server.baseUrl, stop: () => server.stop() };
+async function createStreamableSession(baseUrl, token, agent, mode) {
+  const session = new StreamableSession(baseUrl, token, agent, mode);
+  let ready = false;
+  for (let i = 0; i < 100; i++) {
+    try {
+      await session.init();
+      ready = true;
+      break;
+    } catch { await new Promise(r => setTimeout(r, 100)); }
+  }
+  if (!ready) throw new Error('Streamable session did not become ready on ' + baseUrl);
+  return { session };
 }
 
-async function coldStartHttp(cmd, stubUrl, port, extraEnv, agent) {
+async function startHttp(cmd, stubUrl, port, extraEnv, agent, sessionType) {
+  if (sessionType === void 0) sessionType = 'sse';
+  const server = await spawnHttpServer(cmd, stubUrl, port, extraEnv);
+  if (sessionType === 'sse') {
+    const { session } = await createSseSession(server.baseUrl, server.token, agent);
+    return { session, child: server.child, pid: server.pid, token: server.token, baseUrl: server.baseUrl, stop: () => server.stop() };
+  } else {
+    const { session } = await createStreamableSession(server.baseUrl, server.token, agent, sessionType);
+    return { session, child: server.child, pid: server.pid, token: server.token, baseUrl: server.baseUrl, stop: () => server.stop() };
+  }
+}
+
+async function coldStartHttp(cmd, stubUrl, port, extraEnv, agent, sessionType) {
+  if (sessionType === void 0) sessionType = 'sse';
   const trials = [];
   let totalErrors = 0;
   for (let i = 0; i < TRIALS_COLD; i++) {
     const server = await spawnHttpServer(cmd, stubUrl, port, extraEnv);
     const t0 = nowNs();
-    const { session } = await createHttpSession(server.baseUrl, server.token, agent);
-    await session.toolsList();
+    if (sessionType === 'sse') {
+      const { session } = await createSseSession(server.baseUrl, server.token, agent);
+      await session.toolsList();
+      totalErrors += session.errors;
+    } else {
+      const { session } = await createStreamableSession(server.baseUrl, server.token, agent, sessionType);
+      await session.toolsList();
+      totalErrors += session.errors;
+    }
     const t1 = nowNs();
-    totalErrors += session.errors;
     server.stop();
     trials.push(nsToMs(t1 - t0));
   }
   return { ms: median(trials), errors: totalErrors };
 }
 
-// HTTP concurrent: one server, CONCURRENT_CLIENTS inited client sessions.
-async function httpConcurrentSessions(cmd, stubUrl, port, agent) {
+async function httpConcurrentSessions(cmd, stubUrl, port, agent, sessionType) {
+  if (sessionType === void 0) sessionType = 'sse';
   const server = await spawnHttpServer(cmd, stubUrl, port, {});
   const sessions = [];
   for (let i = 0; i < CONCURRENT_CLIENTS; i++) {
-    const { session } = await createHttpSession(server.baseUrl, server.token, agent);
-    sessions.push(session);
+    if (sessionType === 'sse') {
+      const { session } = await createSseSession(server.baseUrl, server.token, agent);
+      sessions.push(session);
+    } else {
+      const { session } = await createStreamableSession(server.baseUrl, server.token, agent, sessionType);
+      sessions.push(session);
+    }
   }
   return { sessions, stopAll: () => server.stop() };
 }
@@ -502,7 +667,6 @@ async function queryLatency(makeServer) {
   return { p50: percentile(times, 50), p99: percentile(times, 99), errors };
 }
 
-// Concurrent: sessions already inited. Time only the calls.
 async function concurrentMeasure({ sessions, stopAll }) {
   const sessionIds = sessions.map(s => s.sessionId || null).filter(Boolean);
   const distinctIds = new Set(sessionIds).size;
@@ -534,18 +698,19 @@ async function main() {
   const stubUrl = await startStubServer();
   const port = await findFreePort();
 
-  const rows = []; // [measure, rust, node, rustErr, nodeErr, flag]
+  const rows = [];
   const infoLines = [];
+  const na = 'n/a';
 
-  const flagWorse = (rustVal, nodeVal) => {
+  function flagWorse(rustVal, nodeVal) {
     if (rustVal === 0 || nodeVal === 0) return '';
-    return rustVal > nodeVal * 2 ? '⚠️ >2x' : '';
-  };
-  const flagBetterIsMore = (rustVal, nodeVal) => {
+    return rustVal > nodeVal * 2 ? '\u26a0\ufe0f >2x' : '';
+  }
+  function flagBetterIsMore(rustVal, nodeVal) {
     if (rustVal === 0 || nodeVal === 0) return '';
-    return rustVal < nodeVal / 2 ? '⚠️ >2x' : '';
-  };
-  const errCell = (rErr, nErr) => `${rErr}/${nErr}`;
+    return rustVal < nodeVal / 2 ? '\u26a0\ufe0f >2x' : '';
+  }
+  function errCell(rErr, nErr) { return rErr + '/' + nErr; }
 
   // -------- stdio --------
   {
@@ -579,72 +744,184 @@ async function main() {
     infoLines.push('stdio 8x conc: distinct session ids N/A (stdio)');
   }
 
-  // -------- http variant (a): new TCP per request --------
+  // -------- http variant (a): new TCP per request, legacy SSE --------
   const agentA = null;
   {
-    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentA);
-    const n = await coldStartHttp(NODE_HTTP, stubUrl, port, {}, agentA);
-    rows.push(['http cold start (ms, median) [a: new TCP/req]', r.ms.toFixed(1), n.ms.toFixed(1), errCell(r.errors, n.errors), flagWorse(r.ms, n.ms)]);
+    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'sse');
+    const n = await coldStartHttp(NODE_HTTP, stubUrl, port, {}, agentA, 'sse');
+    rows.push(['http SSE cold start (ms, median) [a: new TCP/req]', r.ms.toFixed(1), n.ms.toFixed(1), errCell(r.errors, n.errors), flagWorse(r.ms, n.ms)]);
   }
   {
-    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
-    const n = await rssMeasure(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentA), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
-    rows.push(['http idle RSS (KB) [a]', r.idle.toFixed(0), n.idle.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.idle, n.idle)]);
-    rows.push(['http RSS after 1000 calls (KB) [a]', r.after.toFixed(0), n.after.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.after, n.after)]);
+    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'sse'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    const n = await rssMeasure(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentA, 'sse'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    rows.push(['http SSE idle RSS (KB) [a]', r.idle.toFixed(0), n.idle.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.idle, n.idle)]);
+    rows.push(['http SSE RSS after 1000 calls (KB) [a]', r.after.toFixed(0), n.after.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.after, n.after)]);
   }
   {
-    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA));
-    const n = await listLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentA));
-    rows.push(['http tools/list p50 (ms) [a]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
-    rows.push(['http tools/list p99 (ms) [a]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
+    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'sse'));
+    const n = await listLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentA, 'sse'));
+    rows.push(['http SSE tools/list p50 (ms) [a]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
+    rows.push(['http SSE tools/list p99 (ms) [a]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
   }
   {
-    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA));
-    const n = await queryLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentA));
-    rows.push(['http SN-Query-Table p50 (ms) [a]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
-    rows.push(['http SN-Query-Table p99 (ms) [a]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
+    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'sse'));
+    const n = await queryLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentA, 'sse'));
+    rows.push(['http SSE SN-Query-Table p50 (ms) [a]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
+    rows.push(['http SSE SN-Query-Table p99 (ms) [a]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
   }
   {
-    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentA));
-    const n = await concurrentMeasure(await httpConcurrentSessions(NODE_HTTP, stubUrl, port, agentA));
-    rows.push(['http 8x conc throughput (calls/s) [a]', r.throughput.toFixed(1), n.throughput.toFixed(1), errCell(r.errors, n.errors), flagBetterIsMore(r.throughput, n.throughput)]);
-    rows.push(['http 8x conc p99 (ms) [a]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
-    infoLines.push(`http [a] 8x conc: Rust distinct session ids = ${r.distinctIds}/${CONCURRENT_CLIENTS}; Node = ${n.distinctIds}/${CONCURRENT_CLIENTS}`);
+    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentA, 'sse'));
+    const n = await concurrentMeasure(await httpConcurrentSessions(NODE_HTTP, stubUrl, port, agentA, 'sse'));
+    rows.push(['http SSE 8x conc throughput (calls/s) [a]', r.throughput.toFixed(1), n.throughput.toFixed(1), errCell(r.errors, n.errors), flagBetterIsMore(r.throughput, n.throughput)]);
+    rows.push(['http SSE 8x conc p99 (ms) [a]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
+    infoLines.push('http SSE [a] 8x conc: Rust distinct session ids = ' + r.distinctIds + '/' + CONCURRENT_CLIENTS + '; Node = ' + n.distinctIds + '/' + CONCURRENT_CLIENTS);
   }
 
-  // -------- http variant (b): keepAlive agent --------
+  // -------- http variant (b): keepAlive agent, legacy SSE --------
   const agentB = new http.Agent({ keepAlive: true, maxSockets: 8 });
   {
-    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentB);
-    const n = await coldStartHttp(NODE_HTTP, stubUrl, port, {}, agentB);
-    rows.push(['http cold start (ms, median) [b: keepAlive]', r.ms.toFixed(1), n.ms.toFixed(1), errCell(r.errors, n.errors), flagWorse(r.ms, n.ms)]);
+    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentB, 'sse');
+    const n = await coldStartHttp(NODE_HTTP, stubUrl, port, {}, agentB, 'sse');
+    rows.push(['http SSE cold start (ms, median) [b: keepAlive]', r.ms.toFixed(1), n.ms.toFixed(1), errCell(r.errors, n.errors), flagWorse(r.ms, n.ms)]);
   }
   {
-    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
-    const n = await rssMeasure(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentB), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
-    rows.push(['http idle RSS (KB) [b]', r.idle.toFixed(0), n.idle.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.idle, n.idle)]);
-    rows.push(['http RSS after 1000 calls (KB) [b]', r.after.toFixed(0), n.after.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.after, n.after)]);
+    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB, 'sse'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    const n = await rssMeasure(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentB, 'sse'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    rows.push(['http SSE idle RSS (KB) [b]', r.idle.toFixed(0), n.idle.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.idle, n.idle)]);
+    rows.push(['http SSE RSS after 1000 calls (KB) [b]', r.after.toFixed(0), n.after.toFixed(0), errCell(r.errors, n.errors), flagWorse(r.after, n.after)]);
   }
   {
-    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB));
-    const n = await listLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentB));
-    rows.push(['http tools/list p50 (ms) [b]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
-    rows.push(['http tools/list p99 (ms) [b]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
+    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB, 'sse'));
+    const n = await listLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentB, 'sse'));
+    rows.push(['http SSE tools/list p50 (ms) [b]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
+    rows.push(['http SSE tools/list p99 (ms) [b]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
   }
   {
-    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB));
-    const n = await queryLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentB));
-    rows.push(['http SN-Query-Table p50 (ms) [b]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
-    rows.push(['http SN-Query-Table p99 (ms) [b]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
+    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB, 'sse'));
+    const n = await queryLatency(() => startHttp(NODE_HTTP, stubUrl, port, {}, agentB, 'sse'));
+    rows.push(['http SSE SN-Query-Table p50 (ms) [b]', r.p50.toFixed(2), n.p50.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p50, n.p50)]);
+    rows.push(['http SSE SN-Query-Table p99 (ms) [b]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
   }
   {
-    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentB));
-    const n = await concurrentMeasure(await httpConcurrentSessions(NODE_HTTP, stubUrl, port, agentB));
-    rows.push(['http 8x conc throughput (calls/s) [b]', r.throughput.toFixed(1), n.throughput.toFixed(1), errCell(r.errors, n.errors), flagBetterIsMore(r.throughput, n.throughput)]);
-    rows.push(['http 8x conc p99 (ms) [b]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
-    infoLines.push(`http [b] 8x conc: Rust distinct session ids = ${r.distinctIds}/${CONCURRENT_CLIENTS}; Node = ${n.distinctIds}/${CONCURRENT_CLIENTS}`);
+    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentB, 'sse'));
+    const n = await concurrentMeasure(await httpConcurrentSessions(NODE_HTTP, stubUrl, port, agentB, 'sse'));
+    rows.push(['http SSE 8x conc throughput (calls/s) [b]', r.throughput.toFixed(1), n.throughput.toFixed(1), errCell(r.errors, n.errors), flagBetterIsMore(r.throughput, n.throughput)]);
+    rows.push(['http SSE 8x conc p99 (ms) [b]', r.p99.toFixed(2), n.p99.toFixed(2), errCell(r.errors, n.errors), flagWorse(r.p99, n.p99)]);
+    infoLines.push('http SSE [b] 8x conc: Rust distinct session ids = ' + r.distinctIds + '/' + CONCURRENT_CLIENTS + '; Node = ' + n.distinctIds + '/' + CONCURRENT_CLIENTS);
   }
   agentB.destroy();
+
+  // -------- http Streamable session mode (2025-11-25), variant (a) --------
+  {
+    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'session');
+    rows.push(['http Streamable-session cold start (ms, median) [a]', r.ms.toFixed(1), na, errCell(r.errors, '-'), flagWorse(r.ms, 0)]);
+  }
+  {
+    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'session'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    rows.push(['http Streamable-session idle RSS (KB) [a]', r.idle.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.idle, 0)]);
+    rows.push(['http Streamable-session RSS after 1000 calls (KB) [a]', r.after.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.after, 0)]);
+  }
+  {
+    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'session'));
+    rows.push(['http Streamable-session tools/list p50 (ms) [a]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-session tools/list p99 (ms) [a]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'session'));
+    rows.push(['http Streamable-session SN-Query-Table p50 (ms) [a]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-session SN-Query-Table p99 (ms) [a]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentA, 'session'));
+    rows.push(['http Streamable-session 8x conc throughput (calls/s) [a]', r.throughput.toFixed(1), na, errCell(r.errors, '-'), flagBetterIsMore(r.throughput, 0)]);
+    rows.push(['http Streamable-session 8x conc p99 (ms) [a]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+    infoLines.push('http Streamable-session [a] 8x conc: Rust distinct session ids = ' + r.distinctIds + '/' + CONCURRENT_CLIENTS + '; Node = n/a (no Streamable HTTP)');
+  }
+
+  // -------- http Streamable session mode (2025-11-25), variant (b) --------
+  const agentB2 = new http.Agent({ keepAlive: true, maxSockets: 8 });
+  {
+    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentB2, 'session');
+    rows.push(['http Streamable-session cold start (ms, median) [b]', r.ms.toFixed(1), na, errCell(r.errors, '-'), flagWorse(r.ms, 0)]);
+  }
+  {
+    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB2, 'session'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    rows.push(['http Streamable-session idle RSS (KB) [b]', r.idle.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.idle, 0)]);
+    rows.push(['http Streamable-session RSS after 1000 calls (KB) [b]', r.after.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.after, 0)]);
+  }
+  {
+    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB2, 'session'));
+    rows.push(['http Streamable-session tools/list p50 (ms) [b]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-session tools/list p99 (ms) [b]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB2, 'session'));
+    rows.push(['http Streamable-session SN-Query-Table p50 (ms) [b]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-session SN-Query-Table p99 (ms) [b]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentB2, 'session'));
+    rows.push(['http Streamable-session 8x conc throughput (calls/s) [b]', r.throughput.toFixed(1), na, errCell(r.errors, '-'), flagBetterIsMore(r.throughput, 0)]);
+    rows.push(['http Streamable-session 8x conc p99 (ms) [b]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+    infoLines.push('http Streamable-session [b] 8x conc: Rust distinct session ids = ' + r.distinctIds + '/' + CONCURRENT_CLIENTS + '; Node = n/a (no Streamable HTTP)');
+  }
+  agentB2.destroy();
+
+  // -------- http Streamable stateless mode (2026-07-28), variant (a) --------
+  {
+    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'stateless');
+    rows.push(['http Streamable-stateless cold start (ms, median) [a]', r.ms.toFixed(1), na, errCell(r.errors, '-'), flagWorse(r.ms, 0)]);
+  }
+  {
+    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'stateless'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    rows.push(['http Streamable-stateless idle RSS (KB) [a]', r.idle.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.idle, 0)]);
+    rows.push(['http Streamable-stateless RSS after 1000 calls (KB) [a]', r.after.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.after, 0)]);
+  }
+  {
+    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'stateless'));
+    rows.push(['http Streamable-stateless tools/list p50 (ms) [a]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-stateless tools/list p99 (ms) [a]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentA, 'stateless'));
+    rows.push(['http Streamable-stateless SN-Query-Table p50 (ms) [a]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-stateless SN-Query-Table p99 (ms) [a]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentA, 'stateless'));
+    rows.push(['http Streamable-stateless 8x conc throughput (calls/s) [a]', r.throughput.toFixed(1), na, errCell(r.errors, '-'), flagBetterIsMore(r.throughput, 0)]);
+    rows.push(['http Streamable-stateless 8x conc p99 (ms) [a]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+    infoLines.push('http Streamable-stateless [a] 8x conc: Rust distinct session ids = N/A (stateless, no session); Node = n/a (no Streamable HTTP)');
+  }
+
+  // -------- http Streamable stateless mode (2026-07-28), variant (b) --------
+  const agentB3 = new http.Agent({ keepAlive: true, maxSockets: 8 });
+  {
+    const r = await coldStartHttp(RUST_HTTP, stubUrl, port, {}, agentB3, 'stateless');
+    rows.push(['http Streamable-stateless cold start (ms, median) [b]', r.ms.toFixed(1), na, errCell(r.errors, '-'), flagWorse(r.ms, 0)]);
+  }
+  {
+    const r = await rssMeasure(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB3, 'stateless'), (s) => s.toolsCall('SN-Query-Table', { table_name: 'incident', limit: 5 }));
+    rows.push(['http Streamable-stateless idle RSS (KB) [b]', r.idle.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.idle, 0)]);
+    rows.push(['http Streamable-stateless RSS after 1000 calls (KB) [b]', r.after.toFixed(0), na, errCell(r.errors, '-'), flagWorse(r.after, 0)]);
+  }
+  {
+    const r = await listLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB3, 'stateless'));
+    rows.push(['http Streamable-stateless tools/list p50 (ms) [b]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-stateless tools/list p99 (ms) [b]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await queryLatency(() => startHttp(RUST_HTTP, stubUrl, port, {}, agentB3, 'stateless'));
+    rows.push(['http Streamable-stateless SN-Query-Table p50 (ms) [b]', r.p50.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p50, 0)]);
+    rows.push(['http Streamable-stateless SN-Query-Table p99 (ms) [b]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+  }
+  {
+    const r = await concurrentMeasure(await httpConcurrentSessions(RUST_HTTP, stubUrl, port, agentB3, 'stateless'));
+    rows.push(['http Streamable-stateless 8x conc throughput (calls/s) [b]', r.throughput.toFixed(1), na, errCell(r.errors, '-'), flagBetterIsMore(r.throughput, 0)]);
+    rows.push(['http Streamable-stateless 8x conc p99 (ms) [b]', r.p99.toFixed(2), na, errCell(r.errors, '-'), flagWorse(r.p99, 0)]);
+    infoLines.push('http Streamable-stateless [b] 8x conc: Rust distinct session ids = N/A (stateless, no session); Node = n/a (no Streamable HTTP)');
+  }
+  agentB3.destroy();
 
   // -------- size --------
   const rustStdioSize = fileSize(RUST_STDIO);
@@ -657,24 +934,23 @@ async function main() {
   await stopStubServer();
 
   // ---- print ----
-  console.log('# Perf sanity v2: Rust 7.0 vs Node 6.2.0 (hermetic, loopback stub)');
+  console.log('# Perf sanity v3: Rust 7.0 vs Node 6.2.0 (hermetic, loopback stub)');
   console.log();
-  console.log('Errors column = Rust errors / Node errors across the phase.');
+  console.log('Errors column = Rust errors / Node errors across the phase. n/a = Node 6.2.0 does not support that mode.');
   console.log();
   console.log('| Measure | Rust 7.0 | Node 6.2.0 | Errors R/N | Flag |');
   console.log('|---------|----------|------------|------------|------|');
-  for (const [m, r, n, e, f] of rows) {
-    console.log(`| ${m} | ${r} | ${n} | ${e} | ${f} |`);
+  for (const row of rows) {
+    console.log('| ' + row.join(' | ') + ' |');
   }
   console.log();
   for (const line of infoLines) console.log(line);
   console.log();
-  console.log('Flag: ⚠️ >2x means the Rust number is worse than 2x the Node number (throughput inverted).');
+  console.log('Flag: \u26a0\ufe0f >2x means the Rust number is worse than 2x the Node number (throughput inverted).');
 
   const uname = execSync('uname -a', { encoding: 'utf8' }).trim();
   const cores = execSync('sysctl -n hw.ncpu', { encoding: 'utf8' }).trim();
 
-  // v1 table (first run, no error checking) kept verbatim and labeled unchecked.
   const v1Rows = [
     ['stdio cold start (ms, median)', '6.9', '136.5', ''],
     ['stdio idle RSS (KB)', '13808', '97824', ''],
@@ -688,51 +964,54 @@ async function main() {
     ['http cold start (ms, median)', '105.8', '211.9', ''],
     ['http idle RSS (KB)', '15216', '106464', ''],
     ['http RSS after 1000 calls (KB)', '16720', '123488', ''],
-    ['http tools/list p50 (ms)', '0.62', '0.21', '⚠️ >2x'],
+    ['http tools/list p50 (ms)', '0.62', '0.21', '\u26a0\ufe0f >2x'],
     ['http tools/list p99 (ms)', '1.01', '0.64', ''],
     ['http SN-Query-Table p50 (ms)', '0.36', '0.89', ''],
     ['http SN-Query-Table p99 (ms)', '0.85', '4.91', ''],
-    ['http 8x conc throughput (calls/s)', '3288.8', '7571.4', '⚠️ >2x'],
-    ['http 8x conc p99 (ms)', '18.68', '2.92', '⚠️ >2x'],
+    ['http 8x conc throughput (calls/s)', '3288.8', '7571.4', '\u26a0\ufe0f >2x'],
+    ['http 8x conc p99 (ms)', '18.68', '2.92', '\u26a0\ufe0f >2x'],
     ['stdio binary size (bytes)', '12,973,648', '5,258', ''],
     ['http binary size (bytes)', '13,958,592', '3,104', ''],
   ];
 
-  const md = [
-    '# Perf sanity report (P4, lane E)',
-    '',
-    'Command: `node scripts/perf/run.mjs`',
-    '',
-    `Machine: \`${uname}\``,
-    `Cores: ${cores}`,
-    '',
-    'Both servers run hermetically against the loopback stub `scripts/golden/lib/stub-sn.mjs`;',
-    'temp `HOME` and `HAPPY_CONFIG_PATH`, env credentials, HTTP bearer token in memory only.',
-    '',
-    '## v1, unchecked (first run; no error counting)',
-    '',
-    '| Measure | Rust 7.0 | Node 6.2.0 | Flag |',
-    '|---------|----------|------------|------|',
-    ...v1Rows.map(([m, r, n, f]) => `| ${m} | ${r} | ${n} | ${f} |`),
-    '',
-    'Flag: ⚠️ >2x means the Rust number is worse than 2x the Node number (throughput inverted).',
-    '',
-    '## v2, verified (error counts; HTTP variant (a) = new TCP per request, (b) = keepAlive agent)',
-    '',
-    'Errors column = Rust errors / Node errors across the phase.',
-    '',
-    '| Measure | Rust 7.0 | Node 6.2.0 | Errors R/N | Flag |',
-    '|---------|----------|------------|------------|------|',
-    ...rows.map(([m, r, n, e, f]) => `| ${m} | ${r} | ${n} | ${e} | ${f} |`),
-    '',
-    ...infoLines.map(l => `- ${l}`),
-    '',
-    'Flag: ⚠️ >2x means the Rust number is worse than 2x the Node number (throughput inverted).',
-    '',
-  ].join('\n');
+  const mdLines = [];
+  mdLines.push('# Perf sanity report (P4, lane E)');
+  mdLines.push('');
+  mdLines.push('Command: `node scripts/perf/run.mjs`');
+  mdLines.push('');
+  mdLines.push('Machine: `' + uname + '`');
+  mdLines.push('Cores: ' + cores);
+  mdLines.push('');
+  mdLines.push('Both servers run hermetically against the loopback stub `scripts/golden/lib/stub-sn.mjs`;');
+  mdLines.push('temp `HOME` and `HAPPY_CONFIG_PATH`, env credentials, HTTP bearer token in memory only.');
+  mdLines.push('');
+  mdLines.push('## v1, unchecked (first run; no error counting)');
+  mdLines.push('');
+  mdLines.push('| Measure | Rust 7.0 | Node 6.2.0 | Flag |');
+  mdLines.push('|---------|----------|------------|------|');
+  for (const vr of v1Rows) {
+    mdLines.push('| ' + vr.join(' | ') + ' |');
+  }
+  mdLines.push('');
+  mdLines.push('Flag: \u26a0\ufe0f >2x means the Rust number is worse than 2x the Node number (throughput inverted).');
+  mdLines.push('');
+  mdLines.push('## v3, verified (error counts; HTTP variant (a) = new TCP per request, (b) = keepAlive agent)');
+  mdLines.push('');
+  mdLines.push('Errors column = Rust errors / Node errors across the phase. n/a = Node 6.2.0 does not support that mode.');
+  mdLines.push('');
+  mdLines.push('| Measure | Rust 7.0 | Node 6.2.0 | Errors R/N | Flag |');
+  mdLines.push('|---------|----------|------------|------------|------|');
+  for (const row of rows) {
+    mdLines.push('| ' + row.join(' | ') + ' |');
+  }
+  mdLines.push('');
+  for (const line of infoLines) mdLines.push('- ' + line);
+  mdLines.push('');
+  mdLines.push('Flag: \u26a0\ufe0f >2x means the Rust number is worse than 2x the Node number (throughput inverted).');
+  mdLines.push('');
 
   mkdirSync('/tmp/hpm-specs/p4', { recursive: true });
-  writeFileSync('/tmp/hpm-specs/p4/perf.md', md);
+  writeFileSync('/tmp/hpm-specs/p4/perf.md', mdLines.join('\n'));
   console.log();
   console.log('Written /tmp/hpm-specs/p4/perf.md');
 }
