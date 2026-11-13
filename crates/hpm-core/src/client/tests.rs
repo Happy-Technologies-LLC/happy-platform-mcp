@@ -52,13 +52,30 @@ impl HttpTransport for FakeTransport {
     }
 }
 
-struct FakeClock(AtomicI64);
+struct FakeClock {
+    now: AtomicI64,
+    sleeps: Mutex<Vec<u64>>,
+}
+
+impl FakeClock {
+    fn sleeps(&self) -> Vec<u64> {
+        self.sleeps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
 impl Clock for FakeClock {
     fn now_ms(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
+        self.now.load(Ordering::SeqCst)
     }
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
-        self.0
+        self.sleeps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ms);
+        self.now
             .fetch_add(i64::try_from(ms).unwrap_or(0), Ordering::SeqCst);
         Box::pin(async {})
     }
@@ -146,6 +163,7 @@ struct Harness {
     tokens: Arc<MemStore>,
     creds: Arc<MemStore>,
     flow: Arc<FakeFlow>,
+    clock: Arc<FakeClock>,
 }
 
 fn harness(
@@ -161,9 +179,13 @@ fn harness(
         response: flow_response,
         exchange: false,
     });
+    let clock = Arc::new(FakeClock {
+        now: AtomicI64::new(1_787_918_400_000),
+        sleeps: Mutex::new(Vec::new()),
+    });
     let deps = ClientDeps {
         transport: transport.clone(),
-        clock: Arc::new(FakeClock(AtomicI64::new(1_787_918_400_000))),
+        clock: clock.clone(),
         credential_store: InstanceCredentialStore::new(creds.clone()),
         token_store: tokens.clone(),
         auth_flow: flow.clone(),
@@ -179,6 +201,7 @@ fn harness(
         tokens,
         creds,
         flow,
+        clock,
     }
 }
 
@@ -1286,3 +1309,5 @@ async fn trigger_errors_are_wrapped() {
         Some("Failed to create script trigger: 403 ACL".into())
     );
 }
+
+mod atf;

@@ -109,7 +109,13 @@ impl ClientError {
             out.insert("field".into(), Value::String(field.clone()));
         }
         if let Some(reason) = &self.reason {
-            out.insert("reason".into(), Value::String(reason.clone()));
+            // `CicdApiError` names this field `detail`.
+            let key = if self.name == "CicdApiError" {
+                "detail"
+            } else {
+                "reason"
+            };
+            out.insert(key.into(), Value::String(reason.clone()));
         }
         if let Some(data) = &self.response_data {
             let mut response = Map::new();

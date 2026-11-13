@@ -21,6 +21,7 @@ use url::Url;
 use crate::credential::{InstanceCredentialStore, parse_credential_ref};
 use crate::keychain::{SERVICE_NAME, SecretStore, SecretStoreError};
 
+pub mod cicd_atf;
 pub mod error;
 mod flight;
 pub mod http;
@@ -1023,6 +1024,16 @@ impl ServiceNowClient {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value, ClientError> {
+        Ok(self.rest_with_status(method, path, body).await?.1)
+    }
+
+    /// [`Self::rest`] that also returns the 2xx status code.
+    pub async fn rest_with_status(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value), ClientError> {
         let st = self.state();
         let header = self.auth_header_for(&st).await?;
         self.assert_current(&st)?;
@@ -1050,7 +1061,7 @@ impl ServiceNowClient {
             response = self.send(&st, build(&retry)).await?;
         }
         if (200..300).contains(&response.status) {
-            Ok(response.data())
+            Ok((response.status, response.data()))
         } else {
             Err(self.sanitize(&st, RawError::http(response.status, response.data())))
         }
