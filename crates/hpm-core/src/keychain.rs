@@ -370,7 +370,10 @@ pub fn credential_ref_for(instance_name: &str, kind: CredentialType) -> Result<S
     if !is_valid_instance_name(instance_name) {
         return Err(invalid_credential_ref());
     }
-    Ok(format!("{CREDENTIAL_PREFIX}{instance_name}/{}", kind.as_str()))
+    Ok(format!(
+        "{CREDENTIAL_PREFIX}{instance_name}/{}",
+        kind.as_str()
+    ))
 }
 
 /// Per-instance credentials addressed by canonical references
@@ -441,7 +444,11 @@ impl InstanceCredentialStore {
             ));
         }
         self.store
-            .set(&self.service, &parsed.reference, Secret::new(value.to_owned()))
+            .set(
+                &self.service,
+                &parsed.reference,
+                Secret::new(value.to_owned()),
+            )
             .await
             .map_err(store_error)
     }

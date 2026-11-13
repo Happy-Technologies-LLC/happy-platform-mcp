@@ -14,15 +14,31 @@ async fn in_memory_round_trip_and_clear() {
     assert_eq!(store.get_refresh_token("acct").await.unwrap(), None);
     store.set_refresh_token("caleb@dev", "rt-1").await.unwrap();
     store.set_refresh_token("caleb@prod", "rt-2").await.unwrap();
-    assert_eq!(store.get_refresh_token("caleb@dev").await.unwrap().as_deref(), Some("rt-1"));
-    assert_eq!(store.get_refresh_token("caleb@prod").await.unwrap().as_deref(), Some("rt-2"));
+    assert_eq!(
+        store
+            .get_refresh_token("caleb@dev")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("rt-1")
+    );
+    assert_eq!(
+        store
+            .get_refresh_token("caleb@prod")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("rt-2")
+    );
     store.clear_refresh_token("caleb@dev").await.unwrap();
     assert_eq!(store.get_refresh_token("caleb@dev").await.unwrap(), None);
 }
 
 #[test]
 fn account_grammar() {
-    for bad in ["", ".", "..", "a\\b", "C:dev", "a\n", "a\0", "a b", "../evil", "a/b"] {
+    for bad in [
+        "", ".", "..", "a\\b", "C:dev", "a\n", "a\0", "a b", "../evil", "a/b",
+    ] {
         assert!(!is_valid_token_account(bad), "{bad:?}");
     }
     assert!(!is_valid_token_account(&"a".repeat(201)));
@@ -42,7 +58,14 @@ async fn keychain_store_round_trip_and_fail_loud() {
     store.clear_refresh_token("acct").await.unwrap();
     mem.fail_next(crate::keychain::MemoryOp::Get);
     assert!(store.get_refresh_token("acct").await.is_err());
-    assert!(store.set_refresh_token("../x", "rt").await.unwrap_err().message.contains("unsafe account"));
+    assert!(
+        store
+            .set_refresh_token("../x", "rt")
+            .await
+            .unwrap_err()
+            .message
+            .contains("unsafe account")
+    );
 }
 
 #[test]
@@ -51,8 +74,13 @@ fn default_store_kind() {
     let mem: Arc<dyn SecretStore> = Arc::new(MemorySecretStore::new());
     assert!(create_default_token_store(None, mem.clone(), &env).is_ok());
     assert!(create_default_token_store(Some("keychain"), mem.clone(), &env).is_ok());
-    let err = create_default_token_store(Some("vault"), mem, &env).err().unwrap();
-    assert_eq!(err.message, "SERVICENOW_TOKEN_STORE must be \"keychain\" or \"file\", got \"vault\"");
+    let err = create_default_token_store(Some("vault"), mem, &env)
+        .err()
+        .unwrap();
+    assert_eq!(
+        err.message,
+        "SERVICENOW_TOKEN_STORE must be \"keychain\" or \"file\", got \"vault\""
+    );
 }
 
 #[test]
@@ -82,8 +110,14 @@ mod file {
         store.set_refresh_token("dev", "rt-1").await.unwrap();
         store.set_refresh_token("prod", "rt-prod").await.unwrap();
         store.set_refresh_token("dev", "rt-2").await.unwrap();
-        assert_eq!(store.get_refresh_token("dev").await.unwrap().as_deref(), Some("rt-2"));
-        assert_eq!(store.get_refresh_token("prod").await.unwrap().as_deref(), Some("rt-prod"));
+        assert_eq!(
+            store.get_refresh_token("dev").await.unwrap().as_deref(),
+            Some("rt-2")
+        );
+        assert_eq!(
+            store.get_refresh_token("prod").await.unwrap().as_deref(),
+            Some("rt-prod")
+        );
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir.join(token_name("dev"))), 0o600);
         assert_eq!(mode(&dir), 0o700);
@@ -95,14 +129,32 @@ mod file {
     async fn rejects_unsafe_bases() {
         let (_r, dir) = base();
         std::fs::write(&dir, "fake").unwrap();
-        assert!(FileTokenStore::new(&dir).unwrap().set_refresh_token("dev", "f").await.is_err());
+        assert!(
+            FileTokenStore::new(&dir)
+                .unwrap()
+                .set_refresh_token("dev", "f")
+                .await
+                .is_err()
+        );
         let (_r, dir) = base();
         std::fs::create_dir(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(FileTokenStore::new(&dir).unwrap().set_refresh_token("dev", "f").await.is_err());
+        assert!(
+            FileTokenStore::new(&dir)
+                .unwrap()
+                .set_refresh_token("dev", "f")
+                .await
+                .is_err()
+        );
         let (_r, dir) = base();
         std::os::unix::fs::symlink(std::env::temp_dir(), &dir).unwrap();
-        assert!(FileTokenStore::new(&dir).unwrap().set_refresh_token("dev", "f").await.is_err());
+        assert!(
+            FileTokenStore::new(&dir)
+                .unwrap()
+                .set_refresh_token("dev", "f")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -142,10 +194,17 @@ mod file {
         want.sort();
         assert_eq!(names, want);
         std::fs::write(dir.join("token-dev"), "legacy").unwrap();
-        std::fs::set_permissions(dir.join("token-dev"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(
+            dir.join("token-dev"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
         assert_eq!(store.get_refresh_token("dev").await.unwrap(), None);
         store.clear_refresh_token("dev").await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("token-dev")).unwrap(), "legacy");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("token-dev")).unwrap(),
+            "legacy"
+        );
     }
 
     #[tokio::test]
@@ -156,8 +215,14 @@ mod file {
             std::fs::create_dir(&exposed).unwrap();
             std::fs::set_permissions(&exposed, std::fs::Permissions::from_mode(mode)).unwrap();
             let store = FileTokenStore::new(&exposed.join("config/happy-platform-mcp")).unwrap();
-            let err = store.set_refresh_token("dev", "inert-secret-token").await.unwrap_err();
-            assert!(err.message.contains(&format!("unsafe token directory ancestor {}", exposed.display())));
+            let err = store
+                .set_refresh_token("dev", "inert-secret-token")
+                .await
+                .unwrap_err();
+            assert!(err.message.contains(&format!(
+                "unsafe token directory ancestor {}",
+                exposed.display()
+            )));
             assert!(err.message.contains("owned by the current user or root"));
             assert!(err.message.contains("chmod go-w"));
             assert!(!err.message.contains("inert-secret-token"));
@@ -169,7 +234,10 @@ mod file {
         std::fs::set_permissions(&sticky, std::fs::Permissions::from_mode(0o1777)).unwrap();
         let store = FileTokenStore::new(&sticky.join("happy-platform-mcp")).unwrap();
         store.set_refresh_token("dev", "sticky").await.unwrap();
-        assert_eq!(store.get_refresh_token("dev").await.unwrap().as_deref(), Some("sticky"));
+        assert_eq!(
+            store.get_refresh_token("dev").await.unwrap().as_deref(),
+            Some("sticky")
+        );
     }
 
     #[tokio::test]
@@ -179,11 +247,22 @@ mod file {
         let env = Env::from_pairs(&[("XDG_CONFIG_HOME", xdg.as_str())]);
         let mem: Arc<dyn SecretStore> = Arc::new(MemorySecretStore::new());
         let a = create_default_token_store(Some("file"), mem.clone(), &env).unwrap();
-        a.set_refresh_token("synthetic-user@dev", "inert").await.unwrap();
+        a.set_refresh_token("synthetic-user@dev", "inert")
+            .await
+            .unwrap();
         let b = create_default_token_store(Some("file"), mem, &env).unwrap();
-        assert_eq!(b.get_refresh_token("synthetic-user@dev").await.unwrap().as_deref(), Some("inert"));
+        assert_eq!(
+            b.get_refresh_token("synthetic-user@dev")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("inert")
+        );
         b.clear_refresh_token("synthetic-user@dev").await.unwrap();
-        assert_eq!(a.get_refresh_token("synthetic-user@dev").await.unwrap(), None);
+        assert_eq!(
+            a.get_refresh_token("synthetic-user@dev").await.unwrap(),
+            None
+        );
     }
 }
 
@@ -197,6 +276,9 @@ fn refresh_token_accounts() {
     assert!(a.starts_with(REFRESH_TOKEN_IDENTITY_PREFIX));
     assert_eq!(a.len(), REFRESH_TOKEN_IDENTITY_PREFIX.len() + 64);
     assert_ne!(a, oauth_refresh_token_account(&inst, "bob").unwrap());
-    assert_eq!(legacy_refresh_token_account("dev", "alice").as_deref(), Some("alice@dev"));
+    assert_eq!(
+        legacy_refresh_token_account("dev", "alice").as_deref(),
+        Some("alice@dev")
+    );
     assert_eq!(legacy_refresh_token_account("", "alice"), None);
 }

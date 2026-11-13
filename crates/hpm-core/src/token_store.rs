@@ -39,8 +39,10 @@ fn assert_account(account: &str) -> Result<(), CodedError> {
 
 /// Persists one OAuth refresh token per account key.
 pub trait TokenStore: Send + Sync {
-    fn get_refresh_token<'a>(&'a self, account: &'a str)
-    -> BoxFut<'a, Result<Option<String>, CodedError>>;
+    fn get_refresh_token<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> BoxFut<'a, Result<Option<String>, CodedError>>;
     fn set_refresh_token<'a>(
         &'a self,
         account: &'a str,
@@ -189,7 +191,10 @@ impl FileTokenStore {
 
     fn file_name(account: &str) -> Result<String, CodedError> {
         assert_account(account)?;
-        Ok(format!("token-{}", hex(&Sha256::digest(account.as_bytes()))))
+        Ok(format!(
+            "token-{}",
+            hex(&Sha256::digest(account.as_bytes()))
+        ))
     }
 }
 
@@ -291,10 +296,10 @@ mod posix {
                 canonical = canonical.join(name);
                 let mut b = fs::DirBuilder::new();
                 std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-                if let Err(e) = b.create(&canonical) {
-                    if e.kind() != std::io::ErrorKind::AlreadyExists {
-                        return Err(io(e));
-                    }
+                if let Err(e) = b.create(&canonical)
+                    && e.kind() != std::io::ErrorKind::AlreadyExists
+                {
+                    return Err(io(e));
                 }
                 assert_trusted_ancestor(
                     &fs::symlink_metadata(&canonical).map_err(io)?,

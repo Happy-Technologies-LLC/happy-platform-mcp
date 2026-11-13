@@ -268,9 +268,16 @@ fn secret_shaped_instance_key(key: &str) -> bool {
     ["token", "secret", "password"]
         .iter()
         .any(|w| k.contains(w))
-        || ["apikey", "api_key", "api-key", "privatekey", "private_key", "private-key"]
-            .iter()
-            .any(|w| k.contains(w))
+        || [
+            "apikey",
+            "api_key",
+            "api-key",
+            "privatekey",
+            "private_key",
+            "private-key",
+        ]
+        .iter()
+        .any(|w| k.contains(w))
 }
 
 /// Strips secret-shaped keys from a raw client record, keeping the legacy
@@ -437,12 +444,20 @@ impl ConfigManager {
                 instance.insert("grantType".into(), g.into());
             }
             if grant_type.as_deref() == Some("authorization_code") {
-                put(&mut instance, "authorizeUrl", "SERVICENOW_OAUTH_AUTHORIZE_URL");
+                put(
+                    &mut instance,
+                    "authorizeUrl",
+                    "SERVICENOW_OAUTH_AUTHORIZE_URL",
+                );
                 put(&mut instance, "tokenUrl", "SERVICENOW_OAUTH_TOKEN_URL");
                 if let Some(raw) = env.get("SERVICENOW_OAUTH_REDIRECT_PORT") {
                     instance.insert("redirectPort".into(), parse_env_redirect_port(&raw)?.into());
                 }
-                put(&mut instance, "callbackPath", "SERVICENOW_OAUTH_CALLBACK_PATH");
+                put(
+                    &mut instance,
+                    "callbackPath",
+                    "SERVICENOW_OAUTH_CALLBACK_PATH",
+                );
             }
         }
         let mut validation = instance.clone();
@@ -540,7 +555,10 @@ impl ConfigManager {
         if let Some(name) = name.filter(|n| !n.is_empty()) {
             return self.get_instance(name);
         }
-        if let Some(env_instance) = self.env.get("SERVICENOW_INSTANCE").filter(|v| !v.is_empty())
+        if let Some(env_instance) = self
+            .env
+            .get("SERVICENOW_INSTANCE")
+            .filter(|v| !v.is_empty())
         {
             return self.get_instance(&env_instance);
         }
@@ -613,7 +631,10 @@ impl ConfigManager {
             let s = self.state();
             (s.version, s.principal_default.clone())
         };
-        let instances = self.load_instances().map(|i| i.to_vec()).unwrap_or_default();
+        let instances = self
+            .load_instances()
+            .map(|i| i.to_vec())
+            .unwrap_or_default();
         let entries: Vec<InstanceEntry> = instances
             .iter()
             .map(|i| InstanceEntry {
@@ -624,7 +645,10 @@ impl ConfigManager {
                 config_version: version,
             })
             .collect();
-        let env_default = self.env.get("SERVICENOW_INSTANCE").filter(|v| !v.is_empty());
+        let env_default = self
+            .env
+            .get("SERVICENOW_INSTANCE")
+            .filter(|v| !v.is_empty());
         let (selected_default, default_source) = if let Some(p) = principal_default {
             (Some(p), DefaultSource::Principal)
         } else if let Some(e) = env_default {

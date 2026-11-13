@@ -13,7 +13,9 @@ use crate::config::{
     CodedError, ConfigSource, Env, MAX_URL_LENGTH, Object, exceeds_url_length, home_dir, js_trim,
     resolve_config_paths, resolve_path, trim_trailing_slashes, truthy,
 };
-use crate::keychain::{CredentialType, credential_ref_for, is_valid_instance_name, parse_credential_ref};
+use crate::keychain::{
+    CredentialType, credential_ref_for, is_valid_instance_name, parse_credential_ref,
+};
 
 // ---------------------------------------------------------------------------
 // oauth-endpoint-policy.js
@@ -114,7 +116,10 @@ pub fn assert_approved_oauth_endpoint(
         ));
     }
     let (Ok(parsed), Ok(instance)) = (Url::parse(endpoint), Url::parse(instance_url)) else {
-        return Err(endpoint_error(format!("{field} must be a valid URL"), field));
+        return Err(endpoint_error(
+            format!("{field} must be a valid URL"),
+            field,
+        ));
     };
     if has_credentials(&parsed)
         || parsed.fragment().is_some_and(|f| !f.is_empty())
@@ -170,13 +175,24 @@ pub fn is_secret_shaped_key(key: &str) -> bool {
     if normalized == "tokenurl" || normalized == "credentialref" {
         return false;
     }
-    ["privatekey", "clientsecret", "secret", "password", "accesstoken", "refreshtoken", "apikey", "token"]
-        .iter()
-        .any(|w| normalized.contains(w))
+    [
+        "privatekey",
+        "clientsecret",
+        "secret",
+        "password",
+        "accesstoken",
+        "refreshtoken",
+        "apikey",
+        "token",
+    ]
+    .iter()
+    .any(|w| normalized.contains(w))
 }
 
 fn is_canonical_ref(value: &Value) -> bool {
-    value.as_str().is_some_and(|s| parse_credential_ref(s).is_ok())
+    value
+        .as_str()
+        .is_some_and(|s| parse_credential_ref(s).is_ok())
 }
 
 fn redact_credential_reference(value: &Value) -> Option<Value> {
@@ -218,9 +234,13 @@ fn is_valid_credential_ref(instance: &Object) -> bool {
         .unwrap_or("basic");
     let r = instance.get("credentialRef");
     if auth_type == "basic" {
-        return canonical_credential_ref(r, name, CredentialType::Password, "credentialRef").is_ok();
+        return canonical_credential_ref(r, name, CredentialType::Password, "credentialRef")
+            .is_ok();
     }
-    match effective_grant_type(instance).as_ref().and_then(Value::as_str) {
+    match effective_grant_type(instance)
+        .as_ref()
+        .and_then(Value::as_str)
+    {
         Some("authorization_code") => false,
         Some("client_credentials") => {
             canonical_credential_ref(r, name, CredentialType::ClientSecret, "credentialRef").is_ok()
@@ -234,10 +254,10 @@ fn redact_instance_secrets(instance: &Value) -> Value {
         return instance.clone();
     };
     let mut redacted = redact_secrets(instance);
-    if !is_valid_credential_ref(obj) {
-        if let Some(r) = redacted.as_object_mut() {
-            r.remove("credentialRef");
-        }
+    if !is_valid_credential_ref(obj)
+        && let Some(r) = redacted.as_object_mut()
+    {
+        r.remove("credentialRef");
     }
     redacted
 }
@@ -258,14 +278,14 @@ pub fn redact_secrets(value: &Value) -> Value {
                     }
                     continue;
                 }
-                if key == "instances" {
-                    if let Value::Array(items) = nested {
-                        out.insert(
-                            key.clone(),
-                            Value::Array(items.iter().map(redact_instance_secrets).collect()),
-                        );
-                        continue;
-                    }
+                if key == "instances"
+                    && let Value::Array(items) = nested
+                {
+                    out.insert(
+                        key.clone(),
+                        Value::Array(items.iter().map(redact_instance_secrets).collect()),
+                    );
+                    continue;
                 }
                 out.insert(key.clone(), redact_secrets(nested));
             }
@@ -285,7 +305,9 @@ fn has_legacy_instance_secrets(document: &Value) -> bool {
                 let r = o.get("credentialRef").and_then(Value::as_object);
                 o.contains_key("password")
                     || o.contains_key("clientSecret")
-                    || r.is_some_and(|r| r.contains_key("passwordRef") || r.contains_key("clientSecretRef"))
+                    || r.is_some_and(|r| {
+                        r.contains_key("passwordRef") || r.contains_key("clientSecretRef")
+                    })
             })
         })
 }
@@ -298,13 +320,21 @@ fn invalid(message: impl Into<String>, field: Option<&str>) -> CodedError {
     }
 }
 
-fn normalize_credential_ref_aliases(value: &Value, allow_aliases: bool) -> Result<Value, CodedError> {
+fn normalize_credential_ref_aliases(
+    value: &Value,
+    allow_aliases: bool,
+) -> Result<Value, CodedError> {
     let Some(obj) = value.as_object() else {
         return Ok(value.clone());
     };
     let mut normalized = obj.clone();
-    for (canonical, alias) in [("password", "passwordRef"), ("clientSecret", "clientSecretRef")] {
-        let Some(alias_value) = normalized.get(alias).cloned() else { continue };
+    for (canonical, alias) in [
+        ("password", "passwordRef"),
+        ("clientSecret", "clientSecretRef"),
+    ] {
+        let Some(alias_value) = normalized.get(alias).cloned() else {
+            continue;
+        };
         if let Some(existing) = normalized.get(canonical) {
             if *existing != alias_value {
                 return Err(invalid(
@@ -325,13 +355,19 @@ fn normalize_credential_ref_aliases(value: &Value, allow_aliases: bool) -> Resul
     Ok(Value::Object(normalized))
 }
 
-fn normalize_instance_credential_refs(instance: &Value, allow_aliases: bool) -> Result<Value, CodedError> {
+fn normalize_instance_credential_refs(
+    instance: &Value,
+    allow_aliases: bool,
+) -> Result<Value, CodedError> {
     let Some(obj) = instance.as_object() else {
         return Ok(instance.clone());
     };
     let mut out = obj.clone();
     if let Some(r) = obj.get("credentialRef") {
-        out.insert("credentialRef".into(), normalize_credential_ref_aliases(r, allow_aliases)?);
+        out.insert(
+            "credentialRef".into(),
+            normalize_credential_ref_aliases(r, allow_aliases)?,
+        );
     }
     Ok(Value::Object(out))
 }
@@ -341,7 +377,10 @@ fn unknown_name(name: &str) -> &str {
 }
 
 fn assert_url_length(value: Option<&Value>, name: &str, field: &str) -> Result<(), CodedError> {
-    if value.and_then(Value::as_str).is_some_and(exceeds_url_length) {
+    if value
+        .and_then(Value::as_str)
+        .is_some_and(exceeds_url_length)
+    {
         return Err(invalid(
             format!(
                 "Instance '{}' {field} must be at most {MAX_URL_LENGTH} characters",
@@ -362,7 +401,11 @@ pub fn canonicalize_instance_url(url: &str) -> Result<String, CodedError> {
         ));
     }
     let parsed = Url::parse(url).map_err(|_| CodedError::plain("Invalid URL"))?;
-    Ok(format!("{}{}", origin(&parsed), trim_trailing_slashes(parsed.path())))
+    Ok(format!(
+        "{}{}",
+        origin(&parsed),
+        trim_trailing_slashes(parsed.path())
+    ))
 }
 
 fn is_loopback_name(parsed: &Url) -> bool {
@@ -375,10 +418,17 @@ fn is_loopback_name(parsed: &Url) -> bool {
 fn validate_url(url: Option<&Value>, name: &str) -> Result<(), CodedError> {
     assert_url_length(url, name, "url")?;
     let n = unknown_name(name);
-    let Some(url) = url.and_then(Value::as_str).filter(|u| !js_trim(u).is_empty()) else {
-        return Err(invalid(format!("Instance '{n}' requires a URL"), Some("url")));
+    let Some(url) = url
+        .and_then(Value::as_str)
+        .filter(|u| !js_trim(u).is_empty())
+    else {
+        return Err(invalid(
+            format!("Instance '{n}' requires a URL"),
+            Some("url"),
+        ));
     };
-    let parsed = Url::parse(url).map_err(|_| invalid(format!("Instance '{n}' has an invalid URL"), Some("url")))?;
+    let parsed = Url::parse(url)
+        .map_err(|_| invalid(format!("Instance '{n}' has an invalid URL"), Some("url")))?;
     if has_credentials(&parsed) {
         return Err(invalid(
             format!("Instance '{n}' URL must not include username or password"),
@@ -406,9 +456,17 @@ fn validate_url(url: Option<&Value>, name: &str) -> Result<(), CodedError> {
 fn validate_optional_url(value: &Value, name: &str, field: &str) -> Result<(), CodedError> {
     assert_url_length(Some(value), name, field)?;
     let Some(s) = value.as_str().filter(|s| !js_trim(s).is_empty()) else {
-        return Err(invalid(format!("Instance '{name}' {field} must be a non-empty URL"), Some(field)));
+        return Err(invalid(
+            format!("Instance '{name}' {field} must be a non-empty URL"),
+            Some(field),
+        ));
     };
-    let parsed = Url::parse(s).map_err(|_| invalid(format!("Instance '{name}' {field} must be a valid URL"), Some(field)))?;
+    let parsed = Url::parse(s).map_err(|_| {
+        invalid(
+            format!("Instance '{name}' {field} must be a valid URL"),
+            Some(field),
+        )
+    })?;
     if has_credentials(&parsed) {
         return Err(invalid(
             format!("Instance '{name}' {field} URL must not include username or password"),
@@ -425,7 +483,8 @@ fn validate_optional_url(value: &Value, name: &str, field: &str) -> Result<(), C
 }
 
 fn non_empty_string(v: Option<&Value>) -> bool {
-    v.and_then(Value::as_str).is_some_and(|s| !js_trim(s).is_empty())
+    v.and_then(Value::as_str)
+        .is_some_and(|s| !js_trim(s).is_empty())
 }
 
 fn canonical_credential_ref(
@@ -434,16 +493,28 @@ fn canonical_credential_ref(
     kind: CredentialType,
     field: &str,
 ) -> Result<String, CodedError> {
-    let Some(s) = value.and_then(Value::as_str).filter(|s| !js_trim(s).is_empty()) else {
+    let Some(s) = value
+        .and_then(Value::as_str)
+        .filter(|s| !js_trim(s).is_empty())
+    else {
         return Err(invalid(
-            format!("Instance credential reference '{field}' must be a non-empty canonical reference"),
+            format!(
+                "Instance credential reference '{field}' must be a non-empty canonical reference"
+            ),
             Some(field),
         ));
     };
-    let parsed = parse_credential_ref(s)
-        .map_err(|_| invalid(format!("Instance credential reference '{field}' is invalid"), Some(field)))?;
+    let parsed = parse_credential_ref(s).map_err(|_| {
+        invalid(
+            format!("Instance credential reference '{field}' is invalid"),
+            Some(field),
+        )
+    })?;
     let expected = credential_ref_for(name, kind).ok();
-    if Some(&parsed.reference) != expected.as_ref() || parsed.instance_name != name || parsed.kind != kind {
+    if Some(&parsed.reference) != expected.as_ref()
+        || parsed.instance_name != name
+        || parsed.kind != kind
+    {
         return Err(invalid(
             format!("Instance credential reference '{field}' does not match the instance"),
             Some(field),
@@ -452,7 +523,11 @@ fn canonical_credential_ref(
     Ok(parsed.reference)
 }
 
-fn password_grant_refs(value: &Value, name: &str, allow_aliases: bool) -> Result<(String, String), CodedError> {
+fn password_grant_refs(
+    value: &Value,
+    name: &str,
+    allow_aliases: bool,
+) -> Result<(String, String), CodedError> {
     if !value.is_object() {
         return Err(invalid(
             "OAuth password grant requires credentialRef.password and credentialRef.clientSecret",
@@ -463,11 +538,19 @@ fn password_grant_refs(value: &Value, name: &str, allow_aliases: bool) -> Result
     let obj = normalized.as_object().cloned().unwrap_or_default();
     for key in obj.keys() {
         if !CANONICAL_CREDENTIAL_FIELDS.contains(&key.as_str()) {
-            return Err(invalid(format!("Unknown credential reference field '{key}'"), Some("credentialRef")));
+            return Err(invalid(
+                format!("Unknown credential reference field '{key}'"),
+                Some("credentialRef"),
+            ));
         }
     }
     Ok((
-        canonical_credential_ref(obj.get("password"), name, CredentialType::Password, "credentialRef.password")?,
+        canonical_credential_ref(
+            obj.get("password"),
+            name,
+            CredentialType::Password,
+            "credentialRef.password",
+        )?,
         canonical_credential_ref(
             obj.get("clientSecret"),
             name,
@@ -484,7 +567,11 @@ fn is_valid_port(v: &Value) -> bool {
 
 /// `validateNewInstance`. `allow_secrets` admits legacy plaintext `password`/`clientSecret`
 /// and relaxes the per-branch field restrictions.
-pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -> Result<(), CodedError> {
+pub fn validate_new_instance(
+    instance: &Value,
+    allow_secrets: bool,
+    env: &Env,
+) -> Result<(), CodedError> {
     let Some(o) = instance.as_object() else {
         return Err(invalid("Instance configuration must be an object", None));
     };
@@ -493,7 +580,10 @@ pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -
         if !ALLOWED_FIELDS.contains(&field.as_str())
             && !(allow_secrets && LEGACY_SECRET_FIELDS.contains(&field.as_str()))
         {
-            return Err(invalid(format!("Unknown instance field '{field}'"), Some(field)));
+            return Err(invalid(
+                format!("Unknown instance field '{field}'"),
+                Some(field),
+            ));
         }
     }
     let raw_name = o.get("name").and_then(Value::as_str);
@@ -509,15 +599,26 @@ pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -
         None => "basic",
         Some(v) => match v.as_str() {
             Some(s @ ("basic" | "oauth")) => s,
-            _ => return Err(invalid(format!("Instance '{name}' has an unsupported authType"), Some("authType"))),
+            _ => {
+                return Err(invalid(
+                    format!("Instance '{name}' has an unsupported authType"),
+                    Some("authType"),
+                ));
+            }
         },
     };
     if o.get("default").is_some_and(|d| !d.is_boolean()) {
-        return Err(invalid(format!("Instance '{name}' default must be a boolean"), Some("default")));
+        return Err(invalid(
+            format!("Instance '{name}' default must be a boolean"),
+            Some("default"),
+        ));
     }
     for field in ["scope", "description"] {
         if o.get(field).is_some_and(|v| !v.is_string()) {
-            return Err(invalid(format!("Instance '{name}' {field} must be a string"), Some(field)));
+            return Err(invalid(
+                format!("Instance '{name}' {field} must be a string"),
+                Some(field),
+            ));
         }
     }
     for field in ["authorizeUrl", "tokenUrl"] {
@@ -535,7 +636,11 @@ pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -
     if let Some(v) = o.get("callbackPath") {
         assert_url_length(Some(v), name, "callbackPath")?;
         let ok = v.as_str().is_some_and(|s| {
-            !js_trim(s).is_empty() && s.starts_with('/') && !s.starts_with("//") && !s.contains('?') && !s.contains('#')
+            !js_trim(s).is_empty()
+                && s.starts_with('/')
+                && !s.starts_with("//")
+                && !s.contains('?')
+                && !s.contains('#')
         });
         if !ok {
             return Err(invalid(
@@ -556,19 +661,35 @@ pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -
     }
     for field in non_empty_fields {
         if o.contains_key(field) && !non_empty_string(o.get(field)) {
-            return Err(invalid(format!("Instance '{name}' {field} must be a non-empty string"), Some(field)));
+            return Err(invalid(
+                format!("Instance '{name}' {field} must be a non-empty string"),
+                Some(field),
+            ));
         }
     }
     let present = |k: &str| o.contains_key(k);
 
     if auth_type == "basic" {
         if present("grantType") {
-            return Err(invalid(format!("Basic instance '{name}' cannot specify grantType"), Some("grantType")));
+            return Err(invalid(
+                format!("Basic instance '{name}' cannot specify grantType"),
+                Some("grantType"),
+            ));
         }
         if strict {
-            for field in ["clientId", "scope", "authorizeUrl", "tokenUrl", "redirectPort", "callbackPath"] {
+            for field in [
+                "clientId",
+                "scope",
+                "authorizeUrl",
+                "tokenUrl",
+                "redirectPort",
+                "callbackPath",
+            ] {
                 if present(field) {
-                    return Err(invalid(format!("Basic instance '{name}' cannot specify {field}"), Some(field)));
+                    return Err(invalid(
+                        format!("Basic instance '{name}' cannot specify {field}"),
+                        Some(field),
+                    ));
                 }
             }
         }
@@ -579,19 +700,34 @@ pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -
             ));
         }
         if present("credentialRef") {
-            canonical_credential_ref(o.get("credentialRef"), name, CredentialType::Password, "credentialRef")?;
+            canonical_credential_ref(
+                o.get("credentialRef"),
+                name,
+                CredentialType::Password,
+                "credentialRef",
+            )?;
         }
         if allow_secrets && truthy(o.get("password")) {
             return Ok(());
         }
-        canonical_credential_ref(o.get("credentialRef"), name, CredentialType::Password, "credentialRef")?;
+        canonical_credential_ref(
+            o.get("credentialRef"),
+            name,
+            CredentialType::Password,
+            "credentialRef",
+        )?;
         return Ok(());
     }
 
     let grant = effective_grant_type(o);
     let grant = match grant.as_ref().and_then(Value::as_str) {
         Some(g @ ("client_credentials" | "password" | "authorization_code")) => g,
-        _ => return Err(invalid(format!("OAuth instance '{name}' has an unsupported grantType"), Some("grantType"))),
+        _ => {
+            return Err(invalid(
+                format!("OAuth instance '{name}' has an unsupported grantType"),
+                Some("grantType"),
+            ));
+        }
     };
     if !non_empty_string(o.get("clientId")) {
         return Err(invalid(
@@ -608,7 +744,9 @@ pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -
         }
         if present("credentialRef") {
             return Err(invalid(
-                format!("Public authorization-code instance '{name}' must not specify credentialRef"),
+                format!(
+                    "Public authorization-code instance '{name}' must not specify credentialRef"
+                ),
                 Some("credentialRef"),
             ));
         }
@@ -626,12 +764,22 @@ pub fn validate_new_instance(instance: &Value, allow_secrets: bool, env: &Env) -
             }
         }
         if present("credentialRef") {
-            canonical_credential_ref(o.get("credentialRef"), name, CredentialType::ClientSecret, "credentialRef")?;
+            canonical_credential_ref(
+                o.get("credentialRef"),
+                name,
+                CredentialType::ClientSecret,
+                "credentialRef",
+            )?;
         }
         if allow_secrets && truthy(o.get("clientSecret")) {
             return Ok(());
         }
-        canonical_credential_ref(o.get("credentialRef"), name, CredentialType::ClientSecret, "credentialRef")?;
+        canonical_credential_ref(
+            o.get("credentialRef"),
+            name,
+            CredentialType::ClientSecret,
+            "credentialRef",
+        )?;
         return Ok(());
     }
     if strict {
@@ -669,15 +817,21 @@ fn reload_failed(message: impl Into<String>) -> CodedError {
 /// `validateDocument`: returns the alias-normalized document.
 pub fn validate_document(document: &Value, env: &Env) -> Result<Value, CodedError> {
     let Some(doc) = document.as_object() else {
-        return Err(reload_failed("Instance registry document must be an object"));
+        return Err(reload_failed(
+            "Instance registry document must be an object",
+        ));
     };
-    if let Some(version) = doc.get("version") {
-        if version.as_f64() != Some(1.0) {
-            return Err(reload_failed("Unsupported instance registry version").with("version", version.clone()));
-        }
+    if let Some(version) = doc.get("version")
+        && version.as_f64() != Some(1.0)
+    {
+        return Err(
+            reload_failed("Unsupported instance registry version").with("version", version.clone())
+        );
     }
     let Some(items) = doc.get("instances").and_then(Value::as_array) else {
-        return Err(reload_failed("Instance registry instances must be an array"));
+        return Err(reload_failed(
+            "Instance registry instances must be an array",
+        ));
     };
     let legacy = has_legacy_instance_secrets(document);
     let normalized: Vec<Value> = items
@@ -690,20 +844,33 @@ pub fn validate_document(document: &Value, env: &Env) -> Result<Value, CodedErro
         let name = instance.get("name").cloned().unwrap_or(Value::Null);
         if seen.contains(&name) {
             let shown = name.as_str().map(str::to_owned).unwrap_or_else(|| {
-                if name.is_null() { "undefined".into() } else { name.to_string() }
+                if name.is_null() {
+                    "undefined".into()
+                } else {
+                    name.to_string()
+                }
             });
-            return Err(reload_failed(format!("Duplicate instance name '{shown}' in registry")).with("field", "name"));
+            return Err(
+                reload_failed(format!("Duplicate instance name '{shown}' in registry"))
+                    .with("field", "name"),
+            );
         }
         seen.push(name);
         if instance.get("default") == Some(&Value::Bool(true)) {
             defaults += 1;
             if defaults > 1 {
-                return Err(reload_failed("Instance registry may contain at most one default instance")
-                    .with("field", "default"));
+                return Err(reload_failed(
+                    "Instance registry may contain at most one default instance",
+                )
+                .with("field", "default"));
             }
         }
         let single = json!({ "instances": [instance] });
-        validate_new_instance(instance, legacy && has_legacy_instance_secrets(&single), env)?;
+        validate_new_instance(
+            instance,
+            legacy && has_legacy_instance_secrets(&single),
+            env,
+        )?;
     }
     let mut out = doc.clone();
     out.insert("instances".into(), Value::Array(normalized));
@@ -715,7 +882,8 @@ pub fn validate_document(document: &Value, env: &Env) -> Result<Value, CodedErro
 
 /// Per-path mutation serialization shared by every registry in the process
 /// (JS `mutationQueues`).
-static MUTATION_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
+static MUTATION_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    LazyLock::new(Default::default);
 
 fn path_lock(path: &Path) -> Arc<Mutex<()>> {
     MUTATION_LOCKS
@@ -749,14 +917,17 @@ struct State {
     legacy_plaintext: bool,
 }
 
+/// Hook run with the next document before a write; an error aborts the write.
+pub type PrecommitHook<'a> = &'a mut dyn FnMut(&Value) -> Result<(), CodedError>;
+/// Hook observing `(previous, next)` documents before a write.
+pub type CaptureHook<'a> = &'a mut dyn FnMut(&Value, &Value) -> Result<(), CodedError>;
+
 /// Options of [`InstanceRegistry::register`].
 #[derive(Default)]
 pub struct RegisterOptions<'a> {
     pub make_default: bool,
-    /// Runs with the next document before the write; an error aborts the write.
-    pub precommit: Option<&'a mut dyn FnMut(&Value) -> Result<(), CodedError>>,
-    /// Observes `(previous, next)` documents before the write.
-    pub capture_context: Option<&'a mut dyn FnMut(&Value, &Value) -> Result<(), CodedError>>,
+    pub precommit: Option<PrecommitHook<'a>>,
+    pub capture_context: Option<CaptureHook<'a>>,
 }
 
 pub struct InstanceRegistry {
@@ -770,7 +941,10 @@ fn not_found(name: &str) -> CodedError {
 }
 
 fn instances_of(doc: &Value) -> Vec<Value> {
-    doc.get("instances").and_then(Value::as_array).cloned().unwrap_or_default()
+    doc.get("instances")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn name_of(v: &Value) -> Option<&str> {
@@ -808,7 +982,11 @@ impl InstanceRegistry {
     }
 
     /// Explicit read/write paths (the JS `{ readPath, writePath }` form).
-    pub fn at_paths(read_path: impl Into<PathBuf>, write_path: impl Into<PathBuf>, env: Env) -> Self {
+    pub fn at_paths(
+        read_path: impl Into<PathBuf>,
+        write_path: impl Into<PathBuf>,
+        env: Env,
+    ) -> Self {
         Self::with_options(
             RegistryOptions {
                 read_path: Some(read_path.into()),
@@ -831,16 +1009,31 @@ impl InstanceRegistry {
         if state.paths.is_some() {
             return;
         }
-        let home = self.options.home_dir.clone().unwrap_or_else(|| home_dir(&self.env));
-        let legacy = self.options.legacy_path.clone().unwrap_or_else(default_legacy_path);
+        let home = self
+            .options
+            .home_dir
+            .clone()
+            .unwrap_or_else(|| home_dir(&self.env));
+        let legacy = self
+            .options
+            .legacy_path
+            .clone()
+            .unwrap_or_else(default_legacy_path);
         let p = resolve_config_paths(&self.env, &home, Some(&legacy), &|p: &Path| p.exists());
-        state.paths = Some((resolve_path(&p.read_path), resolve_path(&p.write_path), p.source));
+        state.paths = Some((
+            resolve_path(&p.read_path),
+            resolve_path(&p.write_path),
+            p.source,
+        ));
     }
 
     fn paths(&self) -> (PathBuf, PathBuf, ConfigSource) {
         let mut state = self.lock();
         self.resolve_paths(&mut state);
-        state.paths.clone().unwrap_or_else(|| (PathBuf::new(), PathBuf::new(), ConfigSource::User))
+        state
+            .paths
+            .clone()
+            .unwrap_or_else(|| (PathBuf::new(), PathBuf::new(), ConfigSource::User))
     }
 
     pub fn read_path(&self) -> PathBuf {
@@ -861,28 +1054,42 @@ impl InstanceRegistry {
         let path_str = file.to_string_lossy().into_owned();
         let document = match std::fs::read_to_string(file) {
             Ok(text) => serde_json::from_str::<Value>(&text).map_err(|_| {
-                reload_failed("Failed to parse instance registry JSON").with("path", path_str.clone())
+                reload_failed("Failed to parse instance registry JSON")
+                    .with("path", path_str.clone())
             })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({ "version": 1, "instances": [] }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                json!({ "version": 1, "instances": [] })
+            }
             Err(e) => {
-                return Err(reload_failed(format!("Failed to load instance registry: {e}"))
-                    .with("path", path_str));
+                return Err(
+                    reload_failed(format!("Failed to load instance registry: {e}"))
+                        .with("path", path_str),
+                );
             }
         };
         let validated = validate_document(&document, &self.env).map_err(|e| {
-            let mut details = if e.code == "REGISTRY_RELOAD_FAILED" || e.code == "INVALID_INSTANCE_CONFIG" {
-                e.details.clone()
-            } else {
-                Object::new()
-            };
+            let mut details =
+                if e.code == "REGISTRY_RELOAD_FAILED" || e.code == "INVALID_INSTANCE_CONFIG" {
+                    e.details.clone()
+                } else {
+                    Object::new()
+                };
             details.insert("path".into(), path_str.clone().into());
-            CodedError { code: "REGISTRY_RELOAD_FAILED".into(), message: e.message, details }
+            CodedError {
+                code: "REGISTRY_RELOAD_FAILED".into(),
+                message: e.message,
+                details,
+            }
         })?;
         let mut doc = to_object(validated);
         let mut canon = Vec::new();
         for instance in instances_of(&Value::Object(doc.clone())) {
             let mut i = to_object(instance);
-            let url = i.get("url").and_then(Value::as_str).unwrap_or("").to_owned();
+            let url = i
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
             i.insert("url".into(), canonicalize_instance_url(&url)?.into());
             canon.push(Value::Object(i));
         }
@@ -897,12 +1104,16 @@ impl InstanceRegistry {
 
     fn raw_locked(&self, state: &mut State) -> Result<Value, CodedError> {
         self.resolve_paths(state);
-        if state.loaded {
-            if let Some(doc) = &state.document {
-                return Ok(doc.clone());
-            }
+        if state.loaded
+            && let Some(doc) = &state.document
+        {
+            return Ok(doc.clone());
         }
-        let read = state.paths.as_ref().map(|p| p.0.clone()).unwrap_or_default();
+        let read = state
+            .paths
+            .as_ref()
+            .map(|p| p.0.clone())
+            .unwrap_or_default();
         self.read_document(state, &read)
     }
 
@@ -924,8 +1135,15 @@ impl InstanceRegistry {
                 if e.code == "REGISTRY_RELOAD_FAILED" {
                     return Err(e);
                 }
-                let read = state.paths.as_ref().map(|p| p.0.to_string_lossy().into_owned()).unwrap_or_default();
-                Err(reload_failed(format!("Failed to reload instance registry: {}", e.message)).with("path", read))
+                let read = state
+                    .paths
+                    .as_ref()
+                    .map(|p| p.0.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Err(
+                    reload_failed(format!("Failed to reload instance registry: {}", e.message))
+                        .with("path", read),
+                )
             }
         }
     }
@@ -937,7 +1155,10 @@ impl InstanceRegistry {
     }
 
     pub fn list_for_client(&self) -> Result<Vec<Object>, CodedError> {
-        Ok(instances_of(&self.raw_document()?).into_iter().map(to_object).collect())
+        Ok(instances_of(&self.raw_document()?)
+            .into_iter()
+            .map(to_object)
+            .collect())
     }
 
     pub fn get_for_client(&self, name: &str) -> Result<Object, CodedError> {
@@ -991,7 +1212,11 @@ impl InstanceRegistry {
         validate_document(document, &self.env)
     }
 
-    pub fn register(&self, instance: &Value, mut options: RegisterOptions<'_>) -> Result<Object, CodedError> {
+    pub fn register(
+        &self,
+        instance: &Value,
+        mut options: RegisterOptions<'_>,
+    ) -> Result<Object, CodedError> {
         let requested = name_of(instance).unwrap_or("").to_owned();
         let precommit = options.precommit.take();
         let capture = options.capture_context.take();
@@ -1010,20 +1235,23 @@ impl InstanceRegistry {
                     )
                     .with("name", name));
                 }
-                let should_default =
-                    current.is_empty() || make_default || candidate.get("default") == Some(&Value::Bool(true));
+                let should_default = current.is_empty()
+                    || make_default
+                    || candidate.get("default") == Some(&Value::Bool(true));
                 let mut c = to_object(candidate);
-                let url = c.get("url").and_then(Value::as_str).unwrap_or("").to_owned();
+                let url = c
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
                 c.insert("url".into(), canonicalize_instance_url(&url)?.into());
                 c.entry("authType").or_insert("basic".into());
                 c.insert("default".into(), should_default.into());
                 let mut items: Vec<Value> = current
                     .into_iter()
                     .map(|mut i| {
-                        if should_default {
-                            if let Some(o) = i.as_object_mut() {
-                                o.insert("default".into(), false.into());
-                            }
+                        if should_default && let Some(o) = i.as_object_mut() {
+                            o.insert("default".into(), false.into());
                         }
                         i
                     })
@@ -1051,7 +1279,11 @@ impl InstanceRegistry {
                 let merged = normalize_instance_credential_refs(&Value::Object(merged), false)?;
                 validate_new_instance(&merged, false, &env)?;
                 let mut merged = to_object(merged);
-                let url = merged.get("url").and_then(Value::as_str).unwrap_or("").to_owned();
+                let url = merged
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
                 merged.insert("url".into(), canonicalize_instance_url(&url)?.into());
                 let should_default = merged.get("default") == Some(&Value::Bool(true));
                 merged.insert("default".into(), should_default.into());
@@ -1061,10 +1293,8 @@ impl InstanceRegistry {
                         if name_of(&i) == Some(name) {
                             return Value::Object(merged.clone());
                         }
-                        if should_default {
-                            if let Some(o) = i.as_object_mut() {
-                                o.insert("default".into(), false.into());
-                            }
+                        if should_default && let Some(o) = i.as_object_mut() {
+                            o.insert("default".into(), false.into());
                         }
                         i
                     })
@@ -1101,12 +1331,11 @@ impl InstanceRegistry {
                     .into_iter()
                     .filter(|i| name_of(i) != Some(name))
                     .map(|mut i| {
-                        if let Some((prior, was_default)) = prior_default {
-                            if name_of(&i) == Some(prior) {
-                                if let Some(o) = i.as_object_mut() {
-                                    o.insert("default".into(), was_default.into());
-                                }
-                            }
+                        if let Some((prior, was_default)) = prior_default
+                            && name_of(&i) == Some(prior)
+                            && let Some(o) = i.as_object_mut()
+                        {
+                            o.insert("default".into(), was_default.into());
                         }
                         i
                     })
@@ -1133,7 +1362,10 @@ impl InstanceRegistry {
                     )
                     .with("name", name));
                 }
-                let items = instances_of(doc).into_iter().filter(|i| name_of(i) != Some(name)).collect();
+                let items = instances_of(doc)
+                    .into_iter()
+                    .filter(|i| name_of(i) != Some(name))
+                    .collect();
                 Ok(with_instances(doc, items))
             },
             |_| None,
@@ -1147,14 +1379,18 @@ impl InstanceRegistry {
         &self,
         operation: impl FnOnce(&Value) -> Result<Value, CodedError>,
         select: impl FnOnce(&Value) -> Option<Value>,
-        precommit: Option<&mut dyn FnMut(&Value) -> Result<(), CodedError>>,
-        capture: Option<&mut dyn FnMut(&Value, &Value) -> Result<(), CodedError>>,
+        precommit: Option<PrecommitHook<'_>>,
+        capture: Option<CaptureHook<'_>>,
     ) -> Result<Option<Value>, CodedError> {
         let (read, write, _) = self.paths();
         let lock = path_lock(&write);
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut state = self.lock();
-        let source = if write.exists() { write.clone() } else { read.clone() };
+        let source = if write.exists() {
+            write.clone()
+        } else {
+            read.clone()
+        };
         let current = self.read_document(&mut state, &source)?;
         if state.legacy_plaintext {
             return Err(CodedError::new(
@@ -1167,7 +1403,10 @@ impl InstanceRegistry {
         validate_document(&next, &self.env)?;
         if let Some(capture) = capture {
             capture(&current, &next).map_err(|_| {
-                CodedError::new("REGISTRY_CONTEXT_FAILED", "Registry mutation context could not be captured")
+                CodedError::new(
+                    "REGISTRY_CONTEXT_FAILED",
+                    "Registry mutation context could not be captured",
+                )
             })?;
         }
         if let Some(precommit) = precommit {
@@ -1182,11 +1421,11 @@ impl InstanceRegistry {
         state.document = Some(document);
         state.loaded = true;
         state.legacy_plaintext = false;
-        if let Some(paths) = state.paths.as_mut() {
-            if paths.0 != paths.1 {
-                paths.0 = write.to_path_buf();
-                paths.2 = ConfigSource::User;
-            }
+        if let Some(paths) = state.paths.as_mut()
+            && paths.0 != paths.1
+        {
+            paths.0 = write.to_path_buf();
+            paths.2 = ConfigSource::User;
         }
     }
 
@@ -1209,7 +1448,9 @@ impl InstanceRegistry {
 }
 
 fn find(doc: &Value, name: &str) -> Option<Value> {
-    instances_of(doc).into_iter().find(|i| name_of(i) == Some(name))
+    instances_of(doc)
+        .into_iter()
+        .find(|i| name_of(i) == Some(name))
 }
 
 fn with_instances(doc: &Value, items: Vec<Value>) -> Value {
@@ -1226,7 +1467,11 @@ fn write_atomic(target: &Path, document: &Value) -> Result<(), CodedError> {
             .with("path", resolve_path(target).to_string_lossy().into_owned())
     };
     let directory = target.parent().ok_or_else(fail)?;
-    let base = target.file_name().ok_or_else(fail)?.to_string_lossy().into_owned();
+    let base = target
+        .file_name()
+        .ok_or_else(fail)?
+        .to_string_lossy()
+        .into_owned();
     create_private_dir(directory).map_err(|_| fail())?;
     let text = serde_json::to_string_pretty(document).map_err(|_| fail())? + "\n";
     let mut temp = None;

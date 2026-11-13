@@ -68,7 +68,10 @@ fn loads_and_preserves_document_properties() {
     assert_eq!(doc["docs"]["localIndexEnabled"], json!(true));
     assert_eq!(doc["other"]["preserved"], json!("yes"));
     assert_eq!(r.list().unwrap().len(), 1);
-    assert_eq!(r.get("dev").unwrap()["clientId"], json!("dev-public-client"));
+    assert_eq!(
+        r.get("dev").unwrap()["clientId"],
+        json!("dev-public-client")
+    );
 }
 
 #[test]
@@ -88,7 +91,10 @@ fn rejects_multiple_defaults_and_bad_types() {
         &json!({"version": 1, "instances": [public("dev", json!({"default": true})), public("prod", json!({"default": true}))]}),
     );
     assert_eq!(code(reg(&t).load()), "REGISTRY_RELOAD_FAILED");
-    write_json(&t.file, &json!({"version": 1, "instances": [public("broken", json!({"clientId": 42}))]}));
+    write_json(
+        &t.file,
+        &json!({"version": 1, "instances": [public("broken", json!({"clientId": 42}))]}),
+    );
     let r = reg(&t);
     assert_eq!(code(r.load()), "REGISTRY_RELOAD_FAILED");
     assert_eq!(code(r.reload()), "REGISTRY_RELOAD_FAILED");
@@ -99,10 +105,32 @@ fn duplicates_https_and_loopback() {
     let t = tmp();
     let r = reg(&t);
     register(&r, public("dev", json!({}))).unwrap();
-    assert_eq!(code(register(&r, public("dev", json!({"clientId": "other"})))), "INSTANCE_ALREADY_EXISTS");
-    assert_eq!(code(register(&r, public("bad", json!({"url": "http://remote.service-now.com"})))), "INVALID_INSTANCE_CONFIG");
-    assert_eq!(register(&r, public("loopback", json!({"url": "http://127.0.0.1:8080"}))).unwrap()["name"], json!("loopback"));
-    assert_eq!(code(register(&r, public("remote", json!({"url": "http://localhost.example.com"})))), "INVALID_INSTANCE_CONFIG");
+    assert_eq!(
+        code(register(&r, public("dev", json!({"clientId": "other"})))),
+        "INSTANCE_ALREADY_EXISTS"
+    );
+    assert_eq!(
+        code(register(
+            &r,
+            public("bad", json!({"url": "http://remote.service-now.com"}))
+        )),
+        "INVALID_INSTANCE_CONFIG"
+    );
+    assert_eq!(
+        register(
+            &r,
+            public("loopback", json!({"url": "http://127.0.0.1:8080"}))
+        )
+        .unwrap()["name"],
+        json!("loopback")
+    );
+    assert_eq!(
+        code(register(
+            &r,
+            public("remote", json!({"url": "http://localhost.example.com"}))
+        )),
+        "INVALID_INSTANCE_CONFIG"
+    );
 }
 
 #[test]
@@ -115,10 +143,22 @@ fn defaults_follow_first_registration_and_make_default() {
     let patch = json!({"description": "Production", "default": true});
     r.update("prod", patch.as_object().unwrap()).unwrap();
     assert_eq!(r.get_default().unwrap().unwrap()["name"], json!("prod"));
-    let defaults = |r: &InstanceRegistry| r.list().unwrap().iter().filter(|i| truthy(i.get("default"))).count();
+    let defaults = |r: &InstanceRegistry| {
+        r.list()
+            .unwrap()
+            .iter()
+            .filter(|i| truthy(i.get("default")))
+            .count()
+    };
     assert_eq!(defaults(&r), 1);
-    r.register(&public("staging", json!({})), RegisterOptions { make_default: true, ..Default::default() })
-        .unwrap();
+    r.register(
+        &public("staging", json!({})),
+        RegisterOptions {
+            make_default: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(r.get_default().unwrap().unwrap()["name"], json!("staging"));
     assert_eq!(defaults(&r), 1);
 }
@@ -147,25 +187,57 @@ fn primary_url_rules() {
     let t = tmp();
     let r = reg(&t);
     for (n, url) in [
-        ("reject-query", "https://query.service-now.com/instance?tenant=secret"),
-        ("reject-hash", "https://fragment.service-now.com/instance#section"),
+        (
+            "reject-query",
+            "https://query.service-now.com/instance?tenant=secret",
+        ),
+        (
+            "reject-hash",
+            "https://fragment.service-now.com/instance#section",
+        ),
     ] {
-        assert_eq!(code(register(&r, public(n, json!({"url": url})))), "INVALID_INSTANCE_CONFIG");
+        assert_eq!(
+            code(register(&r, public(n, json!({"url": url})))),
+            "INVALID_INSTANCE_CONFIG"
+        );
     }
-    register(&r, public("path-prefix", json!({"url": "https://path-prefix.service-now.com/foo/bar///"}))).unwrap();
-    assert_eq!(r.get("path-prefix").unwrap()["url"], json!("https://path-prefix.service-now.com/foo/bar"));
-    register(&r, public("oauth-query", json!({
+    register(
+        &r,
+        public(
+            "path-prefix",
+            json!({"url": "https://path-prefix.service-now.com/foo/bar///"}),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        r.get("path-prefix").unwrap()["url"],
+        json!("https://path-prefix.service-now.com/foo/bar")
+    );
+    register(
+        &r,
+        public(
+            "oauth-query",
+            json!({
         "authorizeUrl": "https://oauth-query.service-now.com/authorize?client=cid",
-        "tokenUrl": "https://oauth-query.service-now.com/token?audience=sn"}))).unwrap();
+        "tokenUrl": "https://oauth-query.service-now.com/token?audience=sn"}),
+        ),
+    )
+    .unwrap();
 }
 
 #[test]
 fn reload_rolls_back_on_failure() {
     let t = tmp();
-    write_json(&t.file, &json!({"version": 1, "instances": [public("dev", json!({"default": true}))]}));
+    write_json(
+        &t.file,
+        &json!({"version": 1, "instances": [public("dev", json!({"default": true}))]}),
+    );
     let r = reg(&t);
     assert_eq!(r.list().unwrap()[0]["name"], json!("dev"));
-    write_json(&t.file, &json!({"version": 1, "instances": [public("prod", json!({"default": true}))]}));
+    write_json(
+        &t.file,
+        &json!({"version": 1, "instances": [public("prod", json!({"default": true}))]}),
+    );
     assert_eq!(r.reload().unwrap()["instances"][0]["name"], json!("prod"));
     let previous = r.list().unwrap();
     write_json(
@@ -186,7 +258,10 @@ fn typed_missing_instance_errors() {
         r.remove("missing", None).unwrap_err(),
     ] {
         assert_eq!(err.code, "INSTANCE_NOT_FOUND");
-        assert_eq!(err.details, *json!({"name": "missing"}).as_object().unwrap());
+        assert_eq!(
+            err.details,
+            *json!({"name": "missing"}).as_object().unwrap()
+        );
     }
 }
 
@@ -232,7 +307,10 @@ fn concurrent_registrations_across_objects() {
 #[test]
 fn writes_user_registry_without_touching_legacy() {
     let t = tmp();
-    write_json(&t.legacy, &json!({"version": 1, "docs": {"keep": true}, "instances": [public("legacy", json!({}))]}));
+    write_json(
+        &t.legacy,
+        &json!({"version": 1, "docs": {"keep": true}, "instances": [public("legacy", json!({}))]}),
+    );
     let before = std::fs::read_to_string(&t.legacy).unwrap();
     let r = InstanceRegistry::at_paths(&t.legacy, &t.user, Env::from_pairs(&[]));
     register(&r, public("new", json!({}))).unwrap();
@@ -245,10 +323,18 @@ fn writes_user_registry_without_touching_legacy() {
 #[test]
 fn update_and_remove_preserve_document() {
     let t = tmp();
-    write_json(&t.file, &json!({"version": 1, "docs": {"enabled": true}, "instances": [public("dev", json!({}))]}));
+    write_json(
+        &t.file,
+        &json!({"version": 1, "docs": {"enabled": true}, "instances": [public("dev", json!({}))]}),
+    );
     let r = reg(&t);
-    r.update("dev", json!({"description": "Development", "default": true}).as_object().unwrap())
-        .unwrap();
+    r.update(
+        "dev",
+        json!({"description": "Development", "default": true})
+            .as_object()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(r.get("dev").unwrap()["description"], json!("Development"));
     r.remove("dev", None).unwrap();
     assert!(r.list().unwrap().is_empty());
@@ -265,7 +351,13 @@ fn precommit_rejection_prevents_write() {
         Err(CodedError::new("PRECOMMIT", "no"))
     };
     let err = r
-        .register(&public("dev", json!({})), RegisterOptions { precommit: Some(&mut pre), ..Default::default() })
+        .register(
+            &public("dev", json!({})),
+            RegisterOptions {
+                precommit: Some(&mut pre),
+                ..Default::default()
+            },
+        )
         .unwrap_err();
     assert_eq!(err.code, "PRECOMMIT");
     assert_eq!(seen, vec![1]);
@@ -276,40 +368,101 @@ fn precommit_rejection_prevents_write() {
 fn oauth_origin_policy() {
     let t = tmp();
     let r = reg(&t);
-    register(&r, public("same-origin", json!({
+    register(
+        &r,
+        public(
+            "same-origin",
+            json!({
         "authorizeUrl": "https://same-origin.service-now.com/oauth_auth.do",
-        "tokenUrl": "https://same-origin.service-now.com/oauth_token.do"}))).unwrap();
+        "tokenUrl": "https://same-origin.service-now.com/oauth_token.do"}),
+        ),
+    )
+    .unwrap();
     for (field, value) in [
         ("tokenUrl", "https://idp.example.com/token"),
         ("authorizeUrl", "https://idp.example.com/authorize"),
-        ("tokenUrl", "https://same-origin.service-now.com.attacker.example/oauth_token.do"),
+        (
+            "tokenUrl",
+            "https://same-origin.service-now.com.attacker.example/oauth_token.do",
+        ),
     ] {
-        let err = register(&r, public(&format!("external-{field}"), json!({ field: value }))).unwrap_err();
+        let err = register(
+            &r,
+            public(&format!("external-{field}"), json!({ field: value })),
+        )
+        .unwrap_err();
         assert_eq!(err.code, "INVALID_INSTANCE_CONFIG");
         assert_eq!(err.detail_str("field"), Some(field));
     }
-    let names: Vec<_> = r.list().unwrap().iter().map(|i| i["name"].clone()).collect();
+    let names: Vec<_> = r
+        .list()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].clone())
+        .collect();
     assert_eq!(names, vec![json!("same-origin")]);
 
-    let approved = InstanceRegistry::at_paths(&t.legacy, &t.legacy, Env::from_pairs(&[(TRUSTED_OAUTH_ORIGINS_ENV, "https://idp.example.com")]));
+    let approved = InstanceRegistry::at_paths(
+        &t.legacy,
+        &t.legacy,
+        Env::from_pairs(&[(TRUSTED_OAUTH_ORIGINS_ENV, "https://idp.example.com")]),
+    );
     register(&approved, public("approved", json!({
         "authorizeUrl": "https://idp.example.com/authorize", "tokenUrl": "https://idp.example.com/token"}))).unwrap();
-    let err = register(&approved, public("other-port", json!({"tokenUrl": "https://idp.example.com:8443/token"}))).unwrap_err();
+    let err = register(
+        &approved,
+        public(
+            "other-port",
+            json!({"tokenUrl": "https://idp.example.com:8443/token"}),
+        ),
+    )
+    .unwrap_err();
     assert_eq!(err.detail_str("field"), Some("tokenUrl"));
 
-    for value in ["*", "https://idp.example.com/path", "http://idp.example.com", "https://user:pw@idp.example.com", "https://idp.example.com?x=1", "nonsense"] {
-        let bad = InstanceRegistry::at_paths(&t.user, &t.user, Env::from_pairs(&[(TRUSTED_OAUTH_ORIGINS_ENV, value)]));
-        assert_eq!(code(register(&bad, public("bad-allow-list", json!({"tokenUrl": "https://idp.example.com/token"})))), "INVALID_INSTANCE_CONFIG", "{value}");
+    for value in [
+        "*",
+        "https://idp.example.com/path",
+        "http://idp.example.com",
+        "https://user:pw@idp.example.com",
+        "https://idp.example.com?x=1",
+        "nonsense",
+    ] {
+        let bad = InstanceRegistry::at_paths(
+            &t.user,
+            &t.user,
+            Env::from_pairs(&[(TRUSTED_OAUTH_ORIGINS_ENV, value)]),
+        );
+        assert_eq!(
+            code(register(
+                &bad,
+                public(
+                    "bad-allow-list",
+                    json!({"tokenUrl": "https://idp.example.com/token"})
+                )
+            )),
+            "INVALID_INSTANCE_CONFIG",
+            "{value}"
+        );
     }
 }
 
 #[test]
 fn stored_endpoint_must_stay_approved() {
     let t = tmp();
-    write_json(&t.file, &json!({"version": 1, "instances": [public("stored", json!({"tokenUrl": "https://idp.example.com/token"}))]}));
+    write_json(
+        &t.file,
+        &json!({"version": 1, "instances": [public("stored", json!({"tokenUrl": "https://idp.example.com/token"}))]}),
+    );
     assert_eq!(code(reg(&t).load()), "REGISTRY_RELOAD_FAILED");
-    let r = InstanceRegistry::at_paths(&t.file, &t.file, Env::from_pairs(&[(TRUSTED_OAUTH_ORIGINS_ENV, "https://idp.example.com")]));
-    assert_eq!(r.load().unwrap()["instances"][0]["tokenUrl"], json!("https://idp.example.com/token"));
+    let r = InstanceRegistry::at_paths(
+        &t.file,
+        &t.file,
+        Env::from_pairs(&[(TRUSTED_OAUTH_ORIGINS_ENV, "https://idp.example.com")]),
+    );
+    assert_eq!(
+        r.load().unwrap()["instances"][0]["tokenUrl"],
+        json!("https://idp.example.com/token")
+    );
 }
 
 #[test]
@@ -318,7 +471,9 @@ fn redacts_secret_shaped_keys_but_keeps_token_url_and_refs() {
         "password": "p", "clientSecret": "s", "apiKey": "k", "nested": {"accessToken": "t", "ok": 1},
         "tokenUrl": "https://x/token", "credentialRef": "keychain:instance/dev/password"
     }));
-    assert!(v.get("password").is_none() && v.get("clientSecret").is_none() && v.get("apiKey").is_none());
+    assert!(
+        v.get("password").is_none() && v.get("clientSecret").is_none() && v.get("apiKey").is_none()
+    );
     assert!(v["nested"].get("accessToken").is_none());
     assert_eq!(v["nested"]["ok"], json!(1));
     assert_eq!(v["tokenUrl"], json!("https://x/token"));

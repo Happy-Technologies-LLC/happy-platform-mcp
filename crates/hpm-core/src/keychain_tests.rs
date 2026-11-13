@@ -30,7 +30,11 @@ fn deterministic_references() {
         "plaintext-password",
         "keychain:instance/-dev/password",
     ] {
-        assert_eq!(parse_credential_ref(bad).unwrap_err().code, "INVALID_CREDENTIAL_REF", "{bad}");
+        assert_eq!(
+            parse_credential_ref(bad).unwrap_err().code,
+            "INVALID_CREDENTIAL_REF",
+            "{bad}"
+        );
     }
     for name in ["", "-dev", "dev/other", "a b", &"a".repeat(65)] {
         assert!(credential_ref_for(name, CredentialType::Password).is_err());
@@ -42,7 +46,10 @@ async fn stores_retrieves_and_rejects_empty() {
     let (mem, s) = store();
     let r = credential_ref_for("dev", CredentialType::Password).unwrap();
     s.set_secret(&r, "fixture-secret").await.unwrap();
-    assert_eq!(mem.value(SERVICE_NAME, &r).as_deref(), Some("fixture-secret"));
+    assert_eq!(
+        mem.value(SERVICE_NAME, &r).as_deref(),
+        Some("fixture-secret")
+    );
     assert_eq!(s.get_secret(&r).await.unwrap().expose(), "fixture-secret");
     assert!(s.set_secret(&r, "").await.is_err());
 }
@@ -58,7 +65,10 @@ async fn missing_vs_failure() {
     mem.insert(SERVICE_NAME, r, "   ");
     assert!(!s.has_secret(r).await.unwrap());
     mem.fail_next(MemoryOp::Get);
-    assert_eq!(s.get_secret(r).await.unwrap_err().code, "KEYCHAIN_UNAVAILABLE");
+    assert_eq!(
+        s.get_secret(r).await.unwrap_err().code,
+        "KEYCHAIN_UNAVAILABLE"
+    );
     mem.fail_next(MemoryOp::Set);
     let err = s.set_secret(r, "fixture-secret").await.unwrap_err();
     assert!(!format!("{err:?}").contains("fixture-secret"));
@@ -69,9 +79,15 @@ async fn health_probe_failures_are_unavailable() {
     let (mem, s) = store();
     let r = "keychain:instance/dev/password";
     mem.fail_next(MemoryOp::Set);
-    assert_eq!(s.get_secret(r).await.unwrap_err().code, "KEYCHAIN_UNAVAILABLE");
+    assert_eq!(
+        s.get_secret(r).await.unwrap_err().code,
+        "KEYCHAIN_UNAVAILABLE"
+    );
     mem.fail_next(MemoryOp::Delete);
-    assert_eq!(s.has_secret(r).await.unwrap_err().code, "KEYCHAIN_UNAVAILABLE");
+    assert_eq!(
+        s.has_secret(r).await.unwrap_err().code,
+        "KEYCHAIN_UNAVAILABLE"
+    );
 }
 
 #[tokio::test]

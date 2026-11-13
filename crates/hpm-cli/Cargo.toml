@@ -26,9 +26,13 @@ hpm-docs.workspace = true
 hpm-protocol.workspace = true
 hpm-tools.workspace = true
 tokio.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+inquire.workspace = true
+url = "=2.5.8"
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile = "=3.27.0"
 tokio-util.workspace = true
 
 [lints]

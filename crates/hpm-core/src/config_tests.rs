@@ -33,7 +33,9 @@ fn expands_windows_home_prefix() {
 
 #[test]
 fn explicit_path_with_home_expansion() {
-    let p = paths(&[("HAPPY_CONFIG_PATH", "~/happy/instances.json")], &|_| false);
+    let p = paths(&[("HAPPY_CONFIG_PATH", "~/happy/instances.json")], &|_| {
+        false
+    });
     let expected = PathBuf::from("/example-home/happy/instances.json");
     assert_eq!(
         p,
@@ -47,8 +49,12 @@ fn explicit_path_with_home_expansion() {
 
 #[test]
 fn relative_explicit_path_resolves_against_cwd() {
-    let p = paths(&[("HAPPY_CONFIG_PATH", "config/instances.json")], &|_| false);
-    let expected = std::env::current_dir().unwrap().join("config/instances.json");
+    let p = paths(&[("HAPPY_CONFIG_PATH", "config/instances.json")], &|_| {
+        false
+    });
+    let expected = std::env::current_dir()
+        .unwrap()
+        .join("config/instances.json");
     assert_eq!(p.read_path, expected);
     assert_eq!(p.write_path, expected);
 }
@@ -56,15 +62,26 @@ fn relative_explicit_path_resolves_against_cwd() {
 #[test]
 fn user_legacy_and_default_precedence() {
     let user = paths(&[], &|c| c == Path::new(USER));
-    assert_eq!((user.read_path.to_str(), user.source), (Some(USER), ConfigSource::User));
+    assert_eq!(
+        (user.read_path.to_str(), user.source),
+        (Some(USER), ConfigSource::User)
+    );
     let legacy = paths(&[], &|c| c == Path::new(LEGACY));
     assert_eq!(
-        (legacy.read_path.to_str(), legacy.write_path.to_str(), legacy.source),
+        (
+            legacy.read_path.to_str(),
+            legacy.write_path.to_str(),
+            legacy.source
+        ),
         (Some(LEGACY), Some(USER), ConfigSource::Legacy)
     );
     let none = paths(&[], &|_| false);
     assert_eq!(
-        (none.read_path.to_str(), none.write_path.to_str(), none.source),
+        (
+            none.read_path.to_str(),
+            none.write_path.to_str(),
+            none.source
+        ),
         (Some(USER), Some(USER), ConfigSource::User)
     );
 }
@@ -82,9 +99,15 @@ fn client_options_mapping() {
     })));
     assert_eq!(opts["redirectPort"], json!(8455));
     assert_eq!(opts["callbackPath"], json!("/callback"));
-    assert_eq!(opts["credentialRef"]["password"], json!("keychain:instance/dev/password"));
+    assert_eq!(
+        opts["credentialRef"]["password"],
+        json!("keychain:instance/dev/password")
+    );
     assert_eq!(opts["password"], json!("p"));
-    assert_eq!(instance_to_client_options(&Object::new())["authType"], json!("basic"));
+    assert_eq!(
+        instance_to_client_options(&Object::new())["authType"],
+        json!("basic")
+    );
 }
 
 /// A manager whose registry file does not exist, so `.env` fallback applies.
@@ -119,7 +142,12 @@ fn validate_instance_cases() {
 #[test]
 fn basic_auth_env() {
     let (_d, cm) = manager(&[URL]);
-    assert!(cm.load_from_env().unwrap_err().message.contains("Missing ServiceNow credentials"));
+    assert!(
+        cm.load_from_env()
+            .unwrap_err()
+            .message
+            .contains("Missing ServiceNow credentials")
+    );
     let (_d, cm) = manager(&[
         URL,
         ("SERVICENOW_USERNAME", "unit-test-user"),
@@ -136,13 +164,22 @@ fn basic_auth_env() {
 fn env_url_is_canonicalized_by_registry() {
     let creds = [("SERVICENOW_USERNAME", "u"), ("SERVICENOW_PASSWORD", "p")];
     let (_d, cm) = manager(&[
-        ("SERVICENOW_INSTANCE_URL", "https://example.service-now.com/foo///"),
+        (
+            "SERVICENOW_INSTANCE_URL",
+            "https://example.service-now.com/foo///",
+        ),
         creds[0],
         creds[1],
     ]);
-    assert_eq!(cm.load_from_env().unwrap()[0]["url"], json!("https://example.service-now.com/foo"));
+    assert_eq!(
+        cm.load_from_env().unwrap()[0]["url"],
+        json!("https://example.service-now.com/foo")
+    );
     let (_d, cm) = manager(&[
-        ("SERVICENOW_INSTANCE_URL", "https://example.service-now.com/foo?tenant=secret"),
+        (
+            "SERVICENOW_INSTANCE_URL",
+            "https://example.service-now.com/foo?tenant=secret",
+        ),
         creds[0],
         creds[1],
     ]);
@@ -159,7 +196,12 @@ fn oauth_grants_from_env() {
         ("SERVICENOW_CLIENT_ID", "cid"),
         ("SERVICENOW_CLIENT_SECRET", "csec"),
     ]);
-    assert!(cm.load_from_env().unwrap_err().message.contains("Missing ServiceNow credentials"));
+    assert!(
+        cm.load_from_env()
+            .unwrap_err()
+            .message
+            .contains("Missing ServiceNow credentials")
+    );
 
     let (_d, cm) = manager(&[
         URL,
@@ -179,23 +221,47 @@ fn oauth_grants_from_env() {
         OAUTH,
         ("SERVICENOW_OAUTH_GRANT_TYPE", "authorization_code"),
         ("SERVICENOW_CLIENT_ID", "cid"),
-        ("SERVICENOW_OAUTH_AUTHORIZE_URL", "https://example.service-now.com/oauth_auth.do"),
-        ("SERVICENOW_OAUTH_TOKEN_URL", "https://example.service-now.com/oauth_token.do"),
+        (
+            "SERVICENOW_OAUTH_AUTHORIZE_URL",
+            "https://example.service-now.com/oauth_auth.do",
+        ),
+        (
+            "SERVICENOW_OAUTH_TOKEN_URL",
+            "https://example.service-now.com/oauth_token.do",
+        ),
         ("SERVICENOW_OAUTH_REDIRECT_PORT", " 8455 "),
         ("SERVICENOW_OAUTH_CALLBACK_PATH", "/callback"),
     ]);
     let i = &cm.load_from_env().unwrap()[0];
     assert_eq!(i["redirectPort"], json!(8455));
-    assert_eq!(i["tokenUrl"], json!("https://example.service-now.com/oauth_token.do"));
+    assert_eq!(
+        i["tokenUrl"],
+        json!("https://example.service-now.com/oauth_token.do")
+    );
 }
 
 #[test]
 fn rejects_missing_oauth_fields_without_secret_material() {
     let cases: [&[(&str, &str)]; 5] = [
-        &[("SERVICENOW_OAUTH_GRANT_TYPE", "client_credentials"), ("SERVICENOW_CLIENT_SECRET", "secret-to-protect")],
-        &[("SERVICENOW_OAUTH_GRANT_TYPE", "client_credentials"), ("SERVICENOW_CLIENT_ID", "cid")],
-        &[("SERVICENOW_OAUTH_GRANT_TYPE", "password"), ("SERVICENOW_CLIENT_ID", "cid"), ("SERVICENOW_CLIENT_SECRET", "secret-to-protect")],
-        &[("SERVICENOW_OAUTH_GRANT_TYPE", "password"), ("SERVICENOW_CLIENT_ID", "cid"), ("SERVICENOW_USERNAME", "oauth-user"), ("SERVICENOW_PASSWORD", "oauth-password")],
+        &[
+            ("SERVICENOW_OAUTH_GRANT_TYPE", "client_credentials"),
+            ("SERVICENOW_CLIENT_SECRET", "secret-to-protect"),
+        ],
+        &[
+            ("SERVICENOW_OAUTH_GRANT_TYPE", "client_credentials"),
+            ("SERVICENOW_CLIENT_ID", "cid"),
+        ],
+        &[
+            ("SERVICENOW_OAUTH_GRANT_TYPE", "password"),
+            ("SERVICENOW_CLIENT_ID", "cid"),
+            ("SERVICENOW_CLIENT_SECRET", "secret-to-protect"),
+        ],
+        &[
+            ("SERVICENOW_OAUTH_GRANT_TYPE", "password"),
+            ("SERVICENOW_CLIENT_ID", "cid"),
+            ("SERVICENOW_USERNAME", "oauth-user"),
+            ("SERVICENOW_PASSWORD", "oauth-password"),
+        ],
         &[("SERVICENOW_OAUTH_GRANT_TYPE", "authorization_code")],
     ];
     for extra in cases {
@@ -203,7 +269,10 @@ fn rejects_missing_oauth_fields_without_secret_material() {
         env.extend_from_slice(extra);
         let (_d, cm) = manager(&env);
         let msg = cm.load_from_env().unwrap_err().message;
-        assert!(msg.contains("Missing ServiceNow credentials"), "{extra:?}: {msg}");
+        assert!(
+            msg.contains("Missing ServiceNow credentials"),
+            "{extra:?}: {msg}"
+        );
         assert!(!msg.contains("secret-to-protect"));
     }
 }
@@ -215,19 +284,44 @@ fn external_idp_requires_trusted_origin() {
         OAUTH,
         ("SERVICENOW_OAUTH_GRANT_TYPE", "authorization_code"),
         ("SERVICENOW_CLIENT_ID", "cid"),
-        ("SERVICENOW_OAUTH_TOKEN_URL", "https://login.example.com/token"),
+        (
+            "SERVICENOW_OAUTH_TOKEN_URL",
+            "https://login.example.com/token",
+        ),
     ];
     let (_d, cm) = manager(&base);
-    assert!(cm.load_from_env().unwrap_err().message.contains("SERVICENOW_OAUTH_TRUSTED_ORIGINS"));
+    assert!(
+        cm.load_from_env()
+            .unwrap_err()
+            .message
+            .contains("SERVICENOW_OAUTH_TRUSTED_ORIGINS")
+    );
     let mut env = base.to_vec();
-    env.push(("SERVICENOW_OAUTH_TRUSTED_ORIGINS", "https://login.example.com"));
+    env.push((
+        "SERVICENOW_OAUTH_TRUSTED_ORIGINS",
+        "https://login.example.com",
+    ));
     let (_d, cm) = manager(&env);
-    assert_eq!(cm.load_from_env().unwrap()[0]["tokenUrl"], json!("https://login.example.com/token"));
+    assert_eq!(
+        cm.load_from_env().unwrap()[0]["tokenUrl"],
+        json!("https://login.example.com/token")
+    );
 }
 
 #[test]
 fn rejects_bad_redirect_ports() {
-    for value in ["12junk", "12.5", "1e2", "0x10", "+12", "-1", "   ", "65536", "999999999999999999999999999999999999", "abc"] {
+    for value in [
+        "12junk",
+        "12.5",
+        "1e2",
+        "0x10",
+        "+12",
+        "-1",
+        "   ",
+        "65536",
+        "999999999999999999999999999999999999",
+        "abc",
+    ] {
         let (_d, cm) = manager(&[
             URL,
             OAUTH,
@@ -258,7 +352,10 @@ async fn registry_store_view_and_cas() {
     )
     .unwrap();
     let env = Env::from_pairs(&[]);
-    let cm = ConfigManager::new(Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())), env);
+    let cm = ConfigManager::new(
+        Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+        env,
+    );
     let principal = hpm_types::context::Principal::LocalOperator;
     let view = cm.snapshot_for(&principal);
     assert_eq!(view.instances.len(), 2);
@@ -266,15 +363,36 @@ async fn registry_store_view_and_cas() {
     assert_eq!(view.default_source, DefaultSource::Registry);
     let v = view.registry_version;
     assert!(matches!(
-        cm.apply(v + 1, RegistryChange::SetRegistryDefault { instance_id: "prod".into() }).await,
+        cm.apply(
+            v + 1,
+            RegistryChange::SetRegistryDefault {
+                instance_id: "prod".into()
+            }
+        )
+        .await,
         Err(RegistryError::Conflict { .. })
     ));
     let v2 = cm
-        .apply(v, RegistryChange::SetRegistryDefault { instance_id: "prod".into() })
+        .apply(
+            v,
+            RegistryChange::SetRegistryDefault {
+                instance_id: "prod".into(),
+            },
+        )
         .await
         .unwrap();
     assert_eq!(v2, v + 1);
-    assert_eq!(cm.snapshot_for(&principal).selected_default.as_deref(), Some("prod"));
-    cm.apply(v2, RegistryChange::Remove { instance_id: "dev".into() }).await.unwrap();
+    assert_eq!(
+        cm.snapshot_for(&principal).selected_default.as_deref(),
+        Some("prod")
+    );
+    cm.apply(
+        v2,
+        RegistryChange::Remove {
+            instance_id: "dev".into(),
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(cm.snapshot_for(&principal).instances.len(), 1);
 }
