@@ -22,9 +22,13 @@ const APPLICATION_PICKER: &str = "/api/now/ui/concoursepicker/application";
 pub enum PickerChange {
     /// Failed before the picker `PUT` was sent: certainly unchanged.
     NotSent,
-    /// The instance definitely did not apply it: the `PUT` got a non-408 4xx,
-    /// or the verification read named a different current update set.
+    /// The instance definitely did not apply it: the `PUT` got a non-408 4xx.
     Refused,
+    /// The `PUT` got a 2xx, but the verification read named a different
+    /// current update set. The change may have landed and been superseded by
+    /// a concurrent change (the current set is a per-user preference), so the
+    /// outcome is unknown; re-applying it is idempotent (review L-6).
+    NotCurrent,
     /// The `PUT` was sent and may have landed (its 408/5xx/transport error,
     /// or any failure of the verification read).
     Unknown,
@@ -259,16 +263,19 @@ impl ServiceNowClient {
         let current_id =
             str_at(&current, &["result", "current", "sysId"]).filter(|s| !s.is_empty());
         if current_id != Some(sys_id) {
-            // A named other set is a definite answer; no answer is not.
-            let change = if current_id.is_some() {
-                PickerChange::Refused
-            } else {
-                PickerChange::Unknown
+            // A named other set: offer the fix script; no answer: unknown.
+            let reported = current
+                .pointer("/result/current/name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let (change, current) = match (current_id, reported) {
+                (Some(id), Some(name)) => (PickerChange::NotCurrent, format!("'{name}' ({id})")),
+                (Some(id), None) => (PickerChange::NotCurrent, id.to_owned()),
+                (None, _) => (PickerChange::Unknown, "unknown".to_owned()),
             };
             return Err(Box::new((
                 ClientError::plain(format!(
-                    "Update set verification failed: current is {}, expected {sys_id}",
-                    current_id.unwrap_or("unknown")
+                    "Update set verification failed: the instance reports the current update set is {current}, expected {sys_id}"
                 )),
                 change,
             )));

@@ -79,10 +79,11 @@ pub(super) fn set_update_set<'a>(
     })
 }
 
-/// The automated change was not sent or definitely refused: fall back to a
-/// fix script. When the picker write may have landed (`Unknown`), no fix
-/// script is written: the update set may already be current (review TF-10,
-/// P3 decision 12).
+/// The automated change was not sent, definitely refused, or verified as not
+/// current (`NotCurrent`, audited as unknown, review L-6): fall back to a fix
+/// script. When the picker write may have landed and nothing was verified
+/// (`Unknown`), no fix script is written: the update set may already be
+/// current (review TF-10, P3 decision 12).
 async fn fix_script_fallback(
     deps: &FamilyDeps,
     client: &PinnedClient,
@@ -93,9 +94,19 @@ async fn fix_script_fallback(
     let outcome = match change {
         PickerChange::NotSent => MutationOutcome::NotSent,
         PickerChange::Refused => MutationOutcome::Failed,
-        PickerChange::Unknown => MutationOutcome::Unknown,
+        PickerChange::NotCurrent | PickerChange::Unknown => MutationOutcome::Unknown,
     };
-    if outcome == MutationOutcome::Unknown {
+    // L-6: a verify read naming another set still gets the fix script, and
+    // the text names the set the instance reported.
+    let headline = if change == PickerChange::NotCurrent {
+        format!(
+            "⚠️ The update set change could not be verified: {}",
+            error.message
+        )
+    } else {
+        "⚠️ Automated update set change not available.".to_owned()
+    };
+    if change == PickerChange::Unknown {
         return done(
             outcome,
             Err(ToolError::Text(format!(
@@ -154,7 +165,7 @@ async fn fix_script_fallback(
     done(
         outcome,
         ok_text(format!(
-            "⚠️ Automated update set change not available.\nCreated fix script for manual execution: {path}\n\nUpdate Set: {}\nSys ID: {sys_id}\n\n🔧 To Apply:\n1. Open: {path}\n2. Copy the GlideUpdateSet script\n3. Run in ServiceNow: System Definition → Scripts - Background\n4. Refresh browser to see change\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
+            "{headline}\nCreated fix script for manual execution: {path}\n\nUpdate Set: {}\nSys ID: {sys_id}\n\n🔧 To Apply:\n1. Open: {path}\n2. Copy the GlideUpdateSet script\n3. Run in ServiceNow: System Definition → Scripts - Background\n4. Refresh browser to see change\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
             text(name)
         )),
     )
