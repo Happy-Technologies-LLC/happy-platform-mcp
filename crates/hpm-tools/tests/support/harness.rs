@@ -830,6 +830,52 @@ pub async fn replay_with(world: &World, file: &Path, compose: Compose) -> Result
     }
 }
 
+/// One MCP request (after `initialize`) against `compose` over a default
+/// sandbox; returns the response and how many ServiceNow requests it sent.
+pub async fn request_once(
+    world: &World,
+    compose: Compose,
+    method: &str,
+    params: &Value,
+) -> Result<(Value, usize), String> {
+    let sc = Scenario::default();
+    let sandbox = make_sandbox(world, &format!("once-{method}"), &sc)?;
+    let dispatcher = compose(&sandbox, *KEY)?;
+    let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
+        .registry(sandbox.config.clone())
+        .build();
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let server = tokio::spawn(hpm_protocol::stdio::serve_io(
+        handler,
+        server_read,
+        server_write,
+    ));
+    let (client_read, client_write) = tokio::io::split(client_io);
+    let mut client = Client {
+        write: client_write,
+        lines: BufReader::new(client_read).lines(),
+        next_id: 0,
+    };
+    world.stub.reset(None);
+    let init = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "golden-capture", "version": "0.0.0"}
+    });
+    client.request("initialize", &init).await?;
+    client
+        .send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await?;
+    world.stub.take();
+    let (message, _) = client.request(method, params).await?;
+    tokio::time::sleep(SETTLE).await;
+    let sent = world.stub.take().len();
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    Ok((message, sent))
+}
+
 /// First mismatch as `at <json-pointer>: got X, want Y`; strings show the first
 /// differing line so long tool texts stay readable. A key present on one side only
 /// is a mismatch even when the other side's value is `null`.

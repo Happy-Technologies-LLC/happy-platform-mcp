@@ -458,7 +458,9 @@ impl Dispatcher {
                 ops.clone(),
                 res.output,
                 &serde_json::Value::Null,
-                res.credentials,
+                // CO-5: never a credential binding, so the handler cannot reach
+                // ServiceNow (see `ResourceDescriptor`).
+                CredentialNeed::None,
             )
             .await
         {

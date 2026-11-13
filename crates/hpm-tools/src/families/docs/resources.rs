@@ -8,7 +8,6 @@ use std::sync::{Arc, OnceLock};
 use hpm_core::config::{ConfigManager, PACKAGE_VERSION};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
-use hpm_types::credential::CredentialNeed;
 use hpm_types::tool::{OutputClass, ResourceDescriptor, ResourceHandler, ToolError};
 use serde_json::{Map, Value, json};
 
@@ -74,7 +73,6 @@ pub(super) fn register(
         "Information about the connected ServiceNow instance",
         "application/json",
         OutputClass::Schema,
-        CredentialNeed::None,
         Arc::new(InstanceInfo {
             config: deps.config.clone(),
             tool_count: deps.tool_count.clone(),
@@ -86,7 +84,6 @@ pub(super) fn register(
         "Complete list of available ServiceNow tables with metadata",
         "application/json",
         OutputClass::Schema,
-        CredentialNeed::None,
         Arc::new(AllTables),
     ))
 }
