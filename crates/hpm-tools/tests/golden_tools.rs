@@ -30,8 +30,7 @@ use std::sync::Arc;
 use support::harness::{self, World};
 
 /// Tools no family registers yet. Lanes delete names as they port them.
-const NOT_PORTED: &[&str] = &[
-];
+const NOT_PORTED: &[&str] = &[];
 
 /// Cases run at once (each has its own stubs and sandbox).
 const PARALLEL: usize = 8;

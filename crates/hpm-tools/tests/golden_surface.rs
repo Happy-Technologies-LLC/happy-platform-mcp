@@ -76,36 +76,42 @@ const DEVIATIONS: &[Deviation] = &[
                  (6.2.0: -32603 with the zod issue list)",
     },
     Deviation {
+        at: None,
         method: "resources/templates/list",
         name: None,
         expected: |_| json!({"result": {"resourceTemplates": []}}),
         reason: "7.0 protocol stack answers the resources capability's template list empty",
     },
     Deviation {
+        at: None,
         method: "prompts/list",
         name: None,
         expected: |_| json!({"result": {"prompts": []}}),
         reason: "7.0 protocol stack: empty prompt list (6.2.0: -32601)",
     },
     Deviation {
+        at: None,
         method: "completion/complete",
         name: None,
         expected: |_| json!({"result": {"completion": {"values": []}}}),
         reason: "7.0 protocol stack: empty completion (6.2.0: -32601)",
     },
     Deviation {
+        at: None,
         method: "prompts/get",
         name: None,
         expected: |m| json!({"error": {"code": -32601, "message": m}}),
         reason: "7.0 protocol stack: -32601 message names the method (6.2.0: `Method not found`)",
     },
     Deviation {
+        at: None,
         method: "logging/setLevel",
         name: None,
         expected: |m| json!({"error": {"code": -32601, "message": m}}),
         reason: "7.0 protocol stack: -32601 message names the method (6.2.0: `Method not found`)",
     },
     Deviation {
+        at: None,
         method: "no/such/method",
         name: None,
         expected: |m| json!({"error": {"code": -32601, "message": m}}),
@@ -238,7 +244,7 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
                     &mut problems,
                     format!("{at} tools"),
                     &json!(without_annotations(&got["response"]["result"]["tools"])),
-                    &json!(registered),
+                    &world.scrub(&json!(registered)),
                 );
                 continue;
             }

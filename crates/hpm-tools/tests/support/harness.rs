@@ -134,6 +134,12 @@ impl World {
         format!("localhost:{}", self.stub.port)
     }
 
+    /// The replay scrubbing applied to `v` (for golden text the capture did not
+    /// scrub, e.g. surface `tools/list` descriptions with example datetimes).
+    pub fn scrub(&self, v: &Value) -> Value {
+        Scrubber::new(self.literals()).deep(v)
+    }
+
     /// `literalsFor(world)`: ephemeral values → placeholders.
     fn literals(&self) -> Vec<(String, String)> {
         let port = self.stub.port;
@@ -258,6 +264,17 @@ impl AuthCodeFlow for NoBrowser {
 }
 
 fn make_sandbox(world: &World, id: &str, sc: &Scenario) -> Result<Sandbox, String> {
+    make_sandbox_with(world, id, sc, true)
+}
+
+/// `env_instance`: without a registry, run with the `SERVICENOW_*` env instance
+/// (the tool goldens); the `--docs-only` surface capture ran without one.
+fn make_sandbox_with(
+    world: &World,
+    id: &str,
+    sc: &Scenario,
+    env_instance: bool,
+) -> Result<Sandbox, String> {
     let safe: String = id
         .chars()
         .map(|c| {
@@ -308,7 +325,7 @@ fn make_sandbox(world: &World, id: &str, sc: &Scenario) -> Result<Sandbox, Strin
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
-    if instances.is_none() {
+    if instances.is_none() && env_instance {
         env.insert("SERVICENOW_INSTANCE_URL".into(), world.stub.origin());
         env.insert("SERVICENOW_USERNAME".into(), FAKE_USER.into());
         env.insert("SERVICENOW_PASSWORD".into(), FAKE_PASSWORD.into());
@@ -799,8 +816,8 @@ pub fn surface_dir() -> PathBuf {
 pub async fn run_surface(world: &World, golden: &Value) -> Result<SurfaceRun, String> {
     let id = golden["id"].as_str().unwrap_or_default();
     let sc = scenarios::scenario(id);
-    let sandbox = make_sandbox(world, id, &sc)?;
     let docs_only = golden["mode"] == "docs-only";
+    let sandbox = make_sandbox_with(world, id, &sc, !docs_only)?;
     let dispatcher = SingleUser::new(sandbox.config.clone(), sandbox.client_deps())
         .docs_base_url(sandbox.raw_github_base.clone())
         .working_dir(sandbox.work.clone())
