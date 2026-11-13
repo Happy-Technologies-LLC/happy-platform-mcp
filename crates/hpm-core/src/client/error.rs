@@ -10,7 +10,17 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
+/// Stale generation detected before the request left (never sent).
 pub const STALE_INSTANCE_CODE: &str = "INSTANCE_STALE_DURING_REQUEST";
+/// Stale generation detected after the request left (outcome unknown).
+pub const STALE_AFTER_SEND_CODE: &str = "INSTANCE_STALE_AFTER_SEND";
+/// Table API path segment refused before any request was built.
+pub const INVALID_PATH_SEGMENT_CODE: &str = "INVALID_PATH_SEGMENT";
+/// A saved secret is bound to another origin than the registered instance URL.
+pub const CREDENTIAL_ORIGIN_MISMATCH_CODE: &str = "CREDENTIAL_ORIGIN_MISMATCH";
+/// The `sys_trigger` fallback failed after its trigger row was inserted (wrap,
+/// poll or log read): the script may run or have run, so the result is unknown.
+pub const TRIGGER_INSERTED_RESULT_UNKNOWN_CODE: &str = "TRIGGER_INSERTED_RESULT_UNKNOWN";
 
 const CREDENTIAL_ERROR_CODES: [&str; 4] = [
     "CREDENTIAL_NOT_FOUND",
@@ -22,7 +32,7 @@ const CREDENTIAL_ERROR_CODES: [&str; 4] = [
 /// Handler error with the 6.2.0 wording: tools render `Error: {message}`, where
 /// `message` is already `enrichServiceNowError` text (e.g.
 /// `403 User Not Authorized ACL exception`). A moved generation keeps its
-/// `StaleInstanceError` text; it was never sent.
+/// `StaleInstanceError` text (sent or not; see [`ClientError::is_stale_after_send`]).
 impl From<ClientError> for hpm_types::tool::ToolError {
     fn from(e: ClientError) -> Self {
         match e.status.filter(|s| *s != 0) {
@@ -72,7 +82,7 @@ impl ClientError {
         self
     }
 
-    /// `StaleInstanceError`.
+    /// `StaleInstanceError` raised before the request left: nothing was sent.
     pub fn stale() -> Self {
         Self::new(
             "StaleInstanceError",
@@ -81,8 +91,37 @@ impl ClientError {
         )
     }
 
+    /// `StaleInstanceError` raised after the request left (the generation moved
+    /// while it was in flight): the server may have acted on it. Same 6.2.0
+    /// text as [`ClientError::stale`]; only the code differs.
+    pub fn stale_after_send() -> Self {
+        Self::new(
+            "StaleInstanceError",
+            "Instance changed during credential resolution",
+            Some(STALE_AFTER_SEND_CODE),
+        )
+    }
+
+    /// Either stale variant.
     pub fn is_stale(&self) -> bool {
-        self.code.as_deref() == Some(STALE_INSTANCE_CODE)
+        matches!(
+            self.code.as_deref(),
+            Some(STALE_INSTANCE_CODE | STALE_AFTER_SEND_CODE)
+        )
+    }
+
+    /// Stale and raised after the request was sent.
+    pub fn is_stale_after_send(&self) -> bool {
+        self.code.as_deref() == Some(STALE_AFTER_SEND_CODE)
+    }
+
+    /// A table / sys_id rejected by [`super::path_segment`]; never sent.
+    pub fn invalid_path_segment(field: &str) -> Self {
+        Self::new(
+            "Error",
+            format!("{field} is not a valid path segment"),
+            Some(INVALID_PATH_SEGMENT_CODE),
+        )
     }
 
     /// `AuthenticationError`.

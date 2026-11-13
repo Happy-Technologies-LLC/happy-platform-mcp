@@ -45,7 +45,7 @@ use oauth_policy::{
     resolve_oauth_endpoints, trim_trailing_slashes,
 };
 pub use pinned::PinnedClient;
-pub use scripts::{ProcessorOptions, TriggerOptions};
+pub use scripts::{ProcessorOptions, ProcessorRun, TriggerOptions};
 
 /// One call's progress route (6.2.0 per-request `progressContext`): the call's
 /// sink plus its monotonically increasing counter. Never shared across calls.
@@ -398,9 +398,7 @@ pub fn resolve_instance_request(instance_url: &str, request: &str) -> Option<Str
 /// authority or `..` traversal.
 pub fn path_segment(value: &str, field: &str) -> Result<String, ClientError> {
     if value.is_empty() || value == "." || value == ".." {
-        return Err(ClientError::plain(format!(
-            "{field} is not a valid path segment"
-        )));
+        return Err(ClientError::invalid_path_segment(field));
     }
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
@@ -517,6 +515,22 @@ pub async fn clear_instance_refresh_tokens(
 enum SecretKind {
     Password,
     ClientSecret,
+}
+
+/// A saved secret bound to another origin than the instance now registered
+/// under its name. Raised before any request; only origins are named.
+fn credential_origin_mismatch(reference: &str, bound: &str, current: &str) -> ClientError {
+    let name = reference
+        .strip_prefix(crate::keychain::CREDENTIAL_PREFIX)
+        .and_then(|r| r.split('/').next())
+        .unwrap_or("");
+    ClientError::new(
+        "CredentialResolutionError",
+        format!(
+            "The saved credential for instance '{name}' was saved for {bound}, but the instance now points to {current}; it will not be sent there. Re-save it with: happy-platform-mcp instance credential set {name}"
+        ),
+        Some(error::CREDENTIAL_ORIGIN_MISMATCH_CODE),
+    )
 }
 
 /// `credentialRefForType`.
@@ -940,6 +954,24 @@ impl ServiceNowClient {
                 if value.is_empty() {
                     return Err(ClientError::credential("CREDENTIAL_NOT_FOUND"));
                 }
+                // Owner rule: a saved secret is only ever sent to the origin it
+                // was bound to. An unbound secret (6.x, or just re-saved) is bound
+                // on first use to the origin registered now.
+                let origin = url::Url::parse(&st2.url)
+                    .map(|u| oauth_policy::origin_of(&u))
+                    .map_err(|_| ClientError::credential("KEYCHAIN_OPERATION_FAILED"))?;
+                match store.bound_origin(&cref).await {
+                    Ok(Some(bound)) if bound == origin => {}
+                    Ok(Some(bound)) => {
+                        return Err(credential_origin_mismatch(&cref, &bound, &origin));
+                    }
+                    Ok(None) => store
+                        .bind_origin(&cref, &origin)
+                        .await
+                        .map_err(|e| ClientError::credential(e.code()))?,
+                    Err(e) => return Err(ClientError::credential(e.code())),
+                }
+                self.assert_current(&st2)?;
                 st2.secrets
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1401,7 +1433,11 @@ impl ServiceNowClient {
         request: HttpRequest,
     ) -> Result<HttpResponse, ClientError> {
         let result = self.inner.deps.transport.send(request).await;
-        self.assert_current(st)?;
+        // The request already left: a moved generation now means "outcome
+        // unknown", not "never sent".
+        if self.assert_current(st).is_err() {
+            return Err(ClientError::stale_after_send());
+        }
         result.map_err(|e| {
             self.sanitize(
                 st,

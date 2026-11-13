@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::error::{ClientError, RawError};
+use super::error::{self, ClientError, RawError};
 use super::http::{
     HttpRequest, HttpResponse, Method, axios_query, form_encode, format_utc_datetime,
 };
@@ -18,6 +18,15 @@ use super::script_processor::{
     rollback_context_of, script_execution_links, unknown_outcome_error, with_reason,
 };
 use super::{AuthType, RecordQuery, ServiceNowClient, State, UI_TIMEOUT, UI_USER_AGENT};
+
+/// Result of [`ServiceNowClient::execute_script_via_processor_or`].
+#[derive(Debug)]
+pub enum ProcessorRun<T> {
+    /// The processor ran the script (the parsed result).
+    Ran(Value),
+    /// The processor provably did not run it; the fallback's output.
+    NotRun(T),
+}
 
 #[derive(Clone, Debug)]
 pub struct ProcessorOptions {
@@ -275,6 +284,30 @@ impl ServiceNowClient {
         script: &str,
         options: &ProcessorOptions,
     ) -> Result<Value, ClientError> {
+        match self
+            .execute_script_via_processor_or(script, options, |e| async move { e })
+            .await?
+        {
+            ProcessorRun::Ran(v) => Ok(v),
+            ProcessorRun::NotRun(e) => Err(e),
+        }
+    }
+
+    /// The processor run with a fallback for the provable not-run case
+    /// (`SCRIPT_PROCESSOR_NOT_RUN`): `on_not_run` receives that error and runs
+    /// while the UI session is still open (e.g. the `sys_trigger` fallback), and
+    /// the session's single `/logout.do` is sent after it finishes. Any other
+    /// failure, including an unknown outcome, is `Err` and runs no fallback.
+    pub async fn execute_script_via_processor_or<T, F, Fut>(
+        &self,
+        script: &str,
+        options: &ProcessorOptions,
+        on_not_run: F,
+    ) -> Result<ProcessorRun<T>, ClientError>
+    where
+        F: FnOnce(ClientError) -> Fut,
+        Fut: Future<Output = T>,
+    {
         if script.trim().is_empty() {
             return Err(ClientError::plain("script must be a non-empty string"));
         }
@@ -339,8 +372,9 @@ impl ServiceNowClient {
         let result = match result {
             ProcessorOutcome::Ran(r) => r,
             ProcessorOutcome::NotRun(reason) => {
+                let fallback = on_not_run(not_run_error(&reason)).await;
                 session.end().await;
-                return Err(not_run_error(&reason));
+                return Ok(ProcessorRun::NotRun(fallback));
             }
             ProcessorOutcome::Unknown(reason) => {
                 session.end().await;
@@ -402,7 +436,7 @@ impl ServiceNowClient {
             script_execution_links(result.execution_history_id.as_deref(), rollback.as_deref()),
         );
         session.end().await;
-        Ok(Value::Object(out))
+        Ok(ProcessorRun::Ran(Value::Object(out)))
     }
 
     async fn resolve_script_scope(&self, scope: &str) -> Result<ScopeTarget, ClientError> {
@@ -508,6 +542,7 @@ impl ServiceNowClient {
                 let mut wrapped =
                     ClientError::plain(format!("Failed to create script trigger: {}", e.message));
                 wrapped.status = e.status;
+                wrapped.code = e.code;
                 wrapped
             })
     }
@@ -519,6 +554,12 @@ impl ServiceNowClient {
         auto_delete: bool,
         options: &TriggerOptions,
     ) -> Result<Value, ClientError> {
+        // Once the trigger row exists the script may run regardless of what
+        // fails next, so every later error is tagged "result unknown".
+        let inserted = |mut e: ClientError| {
+            e.code = Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE.into());
+            e
+        };
         let now = self.now_ms();
         let next_action = format_utc_datetime(now + 1000);
         let marker = generate_script_execution_marker(self.now_ms());
@@ -552,7 +593,8 @@ impl ServiceNowClient {
                 .to_owned();
             let wrapped = build_background_script_wrapper(script, &marker, true, Some(&sys_id));
             self.update_record("sys_trigger", &sys_id, &json!({"script": wrapped}))
-                .await?;
+                .await
+                .map_err(inserted)?;
             trigger
         } else {
             let wrapped = build_background_script_wrapper(script, &marker, false, None);
@@ -610,7 +652,8 @@ impl ServiceNowClient {
                         ..RecordQuery::default()
                     },
                 )
-                .await?;
+                .await
+                .map_err(inserted)?;
             if let Some(first) = records.as_array().and_then(|r| r.first()).cloned() {
                 break Some(first);
             }
@@ -643,7 +686,8 @@ impl ServiceNowClient {
             .to_owned();
         let (logs, truncated, unverified) = self
             .collect_background_script_logs(&end_marker, &next_action, &until)
-            .await?;
+            .await
+            .map_err(inserted)?;
         let mut o = match &outcome {
             MarkerOutcome::Completed(output) => {
                 let mut o = with(
