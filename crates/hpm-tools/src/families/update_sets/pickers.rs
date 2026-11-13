@@ -2,7 +2,7 @@
 //! SN-Set-Current-Application, SN-Inspect-Update-Set
 //! (6.2.0 `mcp-server-consolidated.js` 2053-2205, 2607-2622).
 
-use hpm_core::client::{RecordParams, RecordQuery};
+use hpm_core::client::{ClientError, PinnedClient, RecordParams, RecordQuery};
 use hpm_types::BoxFut;
 use hpm_types::context::RequestContext;
 use hpm_types::tool::{MutationOutcome, ToolError};
@@ -46,7 +46,15 @@ pub(super) fn set_update_set<'a>(
             Ok(c) => c,
             Err(d) => return d,
         };
-        let error = match client.client().set_current_update_set(&sys_id).await {
+        // The fallback runs while the picker's UI session is still open, so
+        // its `/logout.do` is deterministically the last request.
+        match client
+            .client()
+            .set_current_update_set_or(&sys_id, |error| {
+                fix_script_fallback(deps, &client, &sys_id, error)
+            })
+            .await
+        {
             Ok(result) => {
                 let previous = result
                     .get("previous_update_set")
@@ -58,73 +66,81 @@ pub(super) fn set_update_set<'a>(
                             or_unknown(p.get("sys_id"))
                         )
                     });
-                return done(
+                done(
                     MutationOutcome::Committed,
                     ok_text(format!(
                         "✅ Update set set to current: {}\n\n🔧 Method: UI API endpoint (/api/now/ui/concoursepicker/updateset)\n✅ Verification: passed{previous}\n\nThe update set has been set as your current update set. Refresh your ServiceNow browser to see the change in the top bar.",
                         text(result.get("update_set"))
                     )),
-                );
+                )
             }
-            Err(e) => e,
-        };
-        // Automated change failed or did not verify: fall back to a fix script.
-        let outcome = failed_outcome(&error);
-        let update_set = match client
-            .get_record("sys_update_set", &sys_id, &RecordParams::default())
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return done(outcome, Err(error_for(outcome, e.message))),
-        };
-        let name = update_set.get("name");
-        let file_name = format!(
-            "set_update_set_{}_{}.js",
-            to_file_name_fragment(name),
-            file_timestamp()
-        );
-        let body = format!(
-            "// Set current update set using GlideUpdateSet API\nvar updateSetSysId = {};\nvar updateSetName = {};\nvar gus = new GlideUpdateSet();\ngus.set(updateSetSysId);\ngs.info('✅ Update set changed to: ' + updateSetName);",
-            to_javascript_string_literal(&sys_id),
-            to_javascript_string_literal(&match name {
-                None | Some(Value::Null) => String::new(),
-                Some(v) => js::to_js_string(v),
-            })
-        );
-        let created_at = now_iso();
-        let file = FixScriptFile {
-            title: "Fix Script: Set Current Update Set",
-            created_at: &created_at,
-            notes: &[
-                "Note: Automated methods failed. Manual execution required.",
-                "",
-                "ALTERNATIVE: Manual UI Method",
-                "Navigate to System Update Sets → Local Update Sets, open the update set",
-                "whose sys_id is in updateSetSysId below, and click \"Make this my current set\".",
-            ],
-            instructions: &[
-                "Copy the script below this comment",
-                "Navigate to ServiceNow: System Definition → Scripts - Background",
-                "Paste the script",
-                "Click \"Run script\"",
-                "Verify output: \"Update set changed to: \" followed by the update set name",
-                "Refresh your browser to see the update set in the top bar",
-            ],
-            metadata: None,
-            body: &body,
-        };
-        let path = match write_fix_script(deps, file_name, &file).await {
-            Ok(p) => p,
-            Err(m) => return done(outcome, Err(error_for(outcome, m))),
-        };
-        done(
-            outcome,
-            ok_text(format!(
-                "⚠️ Automated update set change not available.\nCreated fix script for manual execution: {path}\n\nUpdate Set: {}\nSys ID: {sys_id}\n\n🔧 To Apply:\n1. Open: {path}\n2. Copy the GlideUpdateSet script\n3. Run in ServiceNow: System Definition → Scripts - Background\n4. Refresh browser to see change\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
-                text(name)
-            )),
-        )
+            Err(d) => d,
+        }
     })
+}
+
+/// Automated change failed or did not verify: fall back to a fix script.
+async fn fix_script_fallback(
+    deps: &FamilyDeps,
+    client: &PinnedClient,
+    sys_id: &str,
+    error: ClientError,
+) -> Done {
+    let outcome = failed_outcome(&error);
+    let update_set = match client
+        .get_record("sys_update_set", sys_id, &RecordParams::default())
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return done(outcome, Err(error_for(outcome, e.message))),
+    };
+    let name = update_set.get("name");
+    let file_name = format!(
+        "set_update_set_{}_{}.js",
+        to_file_name_fragment(name),
+        file_timestamp()
+    );
+    let body = format!(
+        "// Set current update set using GlideUpdateSet API\nvar updateSetSysId = {};\nvar updateSetName = {};\nvar gus = new GlideUpdateSet();\ngus.set(updateSetSysId);\ngs.info('✅ Update set changed to: ' + updateSetName);",
+        to_javascript_string_literal(sys_id),
+        to_javascript_string_literal(&match name {
+            None | Some(Value::Null) => String::new(),
+            Some(v) => js::to_js_string(v),
+        })
+    );
+    let created_at = now_iso();
+    let file = FixScriptFile {
+        title: "Fix Script: Set Current Update Set",
+        created_at: &created_at,
+        notes: &[
+            "Note: Automated methods failed. Manual execution required.",
+            "",
+            "ALTERNATIVE: Manual UI Method",
+            "Navigate to System Update Sets → Local Update Sets, open the update set",
+            "whose sys_id is in updateSetSysId below, and click \"Make this my current set\".",
+        ],
+        instructions: &[
+            "Copy the script below this comment",
+            "Navigate to ServiceNow: System Definition → Scripts - Background",
+            "Paste the script",
+            "Click \"Run script\"",
+            "Verify output: \"Update set changed to: \" followed by the update set name",
+            "Refresh your browser to see the update set in the top bar",
+        ],
+        metadata: None,
+        body: &body,
+    };
+    let path = match write_fix_script(deps, file_name, &file).await {
+        Ok(p) => p,
+        Err(m) => return done(outcome, Err(error_for(outcome, m))),
+    };
+    done(
+        outcome,
+        ok_text(format!(
+            "⚠️ Automated update set change not available.\nCreated fix script for manual execution: {path}\n\nUpdate Set: {}\nSys ID: {sys_id}\n\n🔧 To Apply:\n1. Open: {path}\n2. Copy the GlideUpdateSet script\n3. Run in ServiceNow: System Definition → Scripts - Background\n4. Refresh browser to see change\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
+            text(name)
+        )),
+    )
 }
 
 pub(super) fn get_current_update_set<'a>(

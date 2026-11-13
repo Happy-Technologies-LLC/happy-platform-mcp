@@ -937,8 +937,10 @@ async fn poll_progress(
     let mut attempt: u64 = 0;
     let mut last = snapshot_of(progress_id, &json!({}));
     loop {
+        // The run was already dispatched: a moved generation leaves its
+        // outcome unknown, never "not sent".
         if client.generation() != generation {
-            return Err(ClientError::stale());
+            return Err(ClientError::stale_after_send());
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let budget = Duration::from_millis((deadline - now()).max(0.0).round() as u64);
@@ -948,7 +950,7 @@ async fn poll_progress(
         };
         let snapshot = fetched?;
         if client.generation() != generation {
-            return Err(ClientError::stale());
+            return Err(ClientError::stale_after_send());
         }
         last = snapshot.clone();
         attempt += 1;

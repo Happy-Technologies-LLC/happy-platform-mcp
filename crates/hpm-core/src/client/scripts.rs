@@ -135,11 +135,13 @@ impl Drop for ScriptSession {
 }
 
 impl ScriptSession {
-    /// Ends the UI session (`GET /logout.do`); failures are ignored.
+    /// Ends the UI session (`GET /logout.do`); failures are ignored. Marked
+    /// ended only once the send finished: a cancelled send still leaves the
+    /// `Drop` logout as a fallback (review L4).
     async fn end(&self) {
-        self.ended.store(true, std::sync::atomic::Ordering::Release);
         let req = logout_request(&self.state.url, &self.auth_header);
         let _ = self.request(req).await;
+        self.ended.store(true, std::sync::atomic::Ordering::Release);
     }
 
     async fn request(
@@ -371,7 +373,12 @@ impl ServiceNowClient {
         if options.record_for_rollback {
             form.push(("record_for_rollback", "on"));
         }
-        self.assert_current(&state)?;
+        // Every exit ends the session in line (never left to `Drop`), so the
+        // logout is deterministically the operation's last request.
+        if let Err(e) = self.assert_current(&state) {
+            session.end().await;
+            return Err(e);
+        }
         let mut req = HttpRequest::new(Method::Post, session.url(SCRIPT_PROCESSOR_PATH));
         req.set_header(
             "Content-Type",
@@ -771,7 +778,10 @@ impl ServiceNowClient {
         if token.is_empty() {
             token = session.lookup_csrf().await.unwrap_or_default();
         }
-        self.assert_current(&state)?;
+        if let Err(e) = self.assert_current(&state) {
+            session.end().await;
+            return Err(e);
+        }
         let cookie = session.jar.lock().await.serialize();
         // Ownership passes to the caller, who ends it with `logout_ui_session`.
         session

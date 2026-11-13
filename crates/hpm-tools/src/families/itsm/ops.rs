@@ -478,7 +478,8 @@ mod tests {
             &json!({"problem_number": "P", "resolution_notes": "n"}),
         )
         .await;
-        assert_eq!(done.outcome, MutationOutcome::Failed);
+        // A 500 can follow a partial business-rule commit (review W3 M2).
+        assert_eq!(done.outcome, MutationOutcome::Unknown);
 
         let sn = Fake::new()
             .ok(json!([{"sys_id": INC}]))

@@ -27,6 +27,9 @@ pub struct Scenario {
     pub instances: Option<fn(&Endpoints) -> Value>,
     /// Keyring seed: account → secret (service `happy-platform-mcp`).
     pub keyring: Vec<(&'static str, &'static str)>,
+    /// Origin bindings for keyring accounts saved for an instance other than
+    /// the stub (account → origin). Every other account is bound to the stub.
+    pub bindings: Vec<(&'static str, &'static str)>,
     pub env: Vec<(&'static str, &'static str)>,
     /// `params` per step, for goldens whose recorded request was normalized.
     pub requests: Option<Vec<Value>>,
@@ -374,6 +377,11 @@ pub fn scenario(id: &str) -> Scenario {
                 ("keychain:instance/dev/password", FAKE_PASSWORD),
                 ("keychain:instance/staging/password", FAKE_PASSWORD),
             ];
+            // The operator saved the staging secret for the staging URL.
+            s.bindings = vec![(
+                "keychain:instance/staging/password",
+                "https://staging.example.invalid",
+            )];
         }
         "SN-Docs-Sync/local-index-enabled" => {
             s.env = vec![("HAPPY_DOCS_ENABLE_LOCAL_INDEX", "true")];

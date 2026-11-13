@@ -539,6 +539,25 @@ fn origin_mismatch(name: &str) -> ToolError {
     )
 }
 
+const ORIGIN_UNBOUND: &str = "CREDENTIAL_ORIGIN_UNBOUND";
+
+/// A secret stored without an origin binding (6.x, or left behind by a
+/// removed registration) is never reused for an agent-supplied URL: only the
+/// operator can bind it (registered name) or replace it (`instance add`).
+fn origin_unbound(name: &str) -> ToolError {
+    error_response(
+        ORIGIN_UNBOUND,
+        "A credential is already stored for this name but is not bound to an instance URL; it will not be reused for a URL registered here. Bind or re-save it locally first.",
+        obj(vec![(
+            "commands",
+            json!([
+                format!("happy-platform-mcp instance credential bind {name}"),
+                format!("happy-platform-mcp instance add --name {name}"),
+            ]),
+        )]),
+    )
+}
+
 /// `safeRegistryDetails`.
 fn safe_registry_details(error: &CodedError) -> Object {
     let mut details = Object::new();
@@ -609,6 +628,7 @@ fn registry_error(error: &CodedError) -> ToolError {
         ),
         "REGISTRY_ROLLBACK_REQUIRED" => rollback_required(),
         ORIGIN_MISMATCH => origin_mismatch(error.detail_str("name").unwrap_or("the-instance")),
+        ORIGIN_UNBOUND => origin_unbound(error.detail_str("name").unwrap_or("the-instance")),
         "REGISTRY_RELOAD_FAILED" | "REGISTRY_EMPTY" => {
             let message = if code == "REGISTRY_EMPTY" {
                 "No registered instances are available. Register an instance with the local CLI, then restart the MCP server."
@@ -669,9 +689,10 @@ fn log_diagnostic(operation: &str, code: &str, name: Option<&Value>) {
     eprintln!("{}", Value::Object(diagnostic));
 }
 
-/// `checkCredentials`: `Err((code, response))`. A stored secret already bound
-/// to another origin fails closed (`CREDENTIAL_ORIGIN_MISMATCH`): registering
-/// its name at a new URL would otherwise send that secret there.
+/// `checkCredentials`: `Err((code, response))`. A stored secret bound to
+/// another origin (`CREDENTIAL_ORIGIN_MISMATCH`) or to none at all
+/// (`CREDENTIAL_ORIGIN_UNBOUND`: a 6.x or orphaned secret) fails closed:
+/// registering its name at a new URL would otherwise send that secret there.
 async fn check_credentials(
     store: &InstanceCredentialStore,
     requirements: &[Requirement],
@@ -684,21 +705,25 @@ async fn check_credentials(
             Err(e) if e.code() == "CREDENTIAL_NOT_FOUND" => Ok(false),
             other => other,
         };
-        // `Ok(true)`: stored but bound to another origin.
-        let mismatched = match present {
+        // `Ok(Some(bound))`: stored and bound to `bound` (`""`: unbound).
+        let binding = match present {
             Ok(true) => store
                 .bound_origin(reference)
                 .await
-                .map(|bound| bound.is_some_and(|b| b != origin)),
+                .map(|bound| Some(bound.unwrap_or_default())),
             Ok(false) => {
                 missing = true;
-                Ok(false)
+                Ok(None)
             }
             Err(e) => Err(e),
         };
-        match mismatched {
-            Ok(false) => {}
-            Ok(true) => return Err((ORIGIN_MISMATCH.to_owned(), origin_mismatch(name))),
+        match binding {
+            Ok(None) => {}
+            Ok(Some(b)) if b == origin => {}
+            Ok(Some(b)) if b.is_empty() => {
+                return Err((ORIGIN_UNBOUND.to_owned(), origin_unbound(name)));
+            }
+            Ok(Some(_)) => return Err((ORIGIN_MISMATCH.to_owned(), origin_mismatch(name))),
             Err(e) => {
                 let code = if e.code().starts_with("KEYCHAIN_") {
                     e.code()
@@ -1122,11 +1147,11 @@ mod tests {
     async fn reregistering_a_name_at_a_new_url_fails_closed() {
         let store = store();
         store
-            .set_secret(REF, hpm_types::credential::Secret::new("pw".into()))
-            .await
-            .unwrap();
-        store
-            .bind_origin(REF, "https://old.example.com")
+            .set_secret(
+                REF,
+                hpm_types::credential::Secret::new("pw".into()),
+                "https://old.example.com",
+            )
             .await
             .unwrap();
         let (code, e) = check_credentials(&store, &reqs(), "dev", "https://new.example.com")
@@ -1139,22 +1164,41 @@ mod tests {
             body["commands"],
             json!(["happy-platform-mcp instance credential set dev"])
         );
-        // Same origin, or a secret not bound yet, is accepted.
+        // Same origin is accepted.
         assert!(
             check_credentials(&store, &reqs(), "dev", "https://old.example.com")
                 .await
                 .is_ok()
         );
-        let unbound = self::store();
-        unbound
-            .set_secret(REF, hpm_types::credential::Secret::new("pw".into()))
-            .await
-            .unwrap();
-        assert!(
-            check_credentials(&unbound, &reqs(), "dev", "https://new.example.com")
+    }
+
+    /// H1: a 6.x or orphaned secret (no binding) is never adopted by an
+    /// agent-supplied URL, at any origin; only the operator's CLI binds it.
+    #[tokio::test]
+    async fn unbound_secret_refuses_registration_at_any_url() {
+        let mem = Arc::new(hpm_core::keychain::MemorySecretStore::new());
+        mem.insert(hpm_core::keychain::SERVICE_NAME, REF, "pw");
+        let unbound = InstanceCredentialStore::new(mem.clone());
+        for url in ["https://attacker.example", "https://dev.example.com"] {
+            let (code, e) = check_credentials(&unbound, &reqs(), "dev", url)
                 .await
-                .is_ok()
-        );
+                .unwrap_err();
+            assert_eq!(code, ORIGIN_UNBOUND);
+            let body = text_of(e);
+            assert_eq!(body["code"], ORIGIN_UNBOUND);
+            assert_eq!(
+                body["commands"],
+                json!([
+                    "happy-platform-mcp instance credential bind dev",
+                    "happy-platform-mcp instance add --name dev"
+                ])
+            );
+        }
+        assert_eq!(unbound.bound_origin(REF).await.unwrap(), None);
+        let mapped = text_of(registry_error(
+            &CodedError::new(ORIGIN_UNBOUND, "x").with("name", "dev"),
+        ));
+        assert_eq!(mapped["code"], ORIGIN_UNBOUND);
         // Precommit's error re-maps to the same response.
         let mapped = text_of(registry_error(
             &CodedError::new(ORIGIN_MISMATCH, "x").with("name", "dev"),

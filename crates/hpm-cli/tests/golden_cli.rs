@@ -12,7 +12,9 @@ use hpm_cli::instance_cli::{
     CliContext, HttpProbe, PromptKind, PromptSpec, Prompter, run_instance_cli,
 };
 use hpm_core::config::{CodedError, Env};
-use hpm_core::keychain::{InstanceCredentialStore, MemorySecretStore, SecretStore};
+use hpm_core::keychain::{
+    InstanceCredentialStore, MemorySecretStore, SecretStore, origin_binding_account,
+};
 use hpm_core::registry::InstanceRegistry;
 use hpm_core::token_store::{InMemoryTokenStore, TokenStore};
 use serde_json::{Value, json};
@@ -299,12 +301,15 @@ async fn replay(file: &Path) -> Result<(), String> {
 
     let memory = Arc::new(MemorySecretStore::new());
     if sc.keyring {
-        memory.insert(SERVICE, "keychain:instance/dev/password", FAKE_PASSWORD);
-        memory.insert(
-            SERVICE,
-            "keychain:instance/oauth1/client-secret",
-            FAKE_CLIENT_SECRET,
-        );
+        // Saved for the registered instance, so bound to its origin (as
+        // `instance add` / `credential set` write them).
+        for (account, secret) in [
+            ("keychain:instance/dev/password", FAKE_PASSWORD),
+            ("keychain:instance/oauth1/client-secret", FAKE_CLIENT_SECRET),
+        ] {
+            memory.insert(SERVICE, account, secret);
+            memory.insert(SERVICE, &origin_binding_account(account), &origin);
+        }
     }
     let secrets: Arc<dyn SecretStore> = memory.clone();
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -362,9 +367,38 @@ async fn replay(file: &Path) -> Result<(), String> {
         Err(_) => Value::Null,
         Ok(text) => serde_json::from_str(&text).unwrap_or(json!("unparseable")),
     };
-    check("registryJson", registry_json, &after["registryJson"]);
+    // Origin bindings are a 7.0 addition (owner rule: a secret is only sent
+    // to its origin): kept out of the 6.2.0 comparison, but every saved
+    // secret must be bound to the URL of the instance it was written for.
+    let instance_url = |account: &str| -> String {
+        registry_json["instances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|i| i["credentialRef"] == account)
+            .and_then(|i| i["url"].as_str())
+            .map_or_else(
+                || origin.clone(),
+                |u| u.replace("{{INSTANCE_URL}}", &origin),
+            )
+    };
     let accounts = memory.accounts(SERVICE);
-    let mut sorted = accounts.clone();
+    let mut unbound = Vec::new();
+    for a in accounts
+        .iter()
+        .filter(|a| a.starts_with("keychain:instance/"))
+    {
+        let bound = memory.value(SERVICE, &origin_binding_account(a));
+        if bound.as_deref() != Some(instance_url(a).as_str()) {
+            unbound.push(format!("{a} bound to {bound:?}"));
+        }
+    }
+    check("registryJson", registry_json, &after["registryJson"]);
+    check("secretsBoundToInstanceOrigin", json!(unbound), &json!([]));
+    let mut sorted: Vec<String> = accounts
+        .into_iter()
+        .filter(|a| !a.starts_with("keychain:instance-origin/"))
+        .collect();
     sorted.sort();
     check("keyringAccounts", json!(sorted), &after["keyringAccounts"]);
     let matches: serde_json::Map<String, Value> = sorted

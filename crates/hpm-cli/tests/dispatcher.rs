@@ -360,15 +360,29 @@ async fn unknown_tool_and_missing_property_are_invalid_params() {
 
 #[tokio::test]
 async fn handler_validated_tool_sees_schema_invalid_input_others_do_not() {
-    const SELF_CHECKING: &str = "SN-List-Incidents";
+    // One of the allow-listed tools (`HANDLER_VALIDATED_TOOLS`); the real
+    // handlers' refusals are proven in `handler_validated_tools.rs`.
+    const SELF_CHECKING: &str = "SN-Get-ATF-Results";
     let calls = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new().expect("registry");
+    // Any other tool is refused the flag at registration (review W3 M4).
+    assert!(matches!(
+        registry.register_tool(
+            read_tool("SN-List-Incidents", CredentialNeed::None, &calls)
+                .handler_validates_input(true)
+        ),
+        Err(RegistrationError::HandlerValidationNotAllowed(
+            "SN-List-Incidents"
+        ))
+    ));
     registry
         .register_tool(read_tool(READ_TOOL, CredentialNeed::None, &calls))
         .expect("register");
     registry
         .register_tool(
-            read_tool(SELF_CHECKING, CredentialNeed::None, &calls).handler_validates_input(true),
+            read_tool(SELF_CHECKING, CredentialNeed::None, &calls)
+                .output(OutputClass::Opaque)
+                .handler_validates_input(true),
         )
         .expect("register");
     let services = Services {

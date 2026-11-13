@@ -41,7 +41,15 @@ pub enum RegistrationError {
         tool: &'static str,
         field: &'static str,
     },
+    /// `handler_validates_input` bypasses the dispatcher's schema check, so it
+    /// is allowed only on tools whose handlers are tested to refuse bad input.
+    #[error("tool {0}: handler_validates_input is not allowed for this tool")]
+    HandlerValidationNotAllowed(&'static str),
 }
+
+/// Tools allowed to set `handler_validates_input` (review W3 M4). Each one
+/// has a dispatcher test proving its handler refuses schema-invalid input.
+pub const HANDLER_VALIDATED_TOOLS: [&str; 2] = ["SN-Register-Instance", "SN-Get-ATF-Results"];
 
 pub struct ToolRegistry {
     classification: ToolClassificationSet,
@@ -91,6 +99,9 @@ impl ToolRegistry {
     pub fn register_tool(&mut self, mut tool: ToolDescriptor) -> Result<(), RegistrationError> {
         if self.tools.iter().any(|t| t.name == tool.name) {
             return Err(RegistrationError::DuplicateTool(tool.name));
+        }
+        if tool.handler_validates_input && !HANDLER_VALIDATED_TOOLS.contains(&tool.name) {
+            return Err(RegistrationError::HandlerValidationNotAllowed(tool.name));
         }
         let schema: Result<serde_json::Value, _> = serde_json::from_str(tool.input_schema_json);
         if !matches!(schema, Ok(serde_json::Value::Object(_))) {

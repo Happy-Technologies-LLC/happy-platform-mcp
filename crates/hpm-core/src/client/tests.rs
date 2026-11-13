@@ -378,6 +378,47 @@ fn ref_config(auth: AuthType, reference: Value) -> InstanceConfig {
     }
 }
 
+/// A secret saved by the CLI for the instance at [`URL`]: bound to its origin.
+fn put_bound(creds: &MemStore, reference: &str, value: &str) {
+    creds.put(reference, value);
+    creds.put(
+        &crate::keychain::origin_binding_account(reference),
+        URL.trim_end_matches('/'),
+    );
+}
+
+#[tokio::test]
+async fn unbound_secret_is_never_sent_and_never_bound_lazily() {
+    const REF: &str = "keychain:instance/dev/password";
+    let attacker = "https://attacker.example";
+    let h = harness(
+        InstanceConfig {
+            url: attacker.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        },
+        FakeTransport::new(ok_result(json!([]))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    // A 6.x (or orphaned) secret with no binding, its name now registered
+    // at an agent-chosen URL.
+    h.creds.put(REF, "kc-pass");
+    let q = RecordQuery::default();
+    for _ in 0..2 {
+        let err = h.client.get_records("x", &q).await.expect_err("unbound");
+        assert_eq!(err.code(), Some(error::CREDENTIAL_ORIGIN_UNBOUND_CODE));
+        assert!(
+            err.message.contains("instance credential bind dev"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("kc-pass"));
+    }
+    assert!(h.transport.requests().is_empty());
+    let store = InstanceCredentialStore::new(h.creds.clone());
+    assert_eq!(store.bound_origin(REF).await.ok().flatten(), None);
+}
+
 #[tokio::test]
 async fn saved_secret_is_never_sent_to_a_new_origin() {
     const REF: &str = "keychain:instance/dev/password";
@@ -387,15 +428,10 @@ async fn saved_secret_is_never_sent_to_a_new_origin() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    // A 6.x secret with no binding: the first use binds it to the origin now.
-    h.creds.put(REF, "kc-pass");
+    // Bound at write time (or by `instance credential bind`): used.
+    put_bound(&h.creds, REF, "kc-pass");
     let q = RecordQuery::default();
     assert!(h.client.get_records("x", &q).await.is_ok());
-    let store = InstanceCredentialStore::new(h.creds.clone());
-    assert_eq!(
-        store.bound_origin(REF).await.ok().flatten().as_deref(),
-        Some(URL.trim_end_matches('/'))
-    );
 
     // Re-registering the name with a new URL keeps the reference: refused
     // before any request reaches the new host.
@@ -421,10 +457,14 @@ async fn saved_secret_is_never_sent_to_a_new_origin() {
             .all(|r| !r.url.starts_with(moved))
     );
 
-    // Re-saving the credential clears the binding; the next use binds it to
-    // the new origin.
+    // Re-saving the credential for the new URL binds it there.
+    let store = InstanceCredentialStore::new(h.creds.clone());
     store
-        .set_secret(REF, hpm_types::credential::Secret::new("new-pass".into()))
+        .set_secret(
+            REF,
+            hpm_types::credential::Secret::new("new-pass".into()),
+            moved,
+        )
         .await
         .unwrap_or_else(|e| panic!("{e}"));
     h.client
@@ -448,7 +488,7 @@ async fn basic_password_resolved_from_keychain_once() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    h.creds.put("keychain:instance/dev/password", "kc-pass");
+    put_bound(&h.creds, "keychain:instance/dev/password", "kc-pass");
     let q = RecordQuery::default();
     let (a, b) = tokio::join!(h.client.get_records("x", &q), h.client.get_records("y", &q));
     assert!(a.is_ok() && b.is_ok());
@@ -529,9 +569,8 @@ async fn oauth_password_grant_needs_object_reference() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    h.creds.put("keychain:instance/dev/password", "kc-pass");
-    h.creds
-        .put("keychain:instance/dev/client-secret", "kc-secret");
+    put_bound(&h.creds, "keychain:instance/dev/password", "kc-pass");
+    put_bound(&h.creds, "keychain:instance/dev/client-secret", "kc-secret");
     assert!(
         h.client
             .get_records("x", &RecordQuery::default())
@@ -584,7 +623,7 @@ async fn set_instance_during_resolution_is_stale() {
         FakePoster::new(vec![]),
         Value::Null,
     );
-    h.creds.put("keychain:instance/dev/password", "kc-pass");
+    put_bound(&h.creds, "keychain:instance/dev/password", "kc-pass");
     let client = h.client.clone();
     let call = tokio::spawn(async move { client.get_records("x", &RecordQuery::default()).await });
     // Switch before the spawned call gets a chance to finish its awaits.

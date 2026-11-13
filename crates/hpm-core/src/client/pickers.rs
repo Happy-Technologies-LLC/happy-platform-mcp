@@ -48,10 +48,12 @@ impl PickerSession {
         req
     }
 
-    /// Ends the UI session (`GET /logout.do`); failures are ignored.
+    /// Ends the UI session (`GET /logout.do`); failures are ignored. Marked
+    /// ended only once the send finished: a cancelled send still leaves the
+    /// `Drop` logout as a fallback.
     pub async fn end(mut self) {
-        self.ended = true;
         let _ = self.client.send(&self.state, self.logout()).await;
+        self.ended = true;
     }
 
     fn request(&self, method: Method, path: &str) -> HttpRequest {
@@ -97,18 +99,31 @@ fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
     path.iter().try_fold(v, |acc, k| acc.get(k))?.as_str()
 }
 
+/// Ends a parked picker session in line (see `open_ui_picker_session`).
+async fn end_slot(slot: Option<PickerSession>) {
+    if let Some(session) = slot {
+        session.end().await;
+    }
+}
+
 impl ServiceNowClient {
-    /// `_openUiPickerSession`: landing-page cookie, then reuse it.
-    pub(crate) async fn open_ui_picker_session(&self) -> Result<PickerSession, ClientError> {
+    /// `_openUiPickerSession`: landing-page cookie, then reuse it. The session
+    /// is parked in `slot` before its first request, so the operation that
+    /// owns the slot ends it in line ([`end_slot`]) as its last request, on
+    /// success and failure alike; `Drop` only covers cancellation.
+    pub(crate) async fn open_ui_picker_session<'s>(
+        &self,
+        slot: &'s mut Option<PickerSession>,
+    ) -> Result<&'s PickerSession, ClientError> {
         let state = self.state();
         let auth_header = self.auth_header_for(&state).await?;
-        let mut session = PickerSession {
+        let session = slot.insert(PickerSession {
             client: self.clone(),
             state,
             auth_header,
             cookie: String::new(),
             ended: false,
-        };
+        });
         let mut landing = session.request(Method::Get, "/");
         landing.set_header("Accept", "text/html");
         let response = self.send(&session.state, landing).await?;
@@ -121,11 +136,41 @@ impl ServiceNowClient {
             .filter(|p| !p.is_empty())
             .collect::<Vec<_>>()
             .join("; ");
-        Ok(session)
+        Ok(&*session)
     }
 
     /// `setCurrentUpdateSet`.
     pub async fn set_current_update_set(&self, sys_id: &str) -> Result<Value, ClientError> {
+        self.set_current_update_set_or(sys_id, |e| async { e })
+            .await
+    }
+
+    /// [`Self::set_current_update_set`], running `on_failure` while the UI
+    /// session is still open, so the session's `/logout.do` is the
+    /// operation's last request (after e.g. the tool's fix-script lookup).
+    pub async fn set_current_update_set_or<T, F, Fut>(
+        &self,
+        sys_id: &str,
+        on_failure: F,
+    ) -> Result<Value, T>
+    where
+        F: FnOnce(ClientError) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let mut slot = None;
+        let result = match self.set_current_update_set_in(sys_id, &mut slot).await {
+            Ok(v) => Ok(v),
+            Err(e) => Err(on_failure(e).await),
+        };
+        end_slot(slot).await;
+        result
+    }
+
+    async fn set_current_update_set_in(
+        &self,
+        sys_id: &str,
+        slot: &mut Option<PickerSession>,
+    ) -> Result<Value, ClientError> {
         if !is_sys_id(sys_id) {
             return Err(ClientError::plain(
                 "update_set_sys_id must be a 32-character lowercase hexadecimal sys_id",
@@ -134,7 +179,7 @@ impl ServiceNowClient {
         let update_set = self
             .get_record("sys_update_set", sys_id, &RecordParams::default())
             .await?;
-        let session = self.open_ui_picker_session().await?;
+        let session = self.open_ui_picker_session(slot).await?;
         let previous = session.get(UPDATE_SET_PICKER).await?;
         let previous = previous
             .pointer("/result/current")
@@ -145,9 +190,7 @@ impl ServiceNowClient {
             .put(UPDATE_SET_PICKER, &json!({"name": name, "sysId": sys_id}))
             .await?;
         self.sleep_ms(500).await;
-        let current = session.get(UPDATE_SET_PICKER).await;
-        session.end().await;
-        let current = current?;
+        let current = session.get(UPDATE_SET_PICKER).await?;
         let current_id = str_at(&current, &["result", "current", "sysId"]);
         if current_id != Some(sys_id) {
             return Err(ClientError::plain(format!(
@@ -174,9 +217,12 @@ impl ServiceNowClient {
 
     /// `getCurrentUpdateSet`.
     pub async fn get_current_update_set(&self) -> Result<Value, ClientError> {
-        let session = self.open_ui_picker_session().await?;
-        let data = session.get(UPDATE_SET_PICKER).await;
-        session.end().await;
+        let mut slot = None;
+        let data = match self.open_ui_picker_session(&mut slot).await {
+            Ok(session) => session.get(UPDATE_SET_PICKER).await,
+            Err(e) => Err(e),
+        };
+        end_slot(slot).await;
         let data = data?;
         let current = data
             .pointer("/result/current")
@@ -203,10 +249,12 @@ impl ServiceNowClient {
     pub async fn set_current_application(&self, app_sys_id: &str) -> Result<Value, ClientError> {
         let start = self.now_ms();
         let mut auth_header: Option<String> = None;
-        match self
-            .set_current_application_inner(app_sys_id, start, &mut auth_header)
-            .await
-        {
+        let mut slot = None;
+        let result = self
+            .set_current_application_inner(app_sys_id, start, &mut auth_header, &mut slot)
+            .await;
+        end_slot(slot).await;
+        match result {
             Ok(v) => Ok(v),
             Err(error) => {
                 let state = self.state();
@@ -238,6 +286,7 @@ impl ServiceNowClient {
         app_sys_id: &str,
         start: i64,
         auth_header: &mut Option<String>,
+        slot: &mut Option<PickerSession>,
     ) -> Result<Value, ClientError> {
         if app_sys_id.is_empty() {
             return Err(ClientError::plain("app_sys_id is required"));
@@ -261,7 +310,7 @@ impl ServiceNowClient {
             }
             Err(e) => return Err(e),
         };
-        let session = self.open_ui_picker_session().await?;
+        let session = self.open_ui_picker_session(slot).await?;
         *auth_header = Some(session.auth_header.clone());
 
         let previous_scope = match session.get(APPLICATION_PICKER).await {
@@ -301,7 +350,6 @@ impl ServiceNowClient {
             .await?;
         self.sleep_ms(500).await;
         let verification = session.get(APPLICATION_PICKER).await;
-        session.end().await;
         let (verified, verification_error) = match verification {
             Ok(v) => {
                 let current = str_at(&v, &["result", "current"]);
