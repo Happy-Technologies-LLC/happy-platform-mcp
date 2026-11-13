@@ -81,6 +81,10 @@ jobs:
     env:
       PORT: '3000'
       PROXY_PORT: '3001'
+      # The proxy keeps the client's Host/Origin, so the suite's DNS-rebinding probe reaches
+      # the server unchanged; only the proxy's own authority is approved.
+      HAPPY_MCP_ALLOWED_HOSTS: 127.0.0.1:3001,localhost:3001
+      HAPPY_MCP_ALLOWED_ORIGINS: http://127.0.0.1:3001,http://localhost:3001
       # Registry-less `.env` fallback; the suite never reaches ServiceNow.
       SERVICENOW_INSTANCE_URL: https://conformance.example.invalid
       SERVICENOW_USERNAME: conformance
@@ -110,7 +114,7 @@ jobs:
             const http = require("node:http");
             const upstream = Number(process.env.PORT);
             http.createServer((req, res) => {
-              const headers = { ...req.headers, host: `127.0.0.1:${upstream}`,
+              const headers = { ...req.headers,
                 authorization: `Bearer ${process.env.HAPPY_MCP_API_TOKEN}` };
               const out = http.request({ host: "127.0.0.1", port: upstream, path: req.url,
                 method: req.method, headers }, (up) => {
@@ -128,4 +132,9 @@ jobs:
             sleep 1
           done
           curl -fsS "http://127.0.0.1:$PROXY_PORT/health"
-          npx -y @modelcontextprotocol/conformance server --url "http://127.0.0.1:$PROXY_PORT/mcp"
+          # Baseline: scenarios that need the suite's reference fixtures (test_* tools,
+          # resources/read, prompts/get, logging/setLevel). A new failure or a now-passing
+          # baseline entry fails the job, so remove entries as the tool lanes land.
+          npx -y @modelcontextprotocol/conformance@0.1.16 server \
+            --url "http://127.0.0.1:$PROXY_PORT/mcp" \
+            --expected-failures .github/conformance/server-baseline.yml
