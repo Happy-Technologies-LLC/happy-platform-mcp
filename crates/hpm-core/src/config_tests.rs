@@ -595,10 +595,13 @@ fn dotenv_read_takes_regular_files_up_to_64_kib() {
     );
     let sub = dir.path().join("sub");
     std::fs::create_dir_all(sub.join(".env")).unwrap();
-    assert_eq!(
-        read_dotenv(&sub.join(".env")),
-        Err(".env not loaded: not a regular file".to_owned())
-    );
+    // Unix opens a directory and reports "not a regular file"; Windows refuses the
+    // open itself ("Access is denied"). Either way the directory is not loaded.
+    let refused = read_dotenv(&sub.join(".env")).expect_err("a directory is not loaded");
+    #[cfg(unix)]
+    assert_eq!(refused, ".env not loaded: not a regular file");
+    #[cfg(not(unix))]
+    assert!(refused.starts_with(".env not loaded"), "{refused}");
 }
 
 #[cfg(unix)]
