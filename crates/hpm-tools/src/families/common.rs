@@ -1,12 +1,14 @@
 //! Helpers shared by every tool family.
 
 use hpm_core::client::ClientError;
-use hpm_core::client::error::{INVALID_PATH_SEGMENT_CODE, is_credential_error_code};
+use hpm_core::client::error::{
+    CREDENTIAL_ORIGIN_MISMATCH_CODE, INVALID_PATH_SEGMENT_CODE, is_credential_error_code,
+};
 use hpm_types::tool::MutationOutcome;
 
 /// What a failed single ServiceNow request proves about the server side:
 /// - `NotSent`: refused before the request left (stale generation before send,
-///   credential errors, a rejected table / sys_id path segment);
+///   credential errors incl. an origin-mismatched saved secret, a rejected table / sys_id path segment);
 /// - `Unknown`: it may have been acted on (stale generation after send,
 ///   502/503/504 from a gateway that may have forwarded it, transport errors);
 /// - `Failed`: any other HTTP status, i.e. ServiceNow answered and refused it.
@@ -15,9 +17,11 @@ pub fn failed_outcome(e: &ClientError) -> MutationOutcome {
         return MutationOutcome::Unknown;
     }
     let not_sent = e.is_stale()
-        || e.code
-            .as_deref()
-            .is_some_and(|c| c == INVALID_PATH_SEGMENT_CODE || is_credential_error_code(c));
+        || e.code.as_deref().is_some_and(|c| {
+            c == INVALID_PATH_SEGMENT_CODE
+                || c == CREDENTIAL_ORIGIN_MISMATCH_CODE
+                || is_credential_error_code(c)
+        });
     if not_sent {
         return MutationOutcome::NotSent;
     }
@@ -49,6 +53,12 @@ mod tests {
         );
         let path = path_segment("..", "table").expect_err("dot segment");
         assert_eq!(failed_outcome(&path), MutationOutcome::NotSent);
+        let moved = ClientError::new(
+            "CredentialResolutionError",
+            "m",
+            Some(CREDENTIAL_ORIGIN_MISMATCH_CODE),
+        );
+        assert_eq!(failed_outcome(&moved), MutationOutcome::NotSent);
         for status in [502, 503, 504] {
             let e = ClientError::plain("gateway").with_status(Some(status));
             assert_eq!(failed_outcome(&e), MutationOutcome::Unknown, "{status}");

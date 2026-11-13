@@ -16,6 +16,8 @@ pub const STALE_INSTANCE_CODE: &str = "INSTANCE_STALE_DURING_REQUEST";
 pub const STALE_AFTER_SEND_CODE: &str = "INSTANCE_STALE_AFTER_SEND";
 /// Table API path segment refused before any request was built.
 pub const INVALID_PATH_SEGMENT_CODE: &str = "INVALID_PATH_SEGMENT";
+/// A saved secret is bound to another origin than the registered instance URL.
+pub const CREDENTIAL_ORIGIN_MISMATCH_CODE: &str = "CREDENTIAL_ORIGIN_MISMATCH";
 
 const CREDENTIAL_ERROR_CODES: [&str; 4] = [
     "CREDENTIAL_NOT_FOUND",

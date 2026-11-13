@@ -379,6 +379,68 @@ fn ref_config(auth: AuthType, reference: Value) -> InstanceConfig {
 }
 
 #[tokio::test]
+async fn saved_secret_is_never_sent_to_a_new_origin() {
+    const REF: &str = "keychain:instance/dev/password";
+    let h = harness(
+        ref_config(AuthType::Basic, json!(REF)),
+        FakeTransport::new(ok_result(json!([]))),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    // A 6.x secret with no binding: the first use binds it to the origin now.
+    h.creds.put(REF, "kc-pass");
+    let q = RecordQuery::default();
+    assert!(h.client.get_records("x", &q).await.is_ok());
+    let store = InstanceCredentialStore::new(h.creds.clone());
+    assert_eq!(
+        store.bound_origin(REF).await.ok().flatten().as_deref(),
+        Some(URL.trim_end_matches('/'))
+    );
+
+    // Re-registering the name with a new URL keeps the reference: refused
+    // before any request reaches the new host.
+    let moved = "https://elsewhere.example.com";
+    h.client
+        .set_instance(InstanceConfig {
+            url: moved.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    let err = h.client.get_records("x", &q).await.expect_err("mismatch");
+    assert_eq!(err.code(), Some(error::CREDENTIAL_ORIGIN_MISMATCH_CODE));
+    assert!(
+        err.message.contains("instance credential set dev"),
+        "{}",
+        err.message
+    );
+    assert!(!err.message.contains("kc-pass"));
+    assert!(
+        h.transport
+            .requests()
+            .iter()
+            .all(|r| !r.url.starts_with(moved))
+    );
+
+    // Re-saving the credential clears the binding; the next use binds it to
+    // the new origin.
+    store
+        .set_secret(REF, hpm_types::credential::Secret::new("new-pass".into()))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    h.client
+        .set_instance(InstanceConfig {
+            url: moved.into(),
+            ..ref_config(AuthType::Basic, json!(REF))
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(h.client.get_records("x", &q).await.is_ok());
+    assert_eq!(
+        store.bound_origin(REF).await.ok().flatten().as_deref(),
+        Some(moved)
+    );
+}
+
+#[tokio::test]
 async fn basic_password_resolved_from_keychain_once() {
     let h = harness(
         ref_config(AuthType::Basic, json!("keychain:instance/dev/password")),
