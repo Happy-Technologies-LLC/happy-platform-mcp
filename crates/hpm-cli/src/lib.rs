@@ -17,12 +17,14 @@ use hpm_core::credential::provider::{InstanceClients, SingleUserCredentialProvid
 use hpm_core::keychain::LazySecretStore;
 use hpm_protocol::McpHandler;
 use hpm_tools::dispatcher::{Dispatcher, Services};
+use hpm_tools::families::docs::telemetry::UsageTracker;
 use hpm_tools::families::{self, FamilyDeps};
 use hpm_tools::registration::{RegistrationError, ToolRegistry};
 use hpm_tools::schema::{CompiledSchemaValidator, SchemaCompileError};
 use hpm_tools::single_user::{AllowAll, PassThrough, StderrAudit, UnloadedClassification};
 use hpm_types::context::{AdmissionKey, TrustedRoot};
 use hpm_types::credential::CredentialProvider;
+use hpm_types::dispatch::UsageSink;
 use hpm_types::operation::ScriptOperandGuard;
 
 pub mod cli;
@@ -42,6 +44,7 @@ pub fn updates_hint() -> String {
 fn single_user_services(
     registry: &ToolRegistry,
     credentials: Arc<dyn CredentialProvider>,
+    usage: Option<UsageTracker>,
 ) -> Result<Services, SchemaCompileError> {
     Ok(Services {
         validator: Arc::new(CompiledSchemaValidator::new(registry.tools())?),
@@ -54,8 +57,8 @@ fn single_user_services(
         script_guard: ScriptOperandGuard {
             shared_account: false,
         },
-        // Lane E wires the 6.2.0 usage telemetry.
-        usage: None,
+        // 6.2.0 usage telemetry: opt-in, counts registered tool names only.
+        usage: usage.map(|tracker| Arc::new(tracker) as Arc<dyn UsageSink>),
     })
 }
 
@@ -71,6 +74,7 @@ pub struct SingleUser {
     working_dir: Option<PathBuf>,
     docs_cache_dir: Option<PathBuf>,
     docs_only: bool,
+    usage: Option<UsageTracker>,
     extra: Vec<ExtraTools>,
 }
 
@@ -95,6 +99,7 @@ impl SingleUser {
             working_dir: None,
             docs_cache_dir: None,
             docs_only: false,
+            usage: None,
             extra: Vec::new(),
         }
     }
@@ -120,6 +125,13 @@ impl SingleUser {
     /// `--docs-only`: list and serve only the 6.2.0 `docsOnlyList` tools.
     pub fn docs_only(mut self, on: bool) -> Self {
         self.docs_only = on;
+        self
+    }
+
+    /// Counts each `tools/call` in `tracker` (6.2.0 `usageTracker.record`). Default:
+    /// no tracker, nothing counted. The caller keeps a clone to flush on shutdown.
+    pub fn usage(mut self, tracker: UsageTracker) -> Self {
+        self.usage = Some(tracker);
         self
     }
 
@@ -159,18 +171,24 @@ impl SingleUser {
             registry.retain_docs_only();
         }
         let credentials = Arc::new(SingleUserCredentialProvider::new(clients));
-        let services = single_user_services(&registry, credentials).map_err(|e| e.to_string())?;
+        let services =
+            single_user_services(&registry, credentials, self.usage).map_err(|e| e.to_string())?;
         Ok(Arc::new(Dispatcher::new(registry, services, key)))
     }
 }
 
 /// Mints the process's one `AdmissionKey` and builds the shared dispatcher over the
 /// OS keychain and the instance registry of `config`. Errors are ready to print
-/// after the `NAME: ` prefix.
-fn single_user_dispatcher(config: Arc<ConfigManager>) -> Result<Arc<Dispatcher>, String> {
+/// after the `NAME: ` prefix. `usage` counts the calls (6.2.0 `defaultUsageTracker()`).
+fn single_user_dispatcher(
+    config: Arc<ConfigManager>,
+    usage: &UsageTracker,
+) -> Result<Arc<Dispatcher>, String> {
     let key = AdmissionKey::mint()
         .ok_or_else(|| "admission key already minted in this process".to_string())?;
-    SingleUser::from_process(config)?.dispatcher(key)
+    SingleUser::from_process(config)?
+        .usage(usage.clone())
+        .dispatcher(key)
 }
 
 fn multi_thread_runtime() -> Result<tokio::runtime::Runtime, String> {
@@ -197,7 +215,9 @@ pub fn serve_stdio() -> ExitCode {
         }
     };
     let config = Arc::new(ConfigManager::from_process_env());
-    let dispatcher = match single_user_dispatcher(config.clone()) {
+    let usage = UsageTracker::from_env(config.env());
+    usage.set_transport("stdio");
+    let dispatcher = match single_user_dispatcher(config.clone(), &usage) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("{NAME}: {e}");
@@ -207,7 +227,13 @@ pub fn serve_stdio() -> ExitCode {
     let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
         .registry(config)
         .build();
-    match runtime.block_on(hpm_protocol::stdio::serve_handler(handler)) {
+    let served = runtime.block_on(async {
+        let served = hpm_protocol::stdio::serve_handler(handler).await;
+        usage.stop();
+        usage.flush().await;
+        served
+    });
+    match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{NAME}: {e}");

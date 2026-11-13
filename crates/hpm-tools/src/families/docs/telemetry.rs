@@ -442,6 +442,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn off_by_default_sends_nothing() {
+        // No `HAPPY_MCP_TELEMETRY` in the environment, a live listener as the URL.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let env = env(&[("HAPPY_MCP_TELEMETRY_URL", url.as_str())]);
+        let tracker = UsageTracker::from_env(&env);
+        assert!(!tracker.enabled());
+        assert_eq!(tracker.describe(), "Telemetry: off");
+        for _ in 0..FLUSH_THRESHOLD + 1 {
+            tracker.record("SN-Docs-Get");
+        }
+        assert_eq!(tracker.size(), 0);
+        assert!(!tracker.flush().await);
+        let accepted = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
+        assert!(accepted.is_err(), "a disabled tracker must not connect");
+    }
+
+    #[tokio::test]
+    async fn the_flush_threshold_posts_without_waiting_for_the_timer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let tracker = UsageTracker::new(true, url);
+        for _ in 0..FLUSH_THRESHOLD {
+            tracker.record("SN-Docs-Get");
+        }
+        let accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await;
+        assert!(accepted.is_ok(), "the 200th call flushes");
+        tracker.stop();
+    }
+
+    #[tokio::test]
     async fn send_errors_are_swallowed() {
         // A port nothing listens on.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
