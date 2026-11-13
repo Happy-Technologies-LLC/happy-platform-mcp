@@ -9,13 +9,13 @@ use hpm_types::tool::{MutationOutcome, ToolError};
 use serde_json::{Value, json};
 
 use super::common::{
-    Done, done, error_for, failed_outcome, metadata, now_iso, ok_text, ok_text_explicit, pinned,
-    write_fix_script,
+    Done, done, error_for, metadata, now_iso, ok_text, ok_text_explicit, pinned, write_fix_script,
 };
 use super::js_text::{
     collapse_whitespace, pretty_opt, preview, text, truthy, truthy_opt, utf16_prefix,
 };
 use crate::families::FamilyDeps;
+use crate::families::common::failed_outcome;
 use crate::logic::generated_scripts::{FixScriptFile, file_timestamp, validate_fix_script_name};
 use crate::logic::js;
 
@@ -291,6 +291,32 @@ fn render_processor(input: &ExecInput<'_>, result: &Value) -> (bool, String) {
     (ok, lines.join("\n"))
 }
 
+/// What to do when the processor did not run the script.
+#[derive(Debug, PartialEq, Eq)]
+enum NotRunRoute {
+    /// A scoped script must not escape to the scheduler's global session.
+    Refuse(String),
+    /// Hand the script to `sys_trigger`, prefixed by this notice.
+    Fallback(String),
+}
+
+fn not_run_route(input: &ExecInput<'_>, reason: &str) -> NotRunRoute {
+    if input.scoped() {
+        return NotRunRoute::Refuse(format!(
+            "❌ The script was NOT run. The /sys.scripts.do processor did not run it ({reason}), and the sys_trigger fallback was not used because it cannot run a script in the requested scope '{}'.",
+            text(input.scope)
+        ));
+    }
+    NotRunRoute::Fallback(format!(
+        "↪️ Method: sys_trigger fallback. The /sys.scripts.do processor did not run the script ({reason}), so it was handed to a sys_trigger job instead. That job runs in the scheduler's session, not yours: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), and no rollback context is recorded{}.\n\n",
+        if input.record_for_rollback {
+            " (record_for_rollback could not be honored)"
+        } else {
+            ""
+        }
+    ))
+}
+
 pub(super) fn execute_background_script<'a>(
     deps: &'a FamilyDeps,
     ctx: &'a RequestContext,
@@ -305,6 +331,11 @@ pub(super) fn execute_background_script<'a>(
             Ok(c) => c,
             Err(d) => return d,
         };
+        // Cancellation: the dispatcher checks once at admission; the script
+        // POST (or trigger insert) is the first write, so check right before it.
+        if !ctx.is_live() {
+            return done(MutationOutcome::NotSent, Err(ToolError::Cancelled));
+        }
         if !input.wait {
             return run_via_trigger(deps, &client, &input, "").await;
         }
@@ -335,24 +366,17 @@ pub(super) fn execute_background_script<'a>(
         };
         let reason = error.reason.as_deref().unwrap_or("undefined");
         match error.code.as_deref() {
-            Some(NOT_RUN) if input.scoped() => done(
-                MutationOutcome::Failed,
-                Err(ToolError::Text(format!(
-                    "❌ The script was NOT run. The /sys.scripts.do processor did not run it ({reason}), and the sys_trigger fallback was not used because it cannot run a script in the requested scope '{}'.",
-                    text(input.scope)
-                ))),
-            ),
-            Some(NOT_RUN) => {
-                let notice = format!(
-                    "↪️ Method: sys_trigger fallback. The /sys.scripts.do processor did not run the script ({reason}), so it was handed to a sys_trigger job instead. That job runs in the scheduler's session, not yours: tracked configuration writes may be captured into the Default update set (verify sys_update_xml and move rows with SN-Move-Records-To-Update-Set), and no rollback context is recorded{}.\n\n",
-                    if input.record_for_rollback {
-                        " (record_for_rollback could not be honored)"
-                    } else {
-                        ""
+            Some(NOT_RUN) => match not_run_route(&input, reason) {
+                NotRunRoute::Refuse(message) => {
+                    done(MutationOutcome::Failed, Err(ToolError::Text(message)))
+                }
+                NotRunRoute::Fallback(notice) => {
+                    if !ctx.is_live() {
+                        return done(MutationOutcome::NotSent, Err(ToolError::Cancelled));
                     }
-                );
-                run_via_trigger(deps, &client, &input, &notice).await
-            }
+                    run_via_trigger(deps, &client, &input, &notice).await
+                }
+            },
             Some(UNKNOWN_OUTCOME) => {
                 let hint = input.description_text().map_or_else(String::new, |d| {
                     format!(
@@ -444,6 +468,24 @@ pub(super) fn create_fix_script<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_not_run_refuses_instead_of_trigger_fallback() {
+        let args = json!({"script": "x", "scope": "x_app"});
+        let input = validate_exec(&args).expect("valid");
+        assert_eq!(
+            not_run_route(&input, "not authorized"),
+            NotRunRoute::Refuse(
+                "❌ The script was NOT run. The /sys.scripts.do processor did not run it (not authorized), and the sys_trigger fallback was not used because it cannot run a script in the requested scope 'x_app'.".to_owned()
+            )
+        );
+        let args = json!({"script": "x"});
+        let input = validate_exec(&args).expect("valid");
+        assert!(matches!(
+            not_run_route(&input, "not authorized"),
+            NotRunRoute::Fallback(n) if n.ends_with("(record_for_rollback could not be honored).\n\n")
+        ));
+    }
 
     fn err(args: Value) -> &'static str {
         match validate_exec(&args) {

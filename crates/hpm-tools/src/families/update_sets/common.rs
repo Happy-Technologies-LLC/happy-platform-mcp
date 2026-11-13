@@ -9,6 +9,7 @@ use hpm_types::tool::{HandlerCompletion, MutationOutcome, ResultBody, ToolError}
 use serde_json::Value;
 
 use crate::families::FamilyDeps;
+use crate::families::common::failed_outcome;
 use crate::logic::generated_scripts::{self, FixScriptFile};
 use crate::logic::js;
 
@@ -45,21 +46,6 @@ pub(super) async fn pinned(
         .client(ctx)
         .await
         .map_err(|e| done(outcome, Err(e)))
-}
-
-/// What a failed request proves about the server side.
-pub(super) fn failed_outcome(e: &ClientError) -> MutationOutcome {
-    let pre_send = e.is_stale()
-        || e.code
-            .as_deref()
-            .is_some_and(hpm_core::client::error::is_credential_error_code);
-    if pre_send {
-        MutationOutcome::NotSent
-    } else if e.status.is_some_and(|s| s != 0) {
-        MutationOutcome::Failed
-    } else {
-        MutationOutcome::Unknown
-    }
 }
 
 /// The 6.2.0 generic `Error: {message}` failure. When something already

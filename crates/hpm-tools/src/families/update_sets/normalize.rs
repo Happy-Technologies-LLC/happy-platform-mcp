@@ -76,12 +76,29 @@ pub(super) fn set_current_application(
 }
 
 pub(super) fn execute_background_script(
-    _: &Value,
+    args: &Value,
     i: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
-    set(vec![
-        op("SN-Execute-Background-Script", Action::Execute, i).at("script"),
-    ])
+    const T: &str = "SN-Execute-Background-Script";
+    let mut ops = vec![op(T, Action::Execute, i).at("script")];
+    if truthy_opt(args.get("scope")) {
+        // Scope resolution; a scoped script never falls back to sys_trigger.
+        ops.push(on(T, Action::Read, "sys_scope", i).at("scope"));
+    } else {
+        // sys_trigger fallback (wait:false, or the processor did not run it).
+        ops.push(on(T, Action::Create, "sys_trigger", i).at("script"));
+        ops.push(on(T, Action::Update, "sys_trigger", i).at("script"));
+    }
+    ops.push(
+        on(T, Action::Read, "sys_script_execution_history", i)
+            .returned_fields(fields(&["rollback_context"])),
+    );
+    ops.push(
+        on(T, Action::Read, "syslog", i)
+            .predicate_fields(fields(&["message", "source", "sys_created_on"]))
+            .returned_fields(fields(&["message", "sys_created_on"])),
+    );
+    set(ops)
 }
 
 pub(super) fn create_fix_script(

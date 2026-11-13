@@ -9,11 +9,12 @@ use hpm_types::tool::{MutationOutcome, ToolError};
 use serde_json::{Map, Value, json};
 
 use super::common::{
-    Done, done, error_for, failed_outcome, now_iso, ok_text, ok_text_explicit, pinned, read_failed,
+    Done, done, error_for, now_iso, ok_text, ok_text_explicit, pinned, read_failed,
     write_fix_script,
 };
 use super::js_text::{array_index, or, pretty, put, text, truthy, truthy_opt};
 use crate::families::FamilyDeps;
+use crate::families::common::failed_outcome;
 use crate::logic::generated_scripts::{
     FixScriptFile, file_timestamp, to_file_name_fragment, to_javascript_string_literal,
 };
@@ -258,6 +259,13 @@ pub(super) fn inspect_update_set<'a>(
 ) -> BoxFut<'a, Done> {
     Box::pin(async move {
         let update_set_id = text(args.get("update_set"));
+        // Interpolated into an encoded query below: refuse anything but a sys_id
+        // before any request (7.0 deviation; 6.2.0 sent it unchecked).
+        if let Err(e) =
+            crate::logic::bulk_limits::assert_sys_id(args.get("update_set"), "update_set")
+        {
+            return done(MutationOutcome::NotSent, Err(ToolError::Message(e.message)));
+        }
         let show_components = args.get("show_components").is_none_or(truthy);
         let client = match pinned(deps, ctx, MutationOutcome::NotAMutation).await {
             Ok(c) => c,

@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 use super::common::{Done, Progress, after_failure, done, error_for, ok_text, pinned};
 use super::js_text::{pretty, put, text, truthy};
 use crate::families::FamilyDeps;
+use crate::families::common::failed_outcome;
 use crate::logic::bulk_limits::{
     MAX_UPDATE_SET_QUERY_RECORDS, UPDATE_SET_ID_CHUNK_SIZE, UPDATE_SET_QUERY_PAGE_SIZE, is_sys_id,
     validate_update_set_clone, validate_update_set_move,
@@ -241,7 +242,7 @@ pub(super) fn move_records_to_update_set<'a>(
                         }
                     }
                     Err(e) => {
-                        unknown |= e.status.is_none_or(|s| s == 0) && !e.is_stale();
+                        unknown |= failed_outcome(&e) == MutationOutcome::Unknown;
                         let mut item = Map::new();
                         put(&mut item, "sys_id", sys_id);
                         item.insert("error".into(), json!(e.message));
@@ -488,6 +489,30 @@ pub(super) fn clone_update_set<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_source_name_refuses_c1_controls_and_line_separators() {
+        for bad in [
+            "Default\u{85}",
+            "Default\u{9b}x",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a^b",
+            "a\u{7f}",
+        ] {
+            let mut opts = Map::new();
+            opts.insert(
+                "time_range".into(),
+                json!({"start": "2025-01-01 00:00:00", "end": "2025-01-02 00:00:00"}),
+            );
+            opts.insert("source_update_set".into(), json!(bad));
+            let err = validate_update_set_move(Some(&json!("a".repeat(32))), &opts).expect_err(bad);
+            assert_eq!(
+                err.message,
+                "source_update_set must not contain '^' or control characters"
+            );
+        }
+    }
 
     #[test]
     fn progress_frequency_matches_6_2_0() {

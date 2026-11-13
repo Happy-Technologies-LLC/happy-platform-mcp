@@ -10,11 +10,10 @@ use hpm_types::context::RequestContext;
 use hpm_types::tool::{MutationOutcome, ToolError};
 use serde_json::{Map, Value, json};
 
-use super::common::{
-    Done, Progress, after_failure, done, error_for, failed_outcome, ok_text, pinned,
-};
+use super::common::{Done, Progress, after_failure, done, error_for, ok_text, pinned};
 use super::js_text::{or, put, text, truthy, truthy_opt};
 use crate::families::FamilyDeps;
+use crate::families::common::failed_outcome;
 use crate::logic::bulk_limits::validate_workflow_spec;
 
 /// 6.2.0 handler crash after `createCompleteWorkflow` resolves: its result has
