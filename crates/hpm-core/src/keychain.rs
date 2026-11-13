@@ -410,6 +410,17 @@ impl SecretStore for MemorySecretStore {
 
 pub const CREDENTIAL_PREFIX: &str = "keychain:instance/";
 
+/// Keychain account holding the origin a saved secret is bound to (owner
+/// rule: a secret is only sent to that origin). Same service as the secret.
+pub fn origin_binding_account(reference: &str) -> String {
+    format!(
+        "keychain:instance-origin/{}",
+        reference
+            .strip_prefix(CREDENTIAL_PREFIX)
+            .unwrap_or(reference)
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialType {
     Password,
@@ -587,6 +598,18 @@ impl InstanceCredentialStore {
                 Secret::new(value.to_owned()),
             )
             .await
+            .map_err(store_error)?;
+        self.clear_origin_binding(&parsed.reference).await
+    }
+
+    /// A (re-)saved or deleted secret loses its origin binding; the next use
+    /// binds it to the origin registered then. Written after the secret, so a
+    /// failed clear leaves the new secret bound to the old origin (fail closed).
+    async fn clear_origin_binding(&self, reference: &str) -> Result<(), CodedError> {
+        self.store
+            .delete(&self.service, &origin_binding_account(reference))
+            .await
+            .map(|_| ())
             .map_err(store_error)
     }
 
@@ -627,6 +650,7 @@ impl InstanceCredentialStore {
         {
             return Err(keychain_operation_failed());
         }
+        self.clear_origin_binding(&parsed.reference).await?;
         Ok(true)
     }
 }
