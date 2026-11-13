@@ -463,17 +463,19 @@ mod tests {
     #[test]
     fn resolves_family_cache_paths_under_a_dedicated_files_directory_never_the_index_database() {
         let cache = Path::new("/tmp/cache");
+        // Built with the same absolute + join the resolver uses (`D:\tmp\cache\...` on Windows).
+        let files = std::path::absolute(cache).unwrap().join("files");
         assert_eq!(
             resolve_docs_cache_path(cache, "australia", Some("foo/bar.md")).unwrap(),
-            Path::new("/tmp/cache/files/australia/foo/bar.md")
+            files.join("australia").join("foo").join("bar.md")
         );
         assert_eq!(
             resolve_docs_cache_path(cache, "australia", None).unwrap(),
-            Path::new("/tmp/cache/files/australia")
+            files.join("australia")
         );
         assert_eq!(
             resolve_docs_cache_path(cache, "index.sqlite", None).unwrap(),
-            Path::new("/tmp/cache/files/index.sqlite")
+            files.join("index.sqlite")
         );
         let error = resolve_docs_cache_path(cache, "..", Some("x.md")).unwrap_err();
         assert!(

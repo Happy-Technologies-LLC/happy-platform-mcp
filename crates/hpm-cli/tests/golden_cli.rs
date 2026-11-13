@@ -340,7 +340,7 @@ async fn replay(file: &Path) -> Result<(), String> {
         }
     };
     let tmp_str = tmp.path().to_str().unwrap();
-    let clean = |b: &[u8]| String::from_utf8_lossy(b).replace(tmp_str, "{{TMP}}");
+    let clean = |b: &[u8]| normalize_tmp(String::from_utf8_lossy(b).replace(tmp_str, "{{TMP}}"));
 
     let mut problems = Vec::new();
     let mut check = |what: &str, got: Value, want: &Value| {
@@ -434,4 +434,42 @@ async fn cli_goldens_replay() {
         files.len(),
         failures.join("\n\n")
     );
+}
+
+/// Goldens are platform-neutral: on Windows the path text after `{{TMP}}` uses `\`
+/// (as Node `path.resolve` does there), so fold each separator run (one `\`, or `\\` when
+/// JSON-escaped) to `/`. Only the path that follows `{{TMP}}` is touched, up to the first
+/// whitespace or delimiter.
+#[cfg(windows)]
+fn normalize_tmp(text: String) -> String {
+    const MARK: &str = "{{TMP}}";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(MARK) {
+        out.push_str(&rest[..at + MARK.len()]);
+        rest = &rest[at + MARK.len()..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | ',' | ']' | '}'))
+            .unwrap_or(rest.len());
+        let mut prev_backslash = false;
+        for c in rest[..end].chars() {
+            if c == '\\' {
+                if !prev_backslash {
+                    out.push('/');
+                }
+                prev_backslash = true;
+            } else {
+                out.push(c);
+                prev_backslash = false;
+            }
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(not(windows))]
+fn normalize_tmp(text: String) -> String {
+    text
 }

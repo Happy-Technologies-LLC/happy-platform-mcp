@@ -1130,6 +1130,16 @@ mod tests {
             error.message(),
             "ServiceNow docs sync exceeded its 150 ms deadline"
         );
+        // A store job already running on the blocking pool when the deadline fires cannot be
+        // interrupted (see `run_blocking`); the store closes right after it, so wait for that.
+        let wait = Instant::now();
+        while stats.counts().1 == 0 {
+            assert!(
+                wait.elapsed() < Duration::from_secs(5),
+                "store was never closed"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert_eq!(stats.counts(), (1, 1));
     }
 

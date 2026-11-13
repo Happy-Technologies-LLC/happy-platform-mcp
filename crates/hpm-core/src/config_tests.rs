@@ -12,7 +12,12 @@ fn obj(v: Value) -> Object {
 
 const HOME: &str = "/example-home";
 const LEGACY: &str = "/global/node_modules/happy-platform-mcp/config/servicenow-instances.json";
-const USER: &str = "/example-home/.config/happy-platform-mcp/instances.json";
+
+/// `~/.config/happy-platform-mcp/instances.json` under `HOME`, joined with the platform
+/// separator exactly as the resolver does.
+fn user() -> PathBuf {
+    user_config_path(Path::new(HOME))
+}
 
 fn paths(env: &[(&str, &str)], exists: &dyn Fn(&Path) -> bool) -> ConfigPaths {
     resolve_config_paths(
@@ -36,7 +41,7 @@ fn explicit_path_with_home_expansion() {
     let p = paths(&[("HAPPY_CONFIG_PATH", "~/happy/instances.json")], &|_| {
         false
     });
-    let expected = PathBuf::from("/example-home/happy/instances.json");
+    let expected = resolve_path(&Path::new(HOME).join("happy/instances.json"));
     assert_eq!(
         p,
         ConfigPaths {
@@ -61,10 +66,12 @@ fn relative_explicit_path_resolves_against_cwd() {
 
 #[test]
 fn user_legacy_and_default_precedence() {
-    let user = paths(&[], &|c| c == Path::new(USER));
+    let user = user();
+    let user = user.to_str();
+    let found = paths(&[], &|c| Some(c.to_str().unwrap()) == user);
     assert_eq!(
-        (user.read_path.to_str(), user.source),
-        (Some(USER), ConfigSource::User)
+        (found.read_path.to_str(), found.source),
+        (user, ConfigSource::User)
     );
     let legacy = paths(&[], &|c| c == Path::new(LEGACY));
     assert_eq!(
@@ -73,7 +80,7 @@ fn user_legacy_and_default_precedence() {
             legacy.write_path.to_str(),
             legacy.source
         ),
-        (Some(LEGACY), Some(USER), ConfigSource::Legacy)
+        (Some(LEGACY), user, ConfigSource::Legacy)
     );
     let none = paths(&[], &|_| false);
     assert_eq!(
@@ -82,7 +89,7 @@ fn user_legacy_and_default_precedence() {
             none.write_path.to_str(),
             none.source
         ),
-        (Some(USER), Some(USER), ConfigSource::User)
+        (user, user, ConfigSource::User)
     );
 }
 
