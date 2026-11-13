@@ -14,7 +14,9 @@ use zeroize::Zeroizing;
 
 use super::limits::ConfigError;
 
-const TOKEN_GUIDANCE: &str = "generate one with `openssl rand -hex 32`";
+/// Owner decision O3 (2026-11-13): the token comes only from the process
+/// environment; `.env` files are not read (6.2.0 loaded them).
+const TOKEN_GUIDANCE: &str = "generate one with `openssl rand -hex 32` and set it in the process environment (.env files are not read)";
 
 pub const API_TOKEN_CLIENT_ID: &str = "happy-mcp-api-token";
 

@@ -613,11 +613,11 @@ fn second_signal_forces_immediate_exit() {
 #[test]
 fn startup_refuses_without_a_valid_token() {
     let required = format!(
-        "{REFUSED}HAPPY_MCP_API_TOKEN is required for the HTTP transport; generate one with `openssl rand -hex 32`\n"
+        "{REFUSED}HAPPY_MCP_API_TOKEN is required for the HTTP transport; generate one with `openssl rand -hex 32` and set it in the process environment (.env files are not read)\n"
     );
     assert_eq!(refused(&[("HAPPY_MCP_API_TOKEN", "")]), (1, required));
     let malformed = format!(
-        "{REFUSED}HAPPY_MCP_API_TOKEN must be 32 random bytes encoded as 64 hex or 43 base64url characters; generate one with `openssl rand -hex 32`\n"
+        "{REFUSED}HAPPY_MCP_API_TOKEN must be 32 random bytes encoded as 64 hex or 43 base64url characters; generate one with `openssl rand -hex 32` and set it in the process environment (.env files are not read)\n"
     );
     assert_eq!(refused(&[("HAPPY_MCP_API_TOKEN", "short")]), (1, malformed));
 }
