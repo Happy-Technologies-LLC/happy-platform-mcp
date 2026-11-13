@@ -36,8 +36,8 @@ const REGISTER: &str = "SN-Register-Instance";
 /// instances through the `RegistryStore`, and register one. Every read is a
 /// non-secret summary; there is no raw entry, document or write handle.
 pub trait InstanceRegistryAccess: RegistryStore {
-    /// Non-secret summary of one instance (6.2.0 `getInstance` errors).
-    fn instance_summary(&self, name: &str) -> Result<InstanceSummary, CodedError>;
+    /// Non-secret fields of one instance (6.2.0 `getInstance` errors).
+    fn instance_summary(&self, name: &str) -> Result<SelectedInstance, CodedError>;
     fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError>;
     fn registry_version(&self) -> u64;
     /// Registry validation of new instance metadata (no write).
@@ -62,15 +62,27 @@ pub trait InstanceRegistryAccess: RegistryStore {
     fn reload(&self) -> Result<(), CodedError>;
 }
 
+/// What `SN-Set-Instance` echoes, copied as stored: `url` and `description`
+/// keep their JSON values, and a present empty description stays (6.2.0
+/// `description: instance.description`; only an absent one is omitted).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedInstance {
+    pub name: String,
+    pub url: Value,
+    pub description: Option<Value>,
+}
+
 impl InstanceRegistryAccess for ConfigManager {
-    fn instance_summary(&self, name: &str) -> Result<InstanceSummary, CodedError> {
+    fn instance_summary(&self, name: &str) -> Result<SelectedInstance, CodedError> {
         let entry = self.get_instance(name)?;
-        let text = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or_default();
-        Ok(InstanceSummary {
-            name: text("name").to_owned(),
-            url: text("url").to_owned(),
-            default: entry.get("default") == Some(&Value::Bool(true)),
-            description: text("description").to_owned(),
+        Ok(SelectedInstance {
+            name: entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            url: entry.get("url").cloned().unwrap_or(Value::Null),
+            description: entry.get("description").cloned(),
         })
     }
     fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError> {
@@ -325,21 +337,30 @@ impl SetInstance {
                 Err(ToolError::Message(e.to_string())),
             );
         }
-        let url = instance.url;
-        eprintln!("🔄 Switched to instance: {instance_name} ({url})");
-        let mut summary = Object::new();
-        summary.insert("name".into(), instance_name.clone().into());
-        summary.insert("url".into(), url.into());
-        if !instance.description.is_empty() {
-            summary.insert("description".into(), instance.description.into());
-        }
-        committed(text(&json!({
-            "success": true,
-            "message": format!("Switched to ServiceNow instance: {instance_name}"),
-            "instance": summary,
-        })))
+        eprintln!(
+            "🔄 Switched to instance: {instance_name} ({})",
+            instance.url.as_str().unwrap_or_default()
+        );
+        committed(text(&set_response(&instance_name, instance)))
     }
+}
 
+/// 6.2.0 `SN-Set-Instance` success body.
+fn set_response(instance_name: &str, instance: SelectedInstance) -> Value {
+    let mut summary = Object::new();
+    summary.insert("name".into(), instance_name.into());
+    summary.insert("url".into(), instance.url);
+    if let Some(d) = instance.description {
+        summary.insert("description".into(), d);
+    }
+    json!({
+        "success": true,
+        "message": format!("Switched to ServiceNow instance: {instance_name}"),
+        "instance": summary,
+    })
+}
+
+impl SetInstance {
     fn list(&self, ctx: &RequestContext) -> Result<ResultBody, ToolError> {
         let instances = self
             .config
@@ -1622,5 +1643,40 @@ mod tests {
         let summary = access.instance_summary("default").unwrap();
         assert_eq!(summary.url, "https://env.example.com");
         assert!(!format!("{summary:?}").contains("pw-inline-s3cret"));
+    }
+    /// 6.2.0 echoes `description: instance.description`: a stored empty
+    /// description stays in the `SN-Set-Instance` response; an absent one is
+    /// omitted.
+    #[test]
+    fn set_instance_keeps_an_empty_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("instances.json");
+        std::fs::write(
+            &file,
+            json!({"version": 1, "instances": [
+                {"name": "prod", "url": "https://prod.example.com", "authType": "oauth",
+                 "grantType": "authorization_code", "clientId": "c", "default": true,
+                 "description": ""},
+                {"name": "test", "url": "https://test.example.com", "authType": "oauth",
+                 "grantType": "authorization_code", "clientId": "c"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let env = Env::from_pairs(&[]);
+        let cm = ConfigManager::new(
+            Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+            env,
+        );
+        let access: &dyn InstanceRegistryAccess = &cm;
+        let prod = pretty(&set_response(
+            "prod",
+            access.instance_summary("prod").unwrap(),
+        ));
+        assert!(prod.contains("\"description\": \"\""), "{prod}");
+        let test = pretty(&set_response(
+            "test",
+            access.instance_summary("test").unwrap(),
+        ));
+        assert!(!test.contains("description"), "{test}");
     }
 }
