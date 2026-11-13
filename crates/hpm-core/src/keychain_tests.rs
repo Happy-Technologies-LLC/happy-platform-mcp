@@ -4,8 +4,86 @@
 use super::*;
 
 fn store() -> (Arc<MemorySecretStore>, InstanceCredentialStore) {
+    let (mem, s, _) = recorded_store();
+    (mem, s)
+}
+
+type Pauses = Arc<std::sync::Mutex<Vec<std::time::Duration>>>;
+
+/// The mismatch pause is recorded, never slept.
+fn recorded_store() -> (Arc<MemorySecretStore>, InstanceCredentialStore, Pauses) {
     let mem = Arc::new(MemorySecretStore::new());
-    (mem.clone(), InstanceCredentialStore::new(mem))
+    let pauses: Pauses = Arc::default();
+    let seen = pauses.clone();
+    let s = InstanceCredentialStore::new(mem.clone()).with_mismatch_pause(Arc::new(move |d| {
+        seen.lock().unwrap().push(d);
+        Box::pin(async {})
+    }));
+    (mem, s, pauses)
+}
+
+#[test]
+fn secrets_equal_is_byte_exact() {
+    assert!(secrets_equal("pw", "pw"));
+    assert!(!secrets_equal("pw", "pw\0"));
+    assert!(!secrets_equal("pw\0", "pw"));
+    assert!(!secrets_equal("", "\0"));
+    // The HMAC-key case (a >64-byte key equals its SHA-256 digest) needs the
+    // raw digest bytes as the other operand; they are not valid UTF-8, so it
+    // is unreachable for `&str` and is not tested here (A-8). The NUL cases
+    // above are what failed under the old key-based HMAC.
+    let long = "k".repeat(100);
+    assert!(secrets_equal(&long, &long.clone()));
+}
+
+/// CR-13 / A-1: every guess, matching or not, waits the same fixed delay, so
+/// the time to any result does not reveal the outcome.
+#[tokio::test]
+async fn every_bind_guess_waits_the_fixed_delay() {
+    let (mem, s, pauses) = recorded_store();
+    let r = "keychain:instance/old/password";
+    mem.insert(SERVICE_NAME, r, "legacy");
+    s.verify_secret(r, "legacy").await.unwrap();
+    assert_eq!(*pauses.lock().unwrap(), vec![BIND_MISMATCH_DELAY]);
+    let e = s.verify_secret(r, "guess").await.unwrap_err();
+    assert_eq!(e.code, "CREDENTIAL_SECRET_MISMATCH");
+    assert_eq!(pauses.lock().unwrap().len(), 2);
+    s.bind_origin(r, ORIGIN, "guess").await.unwrap_err();
+    s.bind_origin(r, ORIGIN, "legacy").await.unwrap();
+    assert_eq!(pauses.lock().unwrap().len(), 4);
+    assert_eq!(BIND_MISMATCH_DELAY, std::time::Duration::from_secs(1));
+}
+
+fn delete_precedes_set(mem: &MemorySecretStore, account: &str) -> bool {
+    let calls = mem.calls();
+    let set = calls
+        .iter()
+        .rposition(|(op, a)| *op == MemoryOp::Set && a == account);
+    let delete = calls
+        .iter()
+        .rposition(|(op, a)| *op == MemoryOp::Delete && a == account);
+    matches!((delete, set), (Some(d), Some(s)) if d < s)
+}
+
+/// CR-10/CR-11: a planted secret or binding item is deleted, then created,
+/// never updated in place (an update keeps a squatter's ACL).
+#[tokio::test]
+async fn writes_delete_planted_items_before_creating() {
+    let (mem, s) = store();
+    let r = "keychain:instance/new/password";
+    let binding = origin_binding_account(r);
+    mem.insert(SERVICE_NAME, r, "squatted");
+    mem.insert(SERVICE_NAME, &binding, "squatted");
+    s.set_secret(r, "fixture-secret", ORIGIN).await.unwrap();
+    assert!(delete_precedes_set(&mem, r));
+    assert!(delete_precedes_set(&mem, &binding));
+    assert_eq!(s.bound_origin(r).await.unwrap().as_deref(), Some(ORIGIN));
+
+    let (mem, s) = store();
+    mem.insert(SERVICE_NAME, r, "legacy");
+    mem.insert(SERVICE_NAME, &binding, "squatted");
+    s.bind_origin(r, ORIGIN, "legacy").await.unwrap();
+    assert!(delete_precedes_set(&mem, &binding));
 }
 
 #[test]

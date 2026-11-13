@@ -407,7 +407,9 @@ impl Harness {
         let mut err = Vec::new();
         let mut ctx = CliContext {
             registry: self.registry,
-            credentials: InstanceCredentialStore::new(self.secrets.clone()),
+            // CR-13: the bind mismatch delay is never slept in tests.
+            credentials: InstanceCredentialStore::new(self.secrets.clone())
+                .with_mismatch_pause(Arc::new(|_| Box::pin(async {}))),
             prompter: self.prompter,
             tty: self.tty,
             probe: self.probe,
@@ -752,6 +754,91 @@ async fn basic_probe_refuses_planted_binding_for_the_right_origin() {
     }
 }
 
+/// RH-4 (review L-9′): the OAuth probe reads the client secret and, for the
+/// password grant, the password only when each is bound to the instance
+/// origin. A planted (plain or forged) binding, an unbound secret and a
+/// secret bound elsewhere are all refused and nothing reaches the token
+/// endpoint.
+#[tokio::test]
+async fn oauth_probe_refuses_planted_unbound_and_mismatched_secrets_unsent() {
+    use std::net::TcpListener;
+    const SECRET_REF: &str = "keychain:instance/dev/client-secret";
+    #[derive(Debug, Clone, Copy)]
+    enum Case {
+        PlantedPlain,
+        PlantedForged,
+        Unbound,
+        Mismatched,
+    }
+    for grant in ["client_credentials", "password"] {
+        // The credential under test; the other (password grant) is bound.
+        let target = if grant == "password" {
+            DEV_REF
+        } else {
+            SECRET_REF
+        };
+        for case in [
+            Case::PlantedPlain,
+            Case::PlantedForged,
+            Case::Unbound,
+            Case::Mismatched,
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+            let memory = Arc::new(MemorySecretStore::new());
+            let credentials = InstanceCredentialStore::new(memory.clone());
+            if grant == "password" {
+                credentials
+                    .restore_secret(SECRET_REF, "client-secret", Some(&url))
+                    .await
+                    .unwrap();
+            }
+            let binding = hpm_core::keychain::origin_binding_account(target);
+            match case {
+                Case::PlantedPlain | Case::PlantedForged => {
+                    memory.insert(SERVICE_NAME, target, "pw");
+                    let planted = match case {
+                        Case::PlantedPlain => url.clone(),
+                        _ => json!({"origin": url, "mac": "00".repeat(32)}).to_string(),
+                    };
+                    memory.insert(SERVICE_NAME, &binding, &planted);
+                }
+                Case::Unbound => memory.insert(SERVICE_NAME, target, "pw"),
+                Case::Mismatched => credentials
+                    .restore_secret(target, "pw", Some("https://elsewhere.example"))
+                    .await
+                    .unwrap(),
+            }
+            let mut refs = serde_json::Map::new();
+            refs.insert("clientSecret".into(), json!(SECRET_REF));
+            if grant == "password" {
+                refs.insert("password".into(), json!(DEV_REF));
+            }
+            let instance = obj(json!({
+                "name": "dev", "url": url, "authType": "oauth", "grantType": grant,
+                "clientId": "client", "username": "u", "credentialRef": refs
+            }));
+            let err = HttpProbe.probe(&instance, &credentials).await.unwrap_err();
+            let want = match case {
+                Case::Mismatched => "elsewhere.example",
+                _ => "not bound",
+            };
+            assert!(
+                err.message.contains(want),
+                "{grant} {case:?}: {}",
+                err.message
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert_eq!(
+                listener.accept().map(|_| ()).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "{grant} {case:?}: nothing may reach the token endpoint"
+            );
+        }
+    }
+}
+
 fn add_answers(name: &str) -> Value {
     json!({"name": name, "url": "https://dev.service-now.com", "authType": "basic", "username": "developer"})
 }
@@ -826,12 +913,14 @@ async fn reports_credential_rollback_failure_without_replacing_the_registration_
     let registry = FakeRegistry::with(vec![]);
     *registry.fail_register.lock().unwrap() = Some(registry_error());
     let h = Harness::new(registry, prompts(add_answers("new-instance")).0);
-    *h.secrets.fail_delete_at.lock().unwrap() = Some(1);
+    // Delete 1 is the write's own CR-11 delete-before-create of the secret
+    // item (binding items are not counted); delete 2 is the rollback's.
+    *h.secrets.fail_delete_at.lock().unwrap() = Some(2);
     let (code, _, err) = h.run(&["instance", "add"]).await;
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("REGISTRY_WRITE_FAILED"), "{err}");
     assert!(err.contains(&registry_path_field()), "{err}");
-    assert!(err.contains("rollback failed"));
+    assert!(err.contains("rollback failed"), "{err}");
     assert!(!err.contains("fixture-secret-value"));
 }
 
@@ -1792,6 +1881,18 @@ fn help_prints_usage_without_starting_stdio() {
     assert_eq!(d, Dispatch::Exit(0));
     assert_eq!(err, "");
     assert!(out.contains("Usage:"));
+    // CR-2: the 6.2.0 USAGE bytes, then exactly the 7.0 bind line.
+    assert_eq!(out, format!("{USAGE}\n{BIND_USAGE_LINE}\n"));
+}
+
+#[tokio::test]
+async fn instance_help_names_credential_bind_after_the_6_2_0_usage() {
+    let (code, out, err) = Harness::new(FakeRegistry::with(vec![]), no_prompts())
+        .run(&["instance", "--help"])
+        .await;
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(out, format!("{USAGE}\n{BIND_USAGE_LINE}\n"));
+    assert!(BIND_USAGE_LINE.contains("instance credential bind <name>"));
 }
 
 #[test]
@@ -1944,5 +2045,133 @@ async fn probe_never_follows_a_token_endpoint_redirect() {
         elsewhere.accept().map(|_| ()).unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock,
         "the redirect target must receive no connection"
+    );
+}
+
+// --- CR-3: SN-Register-Instance success through the composed server ---------
+
+struct NoProgress;
+impl hpm_types::context::ProgressSink for NoProgress {
+    fn emit(&self, _: f64, _: Option<f64>, _: Option<String>) -> BoxFut<'_, ()> {
+        Box::pin(async {})
+    }
+}
+
+/// CR-3: the single-user composition (`SingleUser`, as the binaries build it)
+/// registers an instance whose origin-bound credential is in a fake secret
+/// store: the registry file gets exactly the non-secret metadata and the
+/// credential reference, and the next call (`SN-Set-Instance`) selects the
+/// new instance. The only `AdmissionKey` mint in
+/// this test binary.
+#[tokio::test(flavor = "multi_thread")]
+async fn register_instance_succeeds_through_the_server_with_a_bound_credential() {
+    use hpm_core::client::ClientDeps;
+    use hpm_core::config::ConfigManager;
+    use hpm_core::registry::InstanceRegistry;
+    use hpm_types::context::{AdmissionInput, AdmissionKey, ProtocolVersion, TrustedRoot};
+    use hpm_types::dispatch::DispatchOutcome;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("instances.json");
+    std::fs::write(
+        &file,
+        json!({"version": 1, "instances": [
+            {"name": "prod", "url": "https://prod.service-now.com", "authType": "oauth",
+             "grantType": "authorization_code", "clientId": "c", "default": true}]})
+        .to_string(),
+    )
+    .unwrap();
+    let home = dir.path().join("home");
+    let env = Env::from_pairs(&[
+        ("HOME", home.to_str().unwrap()),
+        ("XDG_CONFIG_HOME", home.to_str().unwrap()),
+        ("HAPPY_CONFIG_PATH", file.to_str().unwrap()),
+        ("SERVICENOW_TOKEN_STORE", "file"),
+    ]);
+    let config = Arc::new(ConfigManager::new(
+        Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+        env,
+    ));
+    let memory = Arc::new(MemorySecretStore::new());
+    InstanceCredentialStore::new(memory.clone())
+        .set_secret(DEV_REF, "fixture-secret-value", DEV_ORIGIN)
+        .await
+        .unwrap();
+    let key = AdmissionKey::mint().expect("the only mint in this test binary");
+    let dispatcher = crate::SingleUser::new(
+        config.clone(),
+        ClientDeps::production(memory.clone()).unwrap(),
+    )
+    .dispatcher(key)
+    .unwrap();
+    let ctx = || {
+        TrustedRoot::single_user_stdio()
+            .admit(
+                AdmissionInput {
+                    mcp_request_id: "1".into(),
+                    protocol_version: ProtocolVersion::new("2025-06-18"),
+                    client_capabilities: Value::Null,
+                    client_name: "test".into(),
+                    instance: None,
+                    instance_miss: None,
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                    progress: Arc::new(NoProgress),
+                },
+                None,
+            )
+            .unwrap()
+    };
+    let call = |tool: &'static str, args: Value| {
+        let dispatcher = dispatcher.clone();
+        let ctx = ctx();
+        async move {
+            match dispatcher.call_tool(&ctx, tool, args).await {
+                Ok(DispatchOutcome::Rendered(r)) => r,
+                other => panic!("{tool}: {other:?}"),
+            }
+        }
+    };
+
+    let r = call(
+        "SN-Register-Instance",
+        json!({"name": "dev", "url": DEV_ORIGIN, "authType": "basic", "username": "developer"}),
+    )
+    .await;
+    assert_ne!(r.is_error, Some(true), "{}", r.text);
+    let body: Value = serde_json::from_str(&r.text).unwrap();
+    assert_eq!(body["success"], json!(true), "{}", r.text);
+    assert_eq!(body["restartRequired"], json!(false));
+    assert!(!r.text.contains("fixture-secret-value"));
+
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(!written.contains("fixture-secret-value"));
+    let document: Value = serde_json::from_str(&written).unwrap();
+    let instances = document["instances"].as_array().unwrap();
+    assert_eq!(instances.len(), 2, "{written}");
+    let dev = instances.iter().find(|i| i["name"] == "dev").unwrap();
+    assert_eq!(dev["url"], json!(DEV_ORIGIN));
+    assert_eq!(dev["authType"], json!("basic"));
+    assert_eq!(dev["username"], json!("developer"));
+    assert_eq!(dev["credentialRef"], json!(DEV_REF));
+    for key in ["password", "clientSecret"] {
+        assert!(dev.get(key).is_none(), "{key} in {written}");
+    }
+    // The saved secret and its binding are untouched.
+    assert_eq!(
+        InstanceCredentialStore::new(memory.clone())
+            .bound_origin(DEV_REF)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(DEV_ORIGIN)
+    );
+
+    let r = call("SN-Set-Instance", json!({"instance_name": "dev"})).await;
+    assert_ne!(r.is_error, Some(true), "{}", r.text);
+    assert!(
+        r.text.contains("Switched to ServiceNow instance: dev"),
+        "{}",
+        r.text
     );
 }

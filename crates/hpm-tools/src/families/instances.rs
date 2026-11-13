@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use hpm_core::config::{CodedError, ConfigManager, resolve_path};
+use hpm_core::config::{CodedError, ConfigManager, InstanceSummary, resolve_path};
 use hpm_core::credential::{InstanceCredentialStore, credential_ref_for};
 use hpm_core::registry::{RegisterOptions, canonicalize_instance_url};
 use hpm_types::BoxFut;
@@ -32,6 +32,107 @@ const SET: &str = "SN-Set-Instance";
 const CURRENT: &str = "SN-Get-Current-Instance";
 const REGISTER: &str = "SN-Register-Instance";
 
+/// What the instance tools may do with the registry (CO-6): select and list
+/// instances through the `RegistryStore`, and register one. Every read is a
+/// non-secret summary; there is no raw entry, document or write handle.
+pub trait InstanceRegistryAccess: RegistryStore {
+    /// Non-secret fields of one instance (6.2.0 `getInstance` errors).
+    fn instance_summary(&self, name: &str) -> Result<SelectedInstance, CodedError>;
+    fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError>;
+    fn registry_version(&self) -> u64;
+    /// Registry validation of new instance metadata (no write).
+    fn validate(&self, metadata: &Value) -> Result<(), CodedError>;
+    /// Whether the registry file already names `name`.
+    fn exists(&self, name: &str) -> Result<bool, CodedError>;
+    /// Writes `metadata` (non-secret, canonical) as a new instance.
+    fn register(
+        &self,
+        metadata: &Value,
+        options: RegisterOptions<'_>,
+    ) -> Result<Object, CodedError>;
+    /// Undoes [`Self::register`] when the committed entry still matches.
+    fn compensate_registration(
+        &self,
+        name: &str,
+        expected: Option<&Value>,
+        prior_default: Option<(&str, bool)>,
+    ) -> Result<(), CodedError>;
+    /// Re-reads the registry after a registration (bumps the version when
+    /// the document changed).
+    fn reload(&self) -> Result<(), CodedError>;
+}
+
+/// What `SN-Set-Instance` echoes, copied as stored: `url` and `description`
+/// keep their JSON values, and a present empty description stays (6.2.0
+/// `description: instance.description`; only an absent one is omitted).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedInstance {
+    pub name: String,
+    pub url: Value,
+    pub description: Option<Value>,
+}
+
+impl InstanceRegistryAccess for ConfigManager {
+    fn instance_summary(&self, name: &str) -> Result<SelectedInstance, CodedError> {
+        let entry = self.get_instance(name)?;
+        Ok(SelectedInstance {
+            name: entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            url: entry.get("url").cloned().unwrap_or(Value::Null),
+            description: entry.get("description").cloned(),
+        })
+    }
+    fn list_instances(&self) -> Result<Vec<InstanceSummary>, CodedError> {
+        ConfigManager::list_instances(self)
+    }
+    fn registry_version(&self) -> u64 {
+        ConfigManager::registry_version(self)
+    }
+    fn validate(&self, metadata: &Value) -> Result<(), CodedError> {
+        self.registry().validate(metadata)
+    }
+    fn exists(&self, name: &str) -> Result<bool, CodedError> {
+        match self.registry().get(name) {
+            Ok(_) => Ok(true),
+            Err(e) if e.code == "INSTANCE_NOT_FOUND" => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+    fn register(
+        &self,
+        metadata: &Value,
+        options: RegisterOptions<'_>,
+    ) -> Result<Object, CodedError> {
+        self.registry().register(metadata, options)
+    }
+    fn compensate_registration(
+        &self,
+        name: &str,
+        expected: Option<&Value>,
+        prior_default: Option<(&str, bool)>,
+    ) -> Result<(), CodedError> {
+        self.registry()
+            .compensate_registration(name, expected, prior_default)
+    }
+    fn reload(&self) -> Result<(), CodedError> {
+        ConfigManager::reload(self).map(drop)
+    }
+}
+
+/// [`InstanceRegistryAccess`] as [`FamilyDeps`] carries it: the field is
+/// private to this module, so other families can hold but never use it.
+#[derive(Clone)]
+pub struct InstancesAccess(Arc<dyn InstanceRegistryAccess>);
+
+impl InstancesAccess {
+    pub fn new(access: Arc<dyn InstanceRegistryAccess>) -> Self {
+        Self(access)
+    }
+}
+
 pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), RegistrationError> {
     registry.register_tool(
         ToolDescriptor::new(
@@ -40,7 +141,7 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
             include_str!("instances/SN-Set-Instance.schema.json"),
             normalize_set,
             Arc::new(SetInstance {
-                config: deps.config.clone(),
+                config: deps.instances.0.clone(),
             }),
             render,
         )
@@ -57,7 +158,7 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
             include_str!("instances/SN-Get-Current-Instance.schema.json"),
             |_, i| Ok(op(CURRENT, Action::Read, i)),
             Arc::new(CurrentInstance {
-                config: deps.config.clone(),
+                config: deps.instances.0.clone(),
             }),
             render,
         )
@@ -74,7 +175,7 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
             include_str!("instances/SN-Register-Instance.schema.json"),
             |_, i| Ok(op(REGISTER, Action::ConfigWrite, i)),
             Arc::new(RegisterInstance {
-                config: deps.config.clone(),
+                config: deps.instances.0.clone(),
                 credentials: deps.credentials.clone(),
                 docs_only: deps.docs_only,
             }),
@@ -178,7 +279,7 @@ fn current_instance(view: &RegistryView) -> Value {
 // SN-Set-Instance / SN-Get-Current-Instance
 
 struct SetInstance {
-    config: Arc<ConfigManager>,
+    config: Arc<dyn InstanceRegistryAccess>,
 }
 
 impl ToolHandler for SetInstance {
@@ -195,17 +296,17 @@ impl SetInstance {
         let Some(name) = set_target(args) else {
             return HandlerCompletion::not_a_mutation(self.list(ctx));
         };
-        let instance = match self.config.get_instance(&name) {
+        let instance = match self.config.instance_summary(&name) {
             Ok(i) => i,
             Err(e) => {
                 return outcome(MutationOutcome::NotSent, Err(ToolError::Message(e.message)));
             }
         };
-        let instance_name = instance
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(&name)
-            .to_owned();
+        let instance_name = if instance.name.is_empty() {
+            name.clone()
+        } else {
+            instance.name.clone()
+        };
         if ctx.cancel().is_cancelled() {
             return outcome(MutationOutcome::NotSent, Err(ToolError::Cancelled));
         }
@@ -236,24 +337,30 @@ impl SetInstance {
                 Err(ToolError::Message(e.to_string())),
             );
         }
-        let url = instance.get("url").cloned().unwrap_or(Value::Null);
         eprintln!(
             "🔄 Switched to instance: {instance_name} ({})",
-            url.as_str().unwrap_or_default()
+            instance.url.as_str().unwrap_or_default()
         );
-        let mut summary = Object::new();
-        summary.insert("name".into(), instance_name.clone().into());
-        summary.insert("url".into(), url);
-        if let Some(d) = instance.get("description") {
-            summary.insert("description".into(), d.clone());
-        }
-        committed(text(&json!({
-            "success": true,
-            "message": format!("Switched to ServiceNow instance: {instance_name}"),
-            "instance": summary,
-        })))
+        committed(text(&set_response(&instance_name, instance)))
     }
+}
 
+/// 6.2.0 `SN-Set-Instance` success body.
+fn set_response(instance_name: &str, instance: SelectedInstance) -> Value {
+    let mut summary = Object::new();
+    summary.insert("name".into(), instance_name.into());
+    summary.insert("url".into(), instance.url);
+    if let Some(d) = instance.description {
+        summary.insert("description".into(), d);
+    }
+    json!({
+        "success": true,
+        "message": format!("Switched to ServiceNow instance: {instance_name}"),
+        "instance": summary,
+    })
+}
+
+impl SetInstance {
     fn list(&self, ctx: &RequestContext) -> Result<ResultBody, ToolError> {
         let instances = self
             .config
@@ -280,7 +387,7 @@ impl SetInstance {
 }
 
 struct CurrentInstance {
-    config: Arc<ConfigManager>,
+    config: Arc<dyn InstanceRegistryAccess>,
 }
 
 impl ToolHandler for CurrentInstance {
@@ -686,6 +793,11 @@ fn log_diagnostic(operation: &str, code: &str, name: Option<&Value>) {
     }) {
         diagnostic.insert("name".into(), n.into());
     }
+    #[cfg(test)]
+    tests::DIAGNOSTICS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Value::Object(diagnostic.clone()));
     eprintln!("{}", Value::Object(diagnostic));
 }
 
@@ -755,7 +867,7 @@ async fn check_credentials(
 }
 
 struct RegisterInstance {
-    config: Arc<ConfigManager>,
+    config: Arc<dyn InstanceRegistryAccess>,
     credentials: InstanceCredentialStore,
     /// Docs-only mode: live tools load only after a restart (6.2.0 `docsOnly`).
     docs_only: bool,
@@ -763,7 +875,7 @@ struct RegisterInstance {
 
 impl ToolHandler for RegisterInstance {
     fn call<'a>(&'a self, ctx: &'a RequestContext, args: Value) -> BoxFut<'a, HandlerCompletion> {
-        Box::pin(async move { self.run(ctx, args).await })
+        Box::pin(async move { self.run(&|| ctx.cancel().is_cancelled(), args).await })
     }
 }
 
@@ -774,7 +886,7 @@ struct Registered {
 }
 
 impl RegisterInstance {
-    async fn run(&self, ctx: &RequestContext, args: Value) -> HandlerCompletion {
+    async fn run(&self, cancelled: &(dyn Fn() -> bool + Sync), args: Value) -> HandlerCompletion {
         let not_sent = |e| outcome(MutationOutcome::NotSent, Err(e));
         let input = match args {
             Value::Object(o) => o,
@@ -797,7 +909,7 @@ impl RegisterInstance {
         let Ok(canonical) = canonical_metadata(&input) else {
             return not_sent(invalid("Instance metadata failed canonical validation"));
         };
-        let registry = self.config.registry().clone();
+        let registry = self.config.clone();
         if let Err(e) = registry.validate(&canonical.metadata) {
             return not_sent(registry_error(&e));
         }
@@ -805,8 +917,8 @@ impl RegisterInstance {
         // no credential requirements (authorization_code), where the registry
         // validation above rejects a missing name.
         let name = display_name(input.get("name"));
-        match registry.get(&name) {
-            Ok(_) => {
+        match registry.exists(&name) {
+            Ok(true) => {
                 return not_sent(error_response(
                     "INSTANCE_ALREADY_EXISTS",
                     "An instance with this name already exists; use the local CLI update command.",
@@ -816,7 +928,7 @@ impl RegisterInstance {
                     )]),
                 ));
             }
-            Err(e) if e.code == "INSTANCE_NOT_FOUND" => {}
+            Ok(false) => {}
             Err(e) => return not_sent(registry_error(&e)),
         }
         let origin = match canonical
@@ -834,14 +946,61 @@ impl RegisterInstance {
         {
             return not_sent(e);
         }
-        if ctx.cancel().is_cancelled() {
+        if cancelled() {
             return not_sent(ToolError::Cancelled);
         }
 
+        let job = Commit {
+            config: self.config.clone(),
+            credentials: self.credentials.clone(),
+            docs_only: self.docs_only,
+            canonical,
+            name,
+            origin,
+            input,
+        };
+        // CR-7: the commit and its tail (credential re-check, compensation,
+        // reload) run in their own task, so dropping this call future (a
+        // session teardown) cannot leave a committed registration unchecked.
+        match tokio::spawn(job.run()).await {
+            Ok(completion) => completion,
+            Err(_) => outcome(
+                MutationOutcome::Unknown,
+                Err(ToolError::Internal(
+                    "instance registration task failed".into(),
+                )),
+            ),
+        }
+    }
+}
+
+/// Everything the registration commit needs, owned so it can run detached.
+struct Commit {
+    config: Arc<dyn InstanceRegistryAccess>,
+    credentials: InstanceCredentialStore,
+    docs_only: bool,
+    canonical: Canonical,
+    name: String,
+    origin: String,
+    input: Object,
+}
+
+impl Commit {
+    async fn run(self) -> HandlerCompletion {
+        let Commit {
+            config,
+            credentials,
+            docs_only,
+            canonical,
+            name,
+            origin,
+            input,
+        } = self;
+        let not_sent = |e| outcome(MutationOutcome::NotSent, Err(e));
         let make_default = input.get("makeDefault") == Some(&Value::Bool(true));
         let registered = {
-            let registry = registry.clone();
-            let store = self.credentials.clone();
+            let registry = config.clone();
+            let store = credentials.clone();
             let metadata = canonical.metadata.clone();
             let requirements = canonical.requirements.clone();
             let name = name.clone();
@@ -904,21 +1063,29 @@ impl RegisterInstance {
             .map(|(n, d)| (n.as_str(), *d));
 
         if let Err((_, response)) =
-            check_credentials(&self.credentials, &canonical.requirements, &name, &origin).await
+            check_credentials(&credentials, &canonical.requirements, &name, &origin).await
         {
-            return match registry.compensate_registration(&name, Some(&expected), prior) {
+            return match config.compensate_registration(&name, Some(&expected), prior) {
                 Ok(()) => outcome(MutationOutcome::Failed, Err(response)),
-                Err(e) => outcome(MutationOutcome::Committed, Err(registry_error(&e))),
+                Err(e) => {
+                    // A-7: the call may already be gone (CR-7); log it.
+                    log_diagnostic(
+                        "registration_rollback",
+                        "REGISTRY_ROLLBACK_REQUIRED",
+                        input.get("name"),
+                    );
+                    outcome(MutationOutcome::Committed, Err(registry_error(&e)))
+                }
             };
         }
 
-        if self.config.reload().is_err() {
+        if config.reload().is_err() {
             log_diagnostic(
                 "registration_reload",
                 "REGISTRY_RELOAD_FAILED",
                 input.get("name"),
             );
-            if registry
+            if config
                 .compensate_registration(&name, Some(&expected), prior)
                 .is_err()
             {
@@ -929,7 +1096,7 @@ impl RegisterInstance {
                 );
                 return outcome(MutationOutcome::Committed, Err(rollback_required()));
             }
-            let restore_failed = self.config.reload().is_err();
+            let restore_failed = config.reload().is_err();
             if restore_failed {
                 log_diagnostic(
                     "registration_restore_reload",
@@ -953,7 +1120,7 @@ impl RegisterInstance {
         }
 
         committed(text(&success_payload(
-            self.docs_only,
+            docs_only,
             output_metadata(&registered.entry, &input),
         )))
     }
@@ -1243,5 +1410,273 @@ mod tests {
             pretty(&success_payload(false, m)),
             pretty(&json!({"success": true, "restartRequired": false, "metadata": {"name":"dev"}}))
         );
+    }
+
+    // --- CR-6 / CR-7: registration through the handler ----------------------
+
+    use hpm_core::config::{ConfigManager, Env};
+    use hpm_core::keychain::{MemorySecretStore, SERVICE_NAME, SecretStore, SecretStoreError};
+    use hpm_core::registry::InstanceRegistry;
+    use hpm_types::credential::Secret;
+    use tokio::sync::Notify;
+
+    const DEV_URL: &str = "https://dev.example.com";
+
+    fn registry_fixture() -> (tempfile::TempDir, std::path::PathBuf, Arc<ConfigManager>) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("instances.json");
+        std::fs::write(
+            &file,
+            json!({"version": 1, "instances": [
+                {"name": "prod", "url": "https://prod.example.com", "authType": "oauth",
+                 "grantType": "authorization_code", "clientId": "c", "default": true}]})
+            .to_string(),
+        )
+        .unwrap();
+        let env = Env::from_pairs(&[]);
+        let cm = Arc::new(ConfigManager::new(
+            Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+            env,
+        ));
+        cm.load_instances().unwrap();
+        (dir, file, cm)
+    }
+
+    fn dev_args() -> Value {
+        json!({"name": "dev", "url": DEV_URL, "authType": "basic", "username": "admin"})
+    }
+
+    fn handler(cm: &Arc<ConfigManager>, store: Arc<dyn SecretStore>) -> RegisterInstance {
+        RegisterInstance {
+            config: cm.clone(),
+            credentials: InstanceCredentialStore::new(store),
+            docs_only: false,
+        }
+    }
+
+    /// CR-6: the next call after a registration sees a new registry version
+    /// (no `GenerationMoved` until an unrelated `apply`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn registration_bumps_the_registry_version() {
+        let (_dir, _file, cm) = registry_fixture();
+        let mem = Arc::new(MemorySecretStore::new());
+        let h = handler(&cm, mem.clone());
+        h.credentials
+            .set_secret(REF, Secret::new("pw".into()), DEV_URL)
+            .await
+            .unwrap();
+        let before = cm.registry_version();
+        let done = h.run(&|| false, dev_args()).await;
+        assert!(
+            matches!(done.outcome, MutationOutcome::Committed),
+            "{:?}",
+            done.result
+        );
+        assert!(cm.registry_version() > before);
+        assert!(cm.get_instance("dev").is_ok());
+    }
+
+    /// Pauses the first `get` made after the registry file names `dev`
+    /// (the post-commit credential re-check) until released.
+    struct GateAfterCommit {
+        inner: Arc<MemorySecretStore>,
+        file: std::path::PathBuf,
+        gated: std::sync::atomic::AtomicBool,
+        reached: Notify,
+        release: Notify,
+    }
+
+    impl SecretStore for GateAfterCommit {
+        fn get<'a>(
+            &'a self,
+            service: &'a str,
+            account: &'a str,
+        ) -> BoxFut<'a, Result<Option<Secret>, SecretStoreError>> {
+            Box::pin(async move {
+                let committed =
+                    std::fs::read_to_string(&self.file).is_ok_and(|t| t.contains("\"dev\""));
+                if committed && !self.gated.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    self.reached.notify_one();
+                    self.release.notified().await;
+                }
+                self.inner.get(service, account).await
+            })
+        }
+        fn set<'a>(
+            &'a self,
+            service: &'a str,
+            account: &'a str,
+            value: Secret,
+        ) -> BoxFut<'a, Result<(), SecretStoreError>> {
+            self.inner.set(service, account, value)
+        }
+        fn delete<'a>(
+            &'a self,
+            service: &'a str,
+            account: &'a str,
+        ) -> BoxFut<'a, Result<bool, SecretStoreError>> {
+            self.inner.delete(service, account)
+        }
+    }
+
+    /// CR-7: the call future is dropped after the commit, while the
+    /// credential re-check is in flight; the binding then disappears. The
+    /// detached tail still runs and compensates the registration.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropped_registration_still_runs_its_tail() {
+        let (_dir, file, cm) = registry_fixture();
+        let mem = Arc::new(MemorySecretStore::new());
+        let gate = Arc::new(GateAfterCommit {
+            inner: mem.clone(),
+            file: file.clone(),
+            gated: std::sync::atomic::AtomicBool::new(false),
+            reached: Notify::new(),
+            release: Notify::new(),
+        });
+        let h = handler(&cm, gate.clone());
+        h.credentials
+            .set_secret(REF, Secret::new("pw".into()), DEV_URL)
+            .await
+            .unwrap();
+        let args = dev_args();
+        tokio::select! {
+            _ = h.run(&|| false, args) => panic!("call finished before the gate"),
+            () = gate.reached.notified() => {}
+        }
+        // The call future is gone; the binding is removed behind its back.
+        assert!(
+            mem.delete(
+                SERVICE_NAME,
+                &hpm_core::keychain::origin_binding_account(REF)
+            )
+            .await
+            .unwrap()
+        );
+        gate.release.notify_one();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let text = std::fs::read_to_string(&file).unwrap();
+            if !text.contains("\"dev\"") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "registration was not compensated: {text}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Diagnostics `log_diagnostic` emitted in this test binary.
+    pub(super) static DIAGNOSTICS: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
+
+    /// A-7: a detached tail whose post-commit credential re-check fails and
+    /// whose compensation also fails logs `REGISTRY_ROLLBACK_REQUIRED`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_compensation_in_a_dropped_registration_is_logged() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, file, cm) = registry_fixture();
+        let mem = Arc::new(MemorySecretStore::new());
+        let gate = Arc::new(GateAfterCommit {
+            inner: mem.clone(),
+            file: file.clone(),
+            gated: std::sync::atomic::AtomicBool::new(false),
+            reached: Notify::new(),
+            release: Notify::new(),
+        });
+        let h = handler(&cm, gate.clone());
+        h.credentials
+            .set_secret(REF, Secret::new("pw".into()), DEV_URL)
+            .await
+            .unwrap();
+        tokio::select! {
+            _ = h.run(&|| false, dev_args()) => panic!("call finished before the gate"),
+            () = gate.reached.notified() => {}
+        }
+        assert!(
+            mem.delete(
+                SERVICE_NAME,
+                &hpm_core::keychain::origin_binding_account(REF)
+            )
+            .await
+            .unwrap()
+        );
+        // The compensation's atomic write needs a temp file in this directory.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        gate.release.notify_one();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let logged = loop {
+            let found = DIAGNOSTICS.lock().unwrap().iter().any(|d| {
+                d["operation"] == "registration_rollback"
+                    && d["code"] == "REGISTRY_ROLLBACK_REQUIRED"
+                    && d["name"] == "dev"
+            });
+            if found || std::time::Instant::now() > deadline {
+                break found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(logged, "{:?}", DIAGNOSTICS.lock().unwrap());
+    }
+
+    /// A-2: the instance tools' registry read is a non-secret summary, even
+    /// under the env fallback (where the raw entry carries the password).
+    #[test]
+    fn instance_summary_carries_no_inline_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("missing.json");
+        let env = Env::from_pairs(&[
+            ("SERVICENOW_INSTANCE_URL", "https://env.example.com"),
+            ("SERVICENOW_USERNAME", "svc"),
+            ("SERVICENOW_PASSWORD", "pw-inline-s3cret"),
+            ("HAPPY_CONFIG_PATH", file.to_str().unwrap()),
+        ]);
+        let cm = ConfigManager::new(
+            Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+            env,
+        );
+        let raw = cm.get_instance("default").unwrap();
+        assert!(Value::Object(raw).to_string().contains("pw-inline-s3cret"));
+        let access: &dyn InstanceRegistryAccess = &cm;
+        let summary = access.instance_summary("default").unwrap();
+        assert_eq!(summary.url, "https://env.example.com");
+        assert!(!format!("{summary:?}").contains("pw-inline-s3cret"));
+    }
+    /// 6.2.0 echoes `description: instance.description`: a stored empty
+    /// description stays in the `SN-Set-Instance` response; an absent one is
+    /// omitted.
+    #[test]
+    fn set_instance_keeps_an_empty_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("instances.json");
+        std::fs::write(
+            &file,
+            json!({"version": 1, "instances": [
+                {"name": "prod", "url": "https://prod.example.com", "authType": "oauth",
+                 "grantType": "authorization_code", "clientId": "c", "default": true,
+                 "description": ""},
+                {"name": "test", "url": "https://test.example.com", "authType": "oauth",
+                 "grantType": "authorization_code", "clientId": "c"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let env = Env::from_pairs(&[]);
+        let cm = ConfigManager::new(
+            Arc::new(InstanceRegistry::at_paths(&file, &file, env.clone())),
+            env,
+        );
+        let access: &dyn InstanceRegistryAccess = &cm;
+        let prod = pretty(&set_response(
+            "prod",
+            access.instance_summary("prod").unwrap(),
+        ));
+        assert!(prod.contains("\"description\": \"\""), "{prod}");
+        let test = pretty(&set_response(
+            "test",
+            access.instance_summary("test").unwrap(),
+        ));
+        assert!(!test.contains("description"), "{test}");
     }
 }

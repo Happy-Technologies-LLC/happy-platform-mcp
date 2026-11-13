@@ -8,7 +8,8 @@ use hpm_core::config::Env;
 use hpm_core::keychain::{LazySecretStore, SecretStore};
 
 use crate::instance_cli::{
-    CliContext, SECRET_ARGUMENT_ERROR, USAGE, contains_secret_argument, run_instance_cli,
+    BIND_USAGE_LINE, CliContext, SECRET_ARGUMENT_ERROR, USAGE, contains_secret_argument,
+    run_instance_cli,
 };
 
 /// What `dispatch` decided.
@@ -37,7 +38,7 @@ pub fn route(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         return Dispatch::Instance;
     }
     if matches!(args[0].as_str(), "--help" | "-h" | "help") {
-        let _ = writeln!(stdout, "{USAGE}");
+        let _ = writeln!(stdout, "{USAGE}\n{BIND_USAGE_LINE}");
         return Dispatch::Exit(0);
     }
     let _ = writeln!(stderr, "Unknown command. Use --help for usage.");
@@ -58,7 +59,11 @@ pub fn main(args: &[String]) -> ExitCode {
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     match route(args, &mut stdout, &mut stderr) {
-        Dispatch::Serve => crate::serve_stdio(),
+        Dispatch::Serve => {
+            // A-6: like 6.2.0, only the servers read `.env`, not `instance …`/help.
+            crate::http::load_dotenv();
+            crate::serve_stdio()
+        }
         Dispatch::Exit(code) => exit(code),
         Dispatch::Instance => {
             let runtime = match tokio::runtime::Builder::new_current_thread()

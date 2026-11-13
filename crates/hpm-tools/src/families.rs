@@ -4,14 +4,14 @@
 //! registry (6.2.0 source order, [`crate::tool_order`]), not by call order.
 //!
 //! Paths: families take every path (registry file, working dir, docs cache) only
-//! from [`FamilyDeps`] or its [`ConfigManager`], never from `std::env` or
-//! `std::env::current_dir`, so tests and harnesses stay hermetic.
+//! from [`FamilyDeps`], never from `std::env` or `std::env::current_dir`, so
+//! tests and harnesses stay hermetic.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use hpm_core::client::PinnedClient;
-use hpm_core::config::ConfigManager;
+use hpm_core::config::{ConfigManager, Env};
 use hpm_core::credential::InstanceCredentialStore;
 use hpm_types::servicenow::ServiceNowAccess;
 
@@ -32,9 +32,14 @@ pub struct FamilyDeps {
     /// The client pinned to the call's credential binding (G2). Handlers never
     /// pick an instance themselves.
     pub servicenow: Arc<dyn ServiceNowAccess<Client = PinnedClient>>,
-    /// Instance registry and environment (6.2.0 `configManager`), for the
-    /// instance tools (lane D).
-    pub config: Arc<ConfigManager>,
+    /// Registry access for the instance tools only (CO-6): opaque outside
+    /// [`instances`], so no other family can read or write the registry.
+    instances: instances::InstancesAccess,
+    /// The environment (6.2.0 `process.env`), read by docs settings and the
+    /// `servicenow://instance` resource.
+    pub env: Env,
+    /// The instances file the docs settings (`docs` object) are read from.
+    pub registry_read_path: PathBuf,
     /// The credential store the ServiceNow clients read (6.2.0
     /// `dependencies.credentialStore`, `SN-Register-Instance`). Tests pass an
     /// in-memory store; never build the OS store inside a family.
@@ -62,7 +67,9 @@ impl FamilyDeps {
     ) -> Self {
         Self {
             servicenow,
-            config,
+            env: config.env().clone(),
+            registry_read_path: config.registry().read_path(),
+            instances: instances::InstancesAccess::new(config),
             credentials,
             docs_base_url: None,
             working_dir: None,

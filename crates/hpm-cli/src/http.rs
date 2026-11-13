@@ -31,10 +31,22 @@ const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 /// bound on runtime teardown (blocking tasks) after the serve loop ends. Kept
 /// well under Docker's 10 s stop timeout.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Process start of every binary: loads the restricted `.env` of the working
+/// directory (P4-3; 6.2.0 `dotenv.config()` in `server.js` and `stdio-server.js`)
+/// and prints its warnings to stderr, never stdout (stdio carries the protocol).
+pub fn load_dotenv() {
+    let Ok(dir) = std::env::current_dir() else {
+        return;
+    };
+    for warning in hpm_core::config::install_dotenv(&dir) {
+        eprintln!("{NAME}: {warning}");
+    }
+}
 
 /// Process entry of `happy-platform-mcp-http`. Arguments are ignored, as `node
 /// src/server.js` ignores them.
 pub fn main() -> ExitCode {
+    load_dotenv();
     let runtime = match multi_thread_runtime() {
         Ok(rt) => rt,
         Err(e) => {

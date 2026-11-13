@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use serde_json::{Map, Value};
 
@@ -76,9 +76,14 @@ type EnvFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 pub struct Env(Arc<EnvFn>);
 
 impl Env {
-    /// The process environment, read at lookup time (JS reads `process.env` lazily).
+    /// The process environment, read at lookup time (JS reads `process.env` lazily),
+    /// then the restricted `.env` values installed by [`install_dotenv`] (P4-3).
     pub fn process() -> Self {
-        Self(Arc::new(|key| std::env::var(key).ok()))
+        Self(Arc::new(|key| {
+            std::env::var(key)
+                .ok()
+                .or_else(|| DOTENV.get().and_then(|values| values.get(key).cloned()))
+        }))
     }
     pub fn from_fn(f: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Self {
         Self(Arc::new(f))
@@ -108,6 +113,153 @@ impl fmt::Debug for Env {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Env(..)")
     }
+}
+
+/// The `.env` keys 7.0 loads (owner decision P4-3): the ServiceNow instance and
+/// credential keys 6.2.0 documents, plus the HTTP bearer token. Every other key
+/// (bind host, `*_ALLOWED_*`, telemetry URL, registry path, ...) is ignored.
+pub const DOTENV_KEYS: &[&str] = &[
+    "SERVICENOW_INSTANCE",
+    "SERVICENOW_INSTANCE_URL",
+    "SERVICENOW_USERNAME",
+    "SERVICENOW_PASSWORD",
+    "SERVICENOW_AUTH_TYPE",
+    "SERVICENOW_CLIENT_ID",
+    "SERVICENOW_CLIENT_SECRET",
+    "SERVICENOW_OAUTH_GRANT_TYPE",
+    "HAPPY_MCP_API_TOKEN",
+];
+
+static DOTENV: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+/// The accepted values of one `.env` file and the warnings to print (stderr).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DotEnv {
+    pub values: HashMap<String, String>,
+    pub warnings: Vec<String>,
+}
+
+impl DotEnv {
+    /// Parses `text` (dotenv syntax: `KEY=value`, optional `export `, `#`
+    /// comments, single/double quotes) and keeps only [`DOTENV_KEYS`] that
+    /// `is_set` (the real environment) does not already define. Warnings never
+    /// quote a line, so a malformed secret is not echoed.
+    pub fn parse(text: &str, is_set: impl Fn(&str) -> bool) -> Self {
+        let mut out = Self::default();
+        // A-4: a UTF-8 BOM is not part of the first key (dotenv's `\s` drops it).
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        for (index, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            let Some((key, value)) = line.split_once('=') else {
+                out.warnings.push(format!(
+                    ".env line {}: ignored (expected KEY=value)",
+                    index + 1
+                ));
+                continue;
+            };
+            let key = key.trim();
+            let valid_key = !key.is_empty()
+                && key
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-');
+            let Some(value) = valid_key.then(|| dotenv_value(value.trim())).flatten() else {
+                out.warnings
+                    .push(format!(".env line {}: ignored (malformed)", index + 1));
+                continue;
+            };
+            if !DOTENV_KEYS.contains(&key) || is_set(key) {
+                continue;
+            }
+            out.values.insert(key.to_owned(), value);
+        }
+        if out.values.contains_key("SERVICENOW_INSTANCE_URL") {
+            out.warnings.push(
+                "SERVICENOW_INSTANCE_URL was loaded from .env in the working directory; \
+                 prefer `happy-platform-mcp instance add`"
+                    .to_owned(),
+            );
+        }
+        out
+    }
+}
+
+/// A dotenv value: quoted (`'..'` literal, `".."` with `\n` escapes) or bare
+/// with an optional ` #` comment. `None` for an unterminated quote.
+fn dotenv_value(value: &str) -> Option<String> {
+    for quote in ['\'', '"'] {
+        if let Some(rest) = value.strip_prefix(quote) {
+            let end = rest.find(quote)?;
+            let inner = &rest[..end];
+            return Some(if quote == '"' {
+                inner.replace("\\n", "\n")
+            } else {
+                inner.to_owned()
+            });
+        }
+    }
+    let bare = match value.find(" #") {
+        Some(i) => &value[..i],
+        None => value,
+    };
+    Some(bare.trim_end().to_owned())
+}
+
+/// Loads `.env` from `dir` (the working directory, as 6.2.0 `dotenv.config()`)
+/// into the overlay [`Env::process`] reads after the real environment, and
+/// returns the warnings to print on stderr. A missing file is not an error. Call
+/// once at process start, before any `Env::process` lookup.
+pub fn install_dotenv(dir: &Path) -> Vec<String> {
+    let text = match read_dotenv(&dir.join(".env")) {
+        Ok(Some(text)) => text,
+        Ok(None) => return Vec::new(),
+        Err(warning) => return vec![warning],
+    };
+    let DotEnv { values, warnings } = DotEnv::parse(&text, |key| std::env::var_os(key).is_some());
+    if DOTENV.set(values).is_err() {
+        return vec![".env already loaded".to_owned()];
+    }
+    warnings
+}
+
+/// Largest `.env` read (A-5); a larger file is not loaded at all.
+pub const DOTENV_MAX_BYTES: u64 = 64 * 1024;
+
+/// Reads `path` if it is a regular file (a symlink to one is followed, as
+/// 6.2.0 does) of at most [`DOTENV_MAX_BYTES`]. `Ok(None)`: no file. On Unix
+/// the open is non-blocking, so a FIFO never stalls start-up; it is then
+/// refused as not a regular file. Errors are the warning to print.
+pub fn read_dotenv(path: &Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits());
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!(".env not loaded: {e}")),
+    };
+    let regular = file.metadata().map(|m| m.is_file()).unwrap_or(false);
+    if !regular {
+        return Err(".env not loaded: not a regular file".to_owned());
+    }
+    let mut bytes = Vec::new();
+    if let Err(e) = file.take(DOTENV_MAX_BYTES + 1).read_to_end(&mut bytes) {
+        return Err(format!(".env not loaded: {e}"));
+    }
+    if bytes.len() as u64 > DOTENV_MAX_BYTES {
+        return Err(".env not loaded: larger than 64 KiB".to_owned());
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| ".env not loaded: not UTF-8".to_owned())
 }
 
 /// `os.homedir()`: `$HOME` (`%USERPROFILE%` on Windows), else the passwd entry.
@@ -486,7 +638,10 @@ impl ConfigManager {
         Ok(instances)
     }
 
-    /// Re-reads the registry; on failure the previous cache is restored.
+    /// Re-reads the registry; on failure the previous cache is restored. A
+    /// reload that changed the loaded document bumps the `RegistryStore`
+    /// version (CR-6), so clients pinned to the old document are rebuilt
+    /// instead of failing closed with `GenerationMoved`.
     pub fn reload(&self) -> Result<Arc<Vec<Object>>, CodedError> {
         let (previous, previous_fallback) = {
             let mut state = self.state();
@@ -511,11 +666,21 @@ impl ConfigManager {
             state.instances = Some(instances.clone());
             Ok(instances)
         })();
-        if result.is_err() {
-            let mut state = self.state();
-            state.instances = previous;
-            state.using_env_fallback = previous_fallback;
+        let mut state = self.state();
+        match &result {
+            Ok(instances) => {
+                if previous.as_deref() != Some(instances.as_ref())
+                    || previous_fallback != state.using_env_fallback
+                {
+                    state.version += 1;
+                }
+            }
+            Err(_) => {
+                state.instances = previous;
+                state.using_env_fallback = previous_fallback;
+            }
         }
+        drop(state);
         result
     }
 
@@ -779,8 +944,10 @@ impl ConfigManager {
             });
         }
         self.apply_change(change)?;
+        // The reload inside `apply_change` already bumped when the document
+        // changed (CR-6); an apply moves the version by exactly one either way.
         let mut s = self.state();
-        s.version += 1;
+        s.version = s.version.max(expected_version + 1);
         Ok(s.version)
     }
 }
