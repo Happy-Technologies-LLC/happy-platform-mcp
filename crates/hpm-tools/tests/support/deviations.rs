@@ -13,6 +13,11 @@ use serde_json::Value;
 pub enum Expected {
     /// JSON-RPC `-32602` (invalid params) before any ServiceNow request.
     InvalidParamsNoOutbound,
+    /// The recorded outbound requests and the recorded single error text, then
+    /// exactly `\nAlready created and not rolled back: {...}. Do not re-run the
+    /// whole batch.` naming `operation_0..operation_{created-1}` (full text
+    /// compared; the sys_ids come from the stub).
+    RecordedTextThenNotRolledBack { created: usize },
 }
 
 #[derive(Debug)]
@@ -24,14 +29,24 @@ pub struct Deviation {
     pub reason: &'static str,
 }
 
-pub const DEVIATIONS: &[Deviation] = &[Deviation {
-    golden: "SN-Create-Workflow/two-activities",
-    step: 0,
-    expected: Expected::InvalidParamsNoOutbound,
-    reason: "6.2.0 accepted numbers for string fields, sent 7 writes, then crashed \
-             (`Cannot read properties of undefined`); owner rule: 7.0 rejects the \
-             schema-invalid input up front with -32602 and sends nothing",
-}];
+pub const DEVIATIONS: &[Deviation] = &[
+    Deviation {
+        golden: "SN-Create-Workflow/two-activities",
+        step: 0,
+        expected: Expected::InvalidParamsNoOutbound,
+        reason: "6.2.0 accepted numbers for string fields, sent 7 writes, then crashed \
+                 (`Cannot read properties of undefined`); owner rule: 7.0 rejects the \
+                 schema-invalid input up front with -32602 and sends nothing",
+    },
+    Deviation {
+        golden: "SN-Batch-Create/failure-rollback",
+        step: 0,
+        expected: Expected::RecordedTextThenNotRolledBack { created: 1 },
+        reason: "6.2.0 hid that operation 0 was already created although the call \
+                 asked for a transaction; 7.0 names the records it did not roll back \
+                 and says not to re-run the whole batch (partially committed)",
+    },
+];
 
 pub fn lookup(golden: &str, step: usize) -> Option<&'static Deviation> {
     DEVIATIONS
@@ -39,9 +54,26 @@ pub fn lookup(golden: &str, step: usize) -> Option<&'static Deviation> {
         .find(|d| d.golden == golden && d.step == step)
 }
 
+const NOT_ROLLED_BACK: &str = "\nAlready created and not rolled back: ";
+const DO_NOT_RERUN: &str = ". Do not re-run the whole batch.";
+
+fn single_text(response: &Value) -> Option<&str> {
+    match response["result"]["content"].as_array()?.as_slice() {
+        [only] if only["type"] == "text" => only["text"].as_str(),
+        _ => None,
+    }
+}
+
 impl Expected {
-    /// Problems with `got` (one replayed step) against this expectation.
-    pub fn check(self, got: &Value, outbound: &[Value]) -> Vec<String> {
+    /// Problems with `got` (one replayed step) against this expectation;
+    /// `want` is the recorded 6.2.0 step.
+    pub fn check(
+        self,
+        got: &Value,
+        outbound: &[Value],
+        want: &Value,
+        want_outbound: &[Value],
+    ) -> Vec<String> {
         let mut problems = Vec::new();
         match self {
             Self::InvalidParamsNoOutbound => {
@@ -52,6 +84,39 @@ impl Expected {
                     problems.push(format!(
                         "expected no outbound requests, got {}",
                         outbound.len()
+                    ));
+                }
+            }
+            Self::RecordedTextThenNotRolledBack { created } => {
+                if outbound != want_outbound {
+                    problems.push(format!(
+                        "outbound differs from the golden: got {outbound:?}, want {want_outbound:?}"
+                    ));
+                }
+                if got["response"]["result"]["isError"] != true {
+                    problems.push(format!("expected isError: true, got {}", got["response"]));
+                }
+                let recorded = single_text(&want["response"]).unwrap_or_default();
+                let Some(text) = single_text(&got["response"]) else {
+                    problems.push(format!("expected one text item, got {}", got["response"]));
+                    return problems;
+                };
+                let ids = text
+                    .strip_prefix(recorded)
+                    .and_then(|rest| rest.strip_prefix(NOT_ROLLED_BACK))
+                    .and_then(|rest| rest.strip_suffix(DO_NOT_RERUN))
+                    .and_then(|ids| serde_json::from_str::<Value>(ids).ok());
+                let keys_ok = ids.as_ref().and_then(Value::as_object).is_some_and(|m| {
+                    m.len() == created
+                        && (0..created).all(|i| {
+                            m.get(&format!("operation_{i}"))
+                                .and_then(Value::as_str)
+                                .is_some_and(|s| !s.is_empty())
+                        })
+                });
+                if !keys_ok {
+                    problems.push(format!(
+                        "expected {recorded:?} + {NOT_ROLLED_BACK:?} + {{operation_0..{created}}} + {DO_NOT_RERUN:?}, got {text:?}"
                     ));
                 }
             }
