@@ -52,6 +52,7 @@ impl HttpTransport for Counting {
             Err(TransportError {
                 message: "no network in this test".into(),
                 code: None,
+                connect: false,
             })
         })
     }

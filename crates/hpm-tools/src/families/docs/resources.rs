@@ -52,15 +52,29 @@ impl InstanceInfo {
 /// TF-7: the instance URL without any `user:password@` part, parsed with
 /// `url::Url` (a scheme-less value is parsed as `https://` and shown without
 /// it). A value without `@` cannot carry userinfo and is echoed verbatim (6.2.0
-/// text). A value whose userinfo the parser finds is re-serialized without it.
-/// Anything else that contains `@` is ambiguous (an unencoded `/`, `?`, `#` or
-/// `\` in a password breaks or shifts the authority), so everything through the
-/// last `@` is dropped and the rest is re-parsed; if that fails, nothing is
-/// shown.
+/// text). Nor can a value whose every `@` comes after the authority (after the
+/// first `/`, `?`, `#` or `\` following `scheme://`) and that has no `:`
+/// before its last `@`: there is no password to hide, so it is echoed verbatim
+/// too (review-final L-5). A value whose userinfo the parser finds is
+/// re-serialized without it. Anything else that contains `@` is ambiguous (an
+/// unencoded `/`, `?`, `#` or `\` in a password breaks or shifts the
+/// authority), so everything through the last `@` is dropped and the rest is
+/// re-parsed; if that fails, nothing is shown.
 fn without_userinfo(raw: String) -> String {
     let Some(last_at) = raw.rfind('@') else {
         return raw;
     };
+    let rest_at = raw.find("://").map_or(0, |i| i + 3);
+    let rest = &raw[rest_at..];
+    let authority_end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+    // `get` is `None` when the last `@` precedes `://` (never echoed).
+    if !rest[..authority_end].contains('@')
+        && raw
+            .get(rest_at..last_at)
+            .is_some_and(|before| !before.contains(':'))
+    {
+        return raw;
+    }
     let scheme = raw.split_once("://").map(|(s, _)| s);
     let parse = |s: &str| {
         let full = match scheme {
@@ -202,9 +216,21 @@ mod tests {
             assert_eq!(shown, "https://dev.example/", "{raw}");
         }
         assert_eq!(url("admin:1234/x@dev.example"), "dev.example/");
-        // `@` that is not userinfo is still dropped through: ambiguity is
-        // resolved towards never echoing a secret.
-        assert_eq!(url("https://dev.example/a@b"), "https://b/");
+        // L-5: `@` only after the authority, with no `:` that could start a
+        // password before it, is not userinfo: echoed verbatim.
+        for raw in [
+            "https://host.service-now.com/path?x=a@b",
+            "https://dev.example/a@b",
+            "https://dev.example?q=a@b",
+            "https://dev.example#a@b",
+            "dev.example/a@b",
+        ] {
+            assert_eq!(url(raw), raw);
+        }
+        // A `:` before the last `@` could start a password with an unencoded
+        // delimiter: still dropped through the last `@`, towards never
+        // echoing a secret.
+        assert_eq!(url("https://dev.example:8443/p?x=a@b"), "https://b/");
         assert_eq!(url("https://x:y@"), "");
     }
 

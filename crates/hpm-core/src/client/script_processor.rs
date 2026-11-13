@@ -525,9 +525,12 @@ pub fn classify_processor_outcome(
         Ok(r) => r,
         Err(error) => {
             let code = error.code.as_deref();
-            if let Some(c) = code.filter(|c| PRE_SEND_ERROR_CODES.contains(c)) {
+            // A connect-phase failure (even a connect timeout, live smoke D1)
+            // sent nothing, so the script did not run.
+            if error.connect || code.is_some_and(|c| PRE_SEND_ERROR_CODES.contains(&c)) {
+                let suffix = code.map(|c| format!(" ({c})")).unwrap_or_default();
                 return ProcessorOutcome::NotRun(format!(
-                    "connection error before the request was sent ({c})"
+                    "connection error before the request was sent{suffix}"
                 ));
             }
             if code.is_some_and(|c| TIMEOUT_ERROR_CODES.contains(&c))
@@ -828,6 +831,24 @@ mod tests {
                 "the connection failed after the request may have been sent (ECONNRESET)".into()
             )
         );
+        // Live smoke D1: a timeout while connecting sent nothing (not run);
+        // a timeout after sending stays unknown.
+        assert_eq!(
+            classify_processor_outcome(&Err(TransportError::connect(
+                "ETIMEDOUT",
+                "ETIMEDOUT: client error (Connect): operation timed out"
+            ))),
+            ProcessorOutcome::NotRun(
+                "connection error before the request was sent (ETIMEDOUT)".into()
+            )
+        );
+        assert!(matches!(
+            classify_processor_outcome(&Err(TransportError::new(
+                "ETIMEDOUT",
+                "ETIMEDOUT: operation timed out"
+            ))),
+            ProcessorOutcome::Unknown(r) if r.contains("(timeout)")
+        ));
     }
 
     #[test]

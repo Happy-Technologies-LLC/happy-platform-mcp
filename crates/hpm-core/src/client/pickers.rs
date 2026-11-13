@@ -34,7 +34,7 @@ pub enum PickerChange {
     Unknown,
 }
 
-fn put_failure(e: &ClientError) -> PickerChange {
+pub(super) fn put_failure(e: &ClientError) -> PickerChange {
     if (e.is_stale() && !e.is_stale_after_send())
         || e.code.as_deref() == Some(super::error::CANCELLED_BEFORE_SEND_CODE)
     {

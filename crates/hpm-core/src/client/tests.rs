@@ -22,6 +22,8 @@ struct FakeTransport {
     requests: Mutex<Vec<HttpRequest>>,
     /// Requests whose URL contains this never complete (stalled server).
     stall: Mutex<Option<&'static str>>,
+    /// When set, only stalled-URL requests with this method stall.
+    stall_method: Mutex<Option<Method>>,
 }
 
 impl FakeTransport {
@@ -32,6 +34,7 @@ impl FakeTransport {
             handler: Box::new(handler),
             requests: Mutex::new(Vec::new()),
             stall: Mutex::new(None),
+            stall_method: Mutex::new(None),
         })
     }
     fn requests(&self) -> Vec<HttpRequest> {
@@ -51,7 +54,10 @@ impl HttpTransport for FakeTransport {
                 .push(request.clone());
             tokio::task::yield_now().await;
             let stall = *self.stall.lock().unwrap_or_else(|e| e.into_inner());
-            if stall.is_some_and(|s| request.url.contains(s)) {
+            let method = *self.stall_method.lock().unwrap_or_else(|e| e.into_inner());
+            if stall.is_some_and(|s| request.url.contains(s))
+                && method.is_none_or(|m| m == request.method)
+            {
                 std::future::pending::<()>().await;
             }
             (self.handler)(&request)
@@ -2303,4 +2309,293 @@ async fn cancel_at_401_does_not_retry() {
         .expect_err("cancelled");
     assert_eq!(err.code.as_deref(), Some(error::CANCELLED_BEFORE_SEND_CODE));
     assert_eq!(h.transport.requests().len(), 1, "retry sent after cancel");
+}
+
+// ---- P4 final gate (review-final M-1, L-1, L-3, L-8; live smoke D1) ----------
+
+/// Review-final M-1: an in-flight cancel of the picker `PUT` may have
+/// changed the update set (unknown); only a cancel before sending is "not sent".
+#[test]
+fn picker_put_cancel_classification() {
+    use super::pickers::put_failure;
+    assert_eq!(
+        put_failure(&error::ClientError::cancelled_after_send()),
+        PickerChange::Unknown
+    );
+    assert_eq!(
+        put_failure(&error::ClientError::cancelled()),
+        PickerChange::NotSent
+    );
+}
+
+/// Review-final M-1: the picker `PUT` never answers and the call is then
+/// cancelled: the change is unknown and the UI session still logs out last.
+#[tokio::test]
+async fn cancel_while_picker_put_is_pending_is_unknown_and_still_logs_out() {
+    let h = harness(
+        basic(Some("inert")),
+        picker_phase_fake(|_, _, _| None),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    *h.transport.stall.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some("/api/now/ui/concoursepicker/updateset");
+    *h.transport
+        .stall_method
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(Method::Put);
+    let token = tokio_util::sync::CancellationToken::new();
+    let call = h.client.with_cancel(token.clone());
+    let pending = tokio::spawn(async move {
+        call.set_current_update_set_or(SET_A, |e, change| async move { (e.code, change) })
+            .await
+            .err()
+    });
+    while !h
+        .transport
+        .requests()
+        .iter()
+        .any(|r| r.method == Method::Put)
+    {
+        tokio::task::yield_now().await;
+    }
+    token.cancel();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .expect("prompt")
+        .expect("join");
+    assert_eq!(
+        got,
+        Some((
+            Some(error::CANCELLED_AFTER_SEND_CODE.into()),
+            PickerChange::Unknown
+        ))
+    );
+    let requests = h.transport.requests();
+    assert_eq!(
+        requests.iter().filter(|r| r.method == Method::Put).count(),
+        1
+    );
+    let urls: Vec<_> = requests.into_iter().map(|r| r.url).collect();
+    assert_eq!(
+        urls.iter().filter(|u| u.ends_with("/logout.do")).count(),
+        1,
+        "{urls:?}"
+    );
+    assert!(
+        urls.last().is_some_and(|u| u.ends_with("/logout.do")),
+        "{urls:?}"
+    );
+}
+
+/// Switches the instance (moves the generation) from inside a fake handler.
+fn switch_instance(slot: &std::sync::OnceLock<ServiceNowClient>) {
+    if let Some(c) = slot.get() {
+        c.set_instance(basic(Some("other")))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+/// Review-final L-1 (CO-8, picker): once the generation has moved, a picker
+/// request is refused before it is sent, so the change is "not sent".
+#[tokio::test]
+async fn picker_request_after_a_generation_move_is_never_sent() {
+    let h = harness(
+        basic(Some("inert")),
+        picker_phase_fake(|_, _, _| None),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let mut slot = None;
+    let session = h
+        .client
+        .open_ui_picker_session(&mut slot)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    h.client
+        .set_instance(basic(Some("other")))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let e = session
+        .put(
+            "/api/now/ui/concoursepicker/updateset",
+            &json!({"name": "Story set", "sysId": SET_A}),
+        )
+        .await
+        .expect_err("stale");
+    assert!(e.is_stale() && !e.is_stale_after_send(), "{e:?}");
+    assert_eq!(super::pickers::put_failure(&e), PickerChange::NotSent);
+    assert!(
+        !h.transport
+            .requests()
+            .iter()
+            .any(|r| r.method == Method::Put),
+        "the PUT left after the generation moved"
+    );
+    if let Some(s) = slot {
+        s.end().await;
+    }
+}
+
+/// Review-final L-1 (CO-8, scripts): the generation moves while the user-token
+/// request is answered; the CSRF lookup that follows is never sent, and
+/// neither is the script.
+#[tokio::test]
+async fn script_session_reads_after_a_generation_move_are_never_sent() {
+    let slot: Arc<std::sync::OnceLock<ServiceNowClient>> = Arc::default();
+    let in_handler = slot.clone();
+    let inner = processor_fake("unused");
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(move |r| {
+            if r.url.contains("/angular.do") {
+                switch_instance(&in_handler);
+                // No user token: the CSRF lookup would come next.
+                return Ok(HttpResponse::new(200, "{}"));
+            }
+            (inner.handler)(r)
+        }),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let _ = slot.set(h.client.clone());
+    let e = h
+        .client
+        .execute_script_via_processor("gs.info('x')", &ProcessorOptions::default())
+        .await
+        .expect_err("stale");
+    assert!(e.is_stale(), "{e:?}");
+    let urls: Vec<_> = h.transport.requests().into_iter().map(|r| r.url).collect();
+    assert!(
+        !urls
+            .iter()
+            .any(|u| u.contains("/api/now/ui/user/current_user")
+                || u.contains("/api/now/table/sys_user_session")),
+        "{urls:?}"
+    );
+    assert!(
+        !urls.iter().any(|u| u.ends_with("/sys.scripts.do")),
+        "{urls:?}"
+    );
+}
+
+/// Review-final L-3 (CO-9): an insert answer without a well-formed sys_id is
+/// never wrapped (no PUT); the result is unknown and names the trigger.
+#[tokio::test]
+async fn trigger_insert_without_a_valid_sys_id_is_never_wrapped() {
+    let h = harness(
+        basic(Some("pw")),
+        FakeTransport::new(|r| {
+            if r.method == Method::Post {
+                Ok(HttpResponse::json(
+                    201,
+                    &json!({"result": {"sys_id": "not-a-sys-id"}}),
+                ))
+            } else {
+                Ok(HttpResponse::json(200, &json!({"result": {}})))
+            }
+        }),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let e = h
+        .client
+        .execute_script_via_trigger("x", "", true, &TriggerOptions::default())
+        .await
+        .expect_err("not wrapped");
+    assert_eq!(e.code(), Some(error::TRIGGER_INSERTED_RESULT_UNKNOWN_CODE));
+    assert!(
+        e.reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("name MCP_Script_")),
+        "{e:?}"
+    );
+    assert!(
+        !h.transport
+            .requests()
+            .iter()
+            .any(|r| r.method == Method::Put),
+        "an unvalidated sys_id reached the PUT path"
+    );
+}
+
+/// Review-final L-8 (CR-1): the generation moves while the landing page is
+/// answered with Set-Cookie; the call fails stale, and the logout that ends
+/// the opened UI session still carries the cookie.
+#[tokio::test]
+async fn landing_cookie_reaches_the_logout_when_the_generation_moves() {
+    let slot: Arc<std::sync::OnceLock<ServiceNowClient>> = Arc::default();
+    let in_handler = slot.clone();
+    let inner = picker_phase_fake(|_, _, _| None);
+    let h = harness(
+        basic(Some("inert")),
+        FakeTransport::new(move |r| {
+            if r.method == Method::Get && r.url.trim_start_matches(URL) == "/" {
+                switch_instance(&in_handler);
+                return Ok(HttpResponse::new(200, "<html></html>")
+                    .with_header("set-cookie", "JSESSIONID=moved1; Path=/; HttpOnly"));
+            }
+            (inner.handler)(r)
+        }),
+        FakePoster::new(vec![]),
+        Value::Null,
+    );
+    let _ = slot.set(h.client.clone());
+    let got = h
+        .client
+        .set_current_update_set_or(SET_A, |e, change| async move {
+            (e.is_stale_after_send(), change)
+        })
+        .await
+        .err();
+    assert_eq!(got, Some((true, PickerChange::NotSent)));
+    let requests = h.transport.requests();
+    let last = requests.last().expect("requests");
+    assert_eq!(last.url, format!("{URL}/logout.do"));
+    assert_eq!(last.header("Cookie"), Some("JSESSIONID=moved1"));
+}
+
+/// Live smoke D1: a processor POST whose connection failed in the connect
+/// phase (even by timing out) was not sent: not run. A timeout after the
+/// request was sent stays an unknown outcome.
+#[tokio::test]
+async fn processor_connect_failure_is_not_run_and_read_timeout_is_unknown() {
+    let cases = [
+        (
+            TransportError::connect(
+                "ETIMEDOUT",
+                "ETIMEDOUT: error sending request: client error (Connect): operation timed out",
+            ),
+            script_processor::NOT_RUN,
+        ),
+        (
+            TransportError::new("ETIMEDOUT", "ETIMEDOUT: operation timed out"),
+            script_processor::UNKNOWN_OUTCOME,
+        ),
+    ];
+    for (failure, want) in cases {
+        let inner = processor_fake("unused");
+        let h = harness(
+            basic(Some("pw")),
+            FakeTransport::new(move |r| {
+                if r.url.ends_with("/sys.scripts.do") {
+                    return Err(failure.clone());
+                }
+                (inner.handler)(r)
+            }),
+            FakePoster::new(vec![]),
+            Value::Null,
+        );
+        let e = h
+            .client
+            .execute_script_via_processor("x", &ProcessorOptions::default())
+            .await
+            .expect_err("failed POST");
+        assert_eq!(e.code.as_deref(), Some(want), "{e:?}");
+        if want == script_processor::NOT_RUN {
+            assert_eq!(
+                e.reason.as_deref(),
+                Some("connection error before the request was sent (ETIMEDOUT)")
+            );
+        }
+    }
 }

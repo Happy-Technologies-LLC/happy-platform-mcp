@@ -236,3 +236,42 @@ async fn opt_in_environment_runs_the_trigger_without_the_argument() {
     .await;
     assert_trigger_success(&text, is_error, posts);
 }
+
+/// Review-final L-2: only `HAPPY_MCP_ALLOW_TRIGGER_FALLBACK=1` consents; any
+/// other value (`0`, `true`, empty) refuses, and an explicit
+/// `allow_trigger_fallback: false` overrides `=1`. Nothing is inserted.
+#[tokio::test]
+async fn only_env_value_1_consents_and_false_argument_overrides_it() {
+    let cases: [(&'static str, Value); 5] = [
+        ("0", json!({"script": "gs.info('x');"})),
+        ("true", json!({"script": "gs.info('x');"})),
+        ("yes", json!({"script": "gs.info('x');"})),
+        ("", json!({"script": "gs.info('x');"})),
+        (
+            "1",
+            json!({"script": "gs.info('x');", "allow_trigger_fallback": false}),
+        ),
+    ];
+    for (value, args) in cases {
+        let world = World::start().await;
+        let r = harness::call_tool(
+            &world,
+            "env-not-1",
+            succeeding_trigger(vec![("HAPPY_MCP_ALLOW_TRIGGER_FALLBACK", value)]),
+            "SN-Execute-Background-Script",
+            args,
+        )
+        .await
+        .expect("call");
+        let result = &r.response["result"];
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert_eq!(result["isError"], true, "{value:?}: {text}");
+        assert!(text.contains("was NOT run"), "{value:?}: {text}");
+        assert!(
+            !r.outbound
+                .iter()
+                .any(|d| d.path.starts_with("/api/now/table/sys_trigger")),
+            "{value:?}: sys_trigger request without consent"
+        );
+    }
+}

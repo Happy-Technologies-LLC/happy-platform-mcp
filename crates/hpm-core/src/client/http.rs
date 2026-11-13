@@ -162,6 +162,10 @@ impl HttpResponse {
 pub struct TransportError {
     pub code: Option<String>,
     pub message: String,
+    /// The connection (DNS, TCP or TLS) could not be established, so no byte
+    /// of the request was sent, whatever `code` says (a connect-phase timeout
+    /// keeps `ETIMEDOUT`). Live smoke D1.
+    pub connect: bool,
 }
 
 impl TransportError {
@@ -169,6 +173,15 @@ impl TransportError {
         Self {
             code: Some(code.to_owned()),
             message: message.into(),
+            connect: false,
+        }
+    }
+
+    /// A failure while connecting: nothing was sent (see [`Self::connect`]).
+    pub fn connect(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            connect: true,
+            ..Self::new(code, message)
         }
     }
 }
@@ -250,7 +263,11 @@ fn map_reqwest_error(error: &reqwest::Error) -> TransportError {
         }
         source = cause.source();
     }
-    TransportError::new(code, message)
+    if error.is_connect() {
+        TransportError::connect(code, message)
+    } else {
+        TransportError::new(code, message)
+    }
 }
 
 impl HttpTransport for ReqwestTransport {
@@ -454,6 +471,7 @@ mod tests {
             .await
             .expect_err("nothing listens on the port");
         assert_eq!(err.code.as_deref(), Some("ECONNREFUSED"));
+        assert!(err.connect, "a refused connection sent nothing");
         assert!(err.message.starts_with("ECONNREFUSED: "), "{}", err.message);
         // The io::Error at the bottom of the chain ("Connection refused (os
         // error 61)" on macOS, 111 on Linux, 10061 on Windows).
@@ -462,5 +480,35 @@ mod tests {
             "cause missing: {}",
             err.message
         );
+    }
+
+    /// Live smoke D1: a timeout once the request was sent (the server accepted
+    /// and never answered) is not a connect-phase failure.
+    #[tokio::test]
+    async fn read_timeout_after_send_is_not_a_connect_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let port = listener.local_addr().expect("addr").port();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept");
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+        let err = ReqwestTransport::new()
+            .expect("transport")
+            .send(HttpRequest {
+                method: Method::Post,
+                url: format!("http://127.0.0.1:{port}/sys.scripts.do"),
+                headers: vec![],
+                body: Some(b"script=x".to_vec()),
+                timeout: Some(Duration::from_millis(300)),
+                max_redirects: 0,
+            })
+            .await
+            .expect_err("the server never answers");
+        server.abort();
+        assert_eq!(err.code.as_deref(), Some("ETIMEDOUT"), "{}", err.message);
+        assert!(!err.connect, "{}", err.message);
     }
 }

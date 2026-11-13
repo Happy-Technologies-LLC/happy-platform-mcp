@@ -155,11 +155,10 @@ pub fn natural_language_search(
     args: &Value,
     input: &NormalizeInput<'_>,
 ) -> Result<OperationSet, ToolError> {
+    // TF-1 (review-final L-4): `table` is classified like `table_name`.
     let table = match args.get("table") {
         None => "incident",
-        Some(v) => v
-            .as_str()
-            .ok_or_else(|| ToolError::InvalidParams("table must be a string".into()))?,
+        Some(_) => table_arg(args, "table")?,
     };
     let encoded = parse_natural_language_value(args.get("query"), Some(table))
         .ok()
@@ -517,6 +516,35 @@ mod tests {
             get_record,
             json!({"table_name": "u_Custom_1", "sys_id": id}),
         );
+    }
+
+    /// Review-final L-4 (TF-1): SN-Natural-Language-Search's `table` must be a
+    /// plain table name too; absent still means `incident`.
+    #[test]
+    fn natural_language_search_table_is_a_table_name() {
+        let snap = snapshot();
+        let input = NormalizeInput::new(None, &snap);
+        let msg = "table must be a table name of 1-80 letters, digits or underscores";
+        for table in [
+            json!("incident^ORactive=true"),
+            json!(""),
+            json!("a".repeat(81)),
+        ] {
+            let args = json!({"query": "high priority", "table": table});
+            assert!(
+                matches!(natural_language_search(&args, &input), Err(ToolError::InvalidParams(m)) if m == msg),
+                "{args}"
+            );
+        }
+        assert!(matches!(
+            natural_language_search(&json!({"query": "x", "table": 5}), &input),
+            Err(ToolError::InvalidParams(m)) if m == "table must be a string"
+        ));
+        run(
+            natural_language_search,
+            json!({"query": "high priority", "table": "u_Custom_1"}),
+        );
+        run(natural_language_search, json!({"query": "high priority"}));
     }
 
     #[test]

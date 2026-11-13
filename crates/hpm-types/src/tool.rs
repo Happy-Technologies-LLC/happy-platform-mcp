@@ -364,8 +364,9 @@ impl ToolDescriptor {
 /// [`ServiceNowAccess::client`](crate::servicenow::ServiceNowAccess::client)
 /// fails with `NoInstance`: a resource handler cannot obtain a ServiceNow client
 /// through `ServiceNowAccess`, while policy sees a read. Resources serve local
-/// data only. Handlers built from `FamilyDeps` can still reach configuration
-/// and the credential store until CO-6 narrows the family dependencies.
+/// data only. CO-6 removed configuration from `FamilyDeps` (only the instances
+/// family reaches it, privately); a handler built from `FamilyDeps` can still
+/// reach the credential store (`FamilyDeps::credentials`).
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct ResourceDescriptor {
