@@ -125,6 +125,9 @@ pub enum UiSessionScope {
 pub struct UiSession {
     pub cookie_header: Secret,
     pub csrf_token: Secret,
+    /// Instance and generation of the binding the session was opened for;
+    /// `end_ui_session` logs out on exactly that instance.
+    pub instance_id: String,
     pub generation: u64,
     pub scope: UiSessionScope,
 }

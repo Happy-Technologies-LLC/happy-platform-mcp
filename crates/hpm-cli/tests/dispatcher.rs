@@ -20,7 +20,7 @@ use hpm_types::context::{
 };
 use hpm_types::credential::{CredentialError, CredentialNeed};
 use hpm_types::dispatch::{
-    DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered,
+    DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered, UsageSink,
 };
 use hpm_types::operation::{
     Action, ClassificationSnapshot, ClassificationSource, Operation, OperationSet,
@@ -254,9 +254,18 @@ fn dispatcher_with(
     protector: Arc<dyn DataProtector>,
     audit: Arc<Recorder>,
 ) -> Dispatcher {
+    dispatcher_full(calls, protector, audit, None)
+}
+
+fn dispatcher_full(
+    calls: &Arc<AtomicUsize>,
+    protector: Arc<dyn DataProtector>,
+    audit: Arc<Recorder>,
+    usage: Option<Arc<dyn UsageSink>>,
+) -> Dispatcher {
     let mut registry = ToolRegistry::new().expect("registry");
     registry
-        .register_tool(read_tool(READ_TOOL, CredentialNeed::None, calls))
+        .register_tool(read_tool(READ_TOOL, CredentialNeed::None, calls).needs_instance(true))
         .expect("register");
     registry
         .register_tool(read_tool(REMOTE_TOOL, CredentialNeed::Rest, calls))
@@ -272,6 +281,7 @@ fn dispatcher_with(
         script_guard: ScriptOperandGuard {
             shared_account: false,
         },
+        usage,
     };
     Dispatcher::new(registry, services, key())
 }
@@ -324,9 +334,10 @@ async fn renders_handler_result() {
         })
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // Listing follows D-05 (6.2.0 `tools/list`) order, not registration order.
     assert_eq!(
         d.tools().iter().map(|t| t.name).collect::<Vec<_>>(),
-        [READ_TOOL, REMOTE_TOOL, WRITE_TOOL]
+        [REMOTE_TOOL, READ_TOOL, WRITE_TOOL]
     );
 }
 
@@ -439,6 +450,62 @@ async fn remote_tool_fails_closed_without_credential_provider() {
         Err(ToolError::Credential(CredentialError::Backend(_)))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[derive(Default)]
+struct Usage(Mutex<Vec<&'static str>>);
+impl UsageSink for Usage {
+    fn record(&self, tool: &'static str) {
+        self.0.lock().expect("usage").push(tool);
+    }
+}
+
+#[tokio::test]
+async fn usage_sink_counts_registered_tools_only() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let usage = Arc::new(Usage::default());
+    let d = dispatcher_full(
+        &calls,
+        Arc::new(PassThrough),
+        Arc::new(Recorder::default()),
+        Some(usage.clone()),
+    );
+    let _ = d
+        .call_tool(&ctx(), READ_TOOL, serde_json::json!({"query": "x"}))
+        .await;
+    let _ = d.call_tool(&ctx(), "Nope", serde_json::json!({})).await;
+    // Recorded after lookup, before validation.
+    let _ = d.call_tool(&ctx(), READ_TOOL, serde_json::json!({})).await;
+    assert_eq!(*usage.0.lock().expect("usage"), vec![READ_TOOL, READ_TOOL]);
+}
+
+#[tokio::test]
+async fn unknown_per_call_instance_is_a_tool_error() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let d = dispatcher(&calls);
+    let out = d
+        .call_tool(
+            &ctx(),
+            READ_TOOL,
+            serde_json::json!({"query": "x", "instance": "ghost"}),
+        )
+        .await;
+    assert!(
+        matches!(&out, Err(ToolError::Message(m)) if m == "Instance 'ghost' not found"),
+        "{out:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unknown_resource_uses_6_2_0_text() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let d = dispatcher(&calls);
+    let out = d.read_resource(&ctx(), "servicenow://unknown").await;
+    assert!(
+        matches!(&out, Err(ToolError::Message(m)) if m == "Unknown resource: servicenow://unknown"),
+        "{out:?}"
+    );
 }
 
 #[test]

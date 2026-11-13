@@ -903,6 +903,7 @@ dependencies = [
 name = "hpm-tools"
 version = "7.0.0-alpha.0"
 dependencies = [
+ "hpm-core",
  "hpm-types",
  "jsonschema",
  "serde_json",

@@ -88,6 +88,7 @@ fn dispatcher(gate: Arc<Semaphore>) -> Arc<Dispatcher> {
         script_guard: ScriptOperandGuard {
             shared_account: false,
         },
+        usage: None,
     };
     Arc::new(Dispatcher::new(registry, services, *KEY))
 }

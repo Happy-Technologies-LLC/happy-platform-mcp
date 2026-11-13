@@ -166,9 +166,16 @@ pub enum ToolError {
     Denied { reason: String },
     #[error(transparent)]
     Credential(#[from] CredentialError),
-    /// ServiceNow error. `message` may echo data, so it goes through `protect_error`.
-    #[error("servicenow {status}: {message}")]
+    /// ServiceNow error. `message` is the 6.2.0 `enrichServiceNowError` text (it
+    /// already starts with the status) and may echo data, so it goes through
+    /// `protect_error`. Tools render `Error: {message}`.
+    #[error("{message}")]
     Upstream { status: u16, message: String },
+    /// 6.2.0 `error.message`, shown verbatim: tools render `Error: {message}` with
+    /// `isError`, resources answer JSON-RPC -32603 with `{message}`. May echo data,
+    /// so it goes through `protect_error` like `Upstream`.
+    #[error("{0}")]
+    Message(String),
     #[error("cancelled")]
     Cancelled,
     #[error("deadline exceeded")]
@@ -225,6 +232,19 @@ pub type Normalizer =
 /// Pure; reproduces 6.2.0 bytes (golden-tested) for visible results.
 pub type Renderer = fn(&ResultBody) -> String;
 
+/// MCP tool annotations (D4). Advisory hints for clients, attached centrally at
+/// registration from the D-05 row's `annotation_hints`; never read by policy,
+/// protection or the dispatcher.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct ToolAnnotations {
+    pub read_only_hint: Option<bool>,
+    pub destructive_hint: Option<bool>,
+    pub idempotent_hint: Option<bool>,
+    pub open_world_hint: Option<bool>,
+}
+
 /// `#[non_exhaustive]`: build with [`ToolDescriptor::new`] and the setters. Defaults
 /// (`Read`, `OutputClass::None`, `SideEffectClass::None`, `Idempotent`, no instance,
 /// `CredentialNeed::None`) must be overridden to match the tool's D-05 row; the
@@ -246,6 +266,11 @@ pub struct ToolDescriptor {
     pub normalize: Normalizer,
     pub handler: Arc<dyn ToolHandler>,
     pub render: Renderer,
+    /// Optional display title (MCP `title`). Advisory only.
+    pub title: Option<&'static str>,
+    /// Set by the tool registry from the D-05 row; a value set by a lane is
+    /// overwritten. Advisory only.
+    pub annotations: Option<ToolAnnotations>,
 }
 
 impl ToolDescriptor {
@@ -270,6 +295,8 @@ impl ToolDescriptor {
             normalize,
             handler,
             render,
+            title: None,
+            annotations: None,
         }
     }
     pub fn access(mut self, access: AccessClass) -> Self {
@@ -296,12 +323,20 @@ impl ToolDescriptor {
         self.credentials = credentials;
         self
     }
+    pub fn title(mut self, title: &'static str) -> Self {
+        self.title = Some(title);
+        self
+    }
 }
 
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct ResourceDescriptor {
     pub uri: &'static str,
+    /// 6.2.0 `resources/list` fields.
+    pub name: &'static str,
+    pub description: &'static str,
+    pub mime_type: &'static str,
     pub output: OutputClass,
     pub credentials: CredentialNeed,
     pub handler: Arc<dyn ResourceHandler>,
@@ -310,12 +345,18 @@ pub struct ResourceDescriptor {
 impl ResourceDescriptor {
     pub fn new(
         uri: &'static str,
+        name: &'static str,
+        description: &'static str,
+        mime_type: &'static str,
         output: OutputClass,
         credentials: CredentialNeed,
         handler: Arc<dyn ResourceHandler>,
     ) -> Self {
         Self {
             uri,
+            name,
+            description,
+            mime_type,
             output,
             credentials,
             handler,

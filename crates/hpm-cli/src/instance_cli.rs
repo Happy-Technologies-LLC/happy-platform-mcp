@@ -830,7 +830,7 @@ fn to_ref(kind: CredentialType, name: &str) -> Result<String, CodedError> {
 struct Snapshot {
     reference: String,
     existed: bool,
-    value: Option<String>,
+    value: Option<Zeroizing<String>>,
 }
 
 async fn has_secret(store: &InstanceCredentialStore, reference: &str) -> Result<bool, CodedError> {
@@ -851,7 +851,7 @@ async fn snapshot_secret(
             value: None,
         });
     }
-    let value = store.get_secret(reference).await?.expose().to_owned();
+    let value = Zeroizing::new(store.get_secret(reference).await?.expose().to_owned());
     Ok(Snapshot {
         reference: reference.into(),
         existed: true,
@@ -880,7 +880,10 @@ async fn restore_snapshots(
     for snapshot in snapshots.iter().rev() {
         let ok = if snapshot.existed {
             ctx.credentials
-                .set_secret(&snapshot.reference, snapshot.value.as_deref().unwrap_or(""))
+                .set_secret(
+                    &snapshot.reference,
+                    snapshot.value.as_ref().map_or("", |v| v.as_str()),
+                )
                 .await
                 .is_ok()
         } else {
@@ -1518,7 +1521,7 @@ const LEGACY_SECRET_KEYS: [&str; 7] = [
 struct LegacyEntry {
     index: usize,
     kind: String,
-    value: String,
+    value: Zeroizing<String>,
 }
 
 fn legacy_secret_entries(document: &Value) -> Result<Vec<LegacyEntry>, CodedError> {
@@ -1575,7 +1578,7 @@ fn legacy_secret_entries(document: &Value) -> Result<Vec<LegacyEntry>, CodedErro
                         out.push(LegacyEntry {
                             index: instance.unwrap_or(0),
                             kind: key.clone(),
-                            value: s.to_owned(),
+                            value: Zeroizing::new(s.to_owned()),
                         });
                         continue;
                     }
@@ -1598,7 +1601,7 @@ fn legacy_secret_entries(document: &Value) -> Result<Vec<LegacyEntry>, CodedErro
 
 struct MigrationWrite {
     reference: String,
-    value: String,
+    value: Zeroizing<String>,
 }
 
 fn label_of(instance: &Object, index: usize) -> String {

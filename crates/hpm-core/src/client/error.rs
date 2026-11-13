@@ -19,6 +19,22 @@ const CREDENTIAL_ERROR_CODES: [&str; 4] = [
     "KEYCHAIN_OPERATION_FAILED",
 ];
 
+/// Handler error with the 6.2.0 wording: tools render `Error: {message}`, where
+/// `message` is already `enrichServiceNowError` text (e.g.
+/// `403 User Not Authorized ACL exception`). A moved generation keeps its
+/// `StaleInstanceError` text; it was never sent.
+impl From<ClientError> for hpm_types::tool::ToolError {
+    fn from(e: ClientError) -> Self {
+        match e.status.filter(|s| *s != 0) {
+            Some(status) if !e.is_stale() => Self::Upstream {
+                status,
+                message: e.message,
+            },
+            _ => Self::Message(e.message),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[error("{message}")]
 pub struct ClientError {

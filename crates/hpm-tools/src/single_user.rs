@@ -158,9 +158,10 @@ impl AuditSink for StderrAudit {
     }
 }
 
-/// Classification before the client lane builds per-instance snapshots: an
-/// incomplete snapshot, so every table classifies as `Unknown` and every write to a
-/// table is treated as Execute (fail closed, RFC §3.1).
+/// Single-user table classification: the bundled D-05 static baselines only. The
+/// snapshot is incomplete (no per-instance `sys_dictionary` load), so tables outside
+/// the baselines classify as `Unknown`; that fails closed only where policy or
+/// protection applies, which single-user never does (RFC §3.1).
 pub struct UnloadedClassification;
 
 impl ClassificationSource for UnloadedClassification {
@@ -169,8 +170,9 @@ impl ClassificationSource for UnloadedClassification {
     }
 }
 
-/// Credential provider for tools that need no ServiceNow credential. Any other need
-/// fails closed until lane B's single-user providers are wired.
+/// Credential provider for compositions with no ServiceNow access (docs-only
+/// servers, tests). Any need other than `None` fails closed. The default root wires
+/// `hpm_core::credential::provider::SingleUserCredentialProvider`.
 pub struct LocalOnlyCredentials;
 
 impl LocalOnlyCredentials {

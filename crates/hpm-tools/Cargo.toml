@@ -12,6 +12,7 @@ authors.workspace = true
 # No `trusted-root`: the dispatcher attaches admission products only with the
 # `AdmissionKey` the composition root passes to `Dispatcher::new`.
 hpm-types.workspace = true
+hpm-core.workspace = true # G2/G1: PinnedClient and ConfigManager for families
 serde_json.workspace = true
 thiserror.workspace = true
 jsonschema.workspace = true # C6; root pin disables remote `$ref` fetching
