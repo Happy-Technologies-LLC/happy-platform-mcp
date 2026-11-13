@@ -203,6 +203,7 @@ impl FileTokenStore {
     }
 }
 
+#[cfg(unix)]
 fn io(e: std::io::Error) -> CodedError {
     CodedError::new(
         e.raw_os_error()
