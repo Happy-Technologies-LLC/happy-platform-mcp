@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const script = path.join(repo, 'scripts', 'release', 'assemble-npm.mjs');
-const { scope, binaries, platforms } = JSON.parse(fs.readFileSync(path.join(repo, 'npm', 'platforms.json'), 'utf8'));
+const { packagePrefix, binaries, platforms } = JSON.parse(fs.readFileSync(path.join(repo, 'npm', 'platforms.json'), 'utf8'));
 const VERSION = '7.0.0-test.1';
 // publish-npm.yml assembles on Linux; Windows' bundled tar is not relied on for .tar.xz.
 const skip = process.platform === 'win32' ? 'assembly runs on Linux/macOS only' : false;
@@ -58,7 +58,7 @@ test('assembles the wrapper and every platform package', { skip }, () => {
   assert.equal(main.version, VERSION);
   assert.deepEqual(
     main.optionalDependencies,
-    Object.fromEntries(platforms.map((p) => [`${scope}/${p.id}`, VERSION]))
+    Object.fromEntries(platforms.map((p) => [`${packagePrefix}${p.id}`, VERSION]))
   );
   assert.deepEqual(Object.keys(main.bin).sort(), [...binaries].sort());
   for (const p of platforms) {

@@ -8,7 +8,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const SCOPE = '@happy-platform-mcp';
+// Platform package name = PACKAGE_PREFIX + id (npm/platforms.json "packagePrefix").
+const PACKAGE_PREFIX = '@happy-technologies/happy-platform-mcp-';
 const EXIT_NOT_FOUND = 127;
 const EXIT_CANNOT_EXECUTE = 126;
 const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
@@ -66,7 +67,7 @@ function resolveBinary(name, ctx = {}) {
   const libc = platform === 'linux' ? detectLibc(ctx.report) : undefined;
   const p = packageId(platform, arch, libc);
   if (p.error) return { error: p.error, code: EXIT_NOT_FOUND };
-  const pkg = `${SCOPE}/${p.id}`;
+  const pkg = `${PACKAGE_PREFIX}${p.id}`;
   const exe = platform === 'win32' ? `${name}.exe` : name;
   let why;
   try {
@@ -121,4 +122,4 @@ function main(name) {
   });
 }
 
-module.exports = { detectLibc, packageId, resolveBinary, main, SCOPE };
+module.exports = { detectLibc, packageId, resolveBinary, main, PACKAGE_PREFIX };

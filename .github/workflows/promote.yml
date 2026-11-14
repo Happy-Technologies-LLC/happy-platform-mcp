@@ -3,7 +3,7 @@
 # image tags `latest`, `<major>` and `<major>.<minor>`.
 #
 # Dispatch it FROM THE RELEASE TAG, so the gate logic is the tagged revision:
-#   gh workflow run promote.yml --ref v7.0.1 -f version=7.0.1
+#   gh workflow run promote.yml --ref v7.0.2 -f version=7.0.2
 #
 # Fails closed: every check below passes before anything is moved.
 #   preconditions
@@ -52,13 +52,13 @@ concurrency:
 env:
   VERSION: ${{ inputs.version }}
   NPM_WRAPPER: happy-platform-mcp
-  NPM_SCOPE: "@happy-platform-mcp"
+  NPM_PREFIX: "@happy-technologies/happy-platform-mcp-"
   NPM_PLATFORM_PACKAGES: >-
-    @happy-platform-mcp/darwin-arm64
-    @happy-platform-mcp/darwin-x64
-    @happy-platform-mcp/linux-x64-gnu
-    @happy-platform-mcp/linux-arm64-gnu
-    @happy-platform-mcp/win32-x64
+    @happy-technologies/happy-platform-mcp-darwin-arm64
+    @happy-technologies/happy-platform-mcp-darwin-x64
+    @happy-technologies/happy-platform-mcp-linux-x64-gnu
+    @happy-technologies/happy-platform-mcp-linux-arm64-gnu
+    @happy-technologies/happy-platform-mcp-win32-x64
   IMAGE: docker.io/nczitzer/happy-platform-mcp
   OIDC_ISSUER: https://token.actions.githubusercontent.com
   MCP_PUBLISHER_VERSION: v1.8.9
@@ -167,14 +167,14 @@ jobs:
             else
               tar -xJf "$RUNNER_TEMP/verified/happy-platform-mcp-$t.tar.xz" -C "$work/$id/archive"
             fi
-            tgz=$(cd "$work/$id/npm" && npm pack "$NPM_SCOPE/$id@$VERSION" --silent)
+            tgz=$(cd "$work/$id/npm" && npm pack "$NPM_PREFIX$id@$VERSION" --silent)
             tar -xzf "$work/$id/npm/$tgz" -C "$work/$id/npm"
             for b in $(jq -r '.binaries[]' npm/platforms.json); do
               from_archive=$(find "$work/$id/archive" -type f -name "$b$exe" | head -n1)
               from_npm="$work/$id/npm/package/bin/$b$exe"
               if [ -z "$from_archive" ] || [ ! -f "$from_npm" ]; then echo "::error::$b$exe missing for $id"; exit 1; fi
               a=$(sha256sum "$from_archive" | cut -d' ' -f1); n=$(sha256sum "$from_npm" | cut -d' ' -f1)
-              [ "$a" = "$n" ] || { echo "::error::$NPM_SCOPE/$id $b$exe ($n) differs from release archive ($a)"; exit 1; }
+              [ "$a" = "$n" ] || { echo "::error::$NPM_PREFIX$id $b$exe ($n) differs from release archive ($a)"; exit 1; }
               echo "ok $id $b$exe $a"
             done
           done
