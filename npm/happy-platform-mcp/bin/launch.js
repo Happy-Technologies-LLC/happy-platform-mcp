@@ -5,17 +5,27 @@
 // passing the child's exit code or terminating signal through to the caller.
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const SCOPE = '@happy-platform-mcp';
 const EXIT_NOT_FOUND = 127;
 const EXIT_CANNOT_EXECUTE = 126;
 const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+// Signals whose default action terminates Node, so re-raising reproduces the child's death.
+// Others (SIGPIPE is ignored by Node, SIGUSR1 starts the inspector) are mapped to 128+n.
+const RERAISE_SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', 'SIGABRT', 'SIGKILL']);
+// Hosts with a published platform package (npm/platforms.json).
+const SUPPORTED = new Set(['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'win32-x64']);
 
 // glibcVersionRuntime is only present in Node's diagnostic report header on glibc hosts.
 function detectLibc(report) {
   try {
-    const r = report === undefined ? process.report.getReport() : report;
+    let r = report;
+    if (r === undefined) {
+      process.report.excludeNetwork = true; // network enumeration can take seconds
+      r = process.report.getReport();
+    }
     return r && r.header && r.header.glibcVersionRuntime ? 'glibc' : 'musl';
   } catch {
     return 'glibc';
@@ -24,6 +34,14 @@ function detectLibc(report) {
 
 // npm package id for a host, or an error string when the host is unsupported.
 function packageId(platform, arch, libc) {
+  if (!SUPPORTED.has(`${platform}-${arch}`)) {
+    return {
+      error:
+        `happy-platform-mcp: unsupported platform ${platform}/${arch}. Native builds exist for ` +
+        'darwin/arm64, darwin/x64, linux/x64, linux/arm64 (glibc) and win32/x64. ' +
+        'Build from source and set HPM_BINARY_PATH, or use the container image.'
+    };
+  }
   if (platform === 'linux') {
     if (libc !== 'glibc') {
       return {
@@ -84,10 +102,20 @@ function main(name) {
   });
   child.on('exit', (code, signal) => {
     if (signal) {
-      // Re-raise so the parent (MCP client) observes the same termination cause.
-      for (const sig of FORWARDED_SIGNALS) process.removeListener(sig, forward);
-      process.kill(process.pid, signal);
-      return;
+      const status = 128 + (os.constants.signals[signal] || 0);
+      if (RERAISE_SIGNALS.has(signal)) {
+        // Re-raise so the parent (MCP client) observes the same termination cause.
+        for (const sig of FORWARDED_SIGNALS) process.removeListener(sig, forward);
+        try {
+          process.kill(process.pid, signal);
+        } catch {
+          // fall through to the exit status below
+        }
+        // Still alive (signal not delivered synchronously or handled): exit like a shell would.
+        setTimeout(() => process.exit(status), 100);
+        return;
+      }
+      process.exit(status);
     }
     process.exit(code === null ? 1 : code);
   });

@@ -49,6 +49,15 @@ test('HPM_BINARY_PATH overrides resolution (also on musl)', () => {
   assert.deepEqual(r, { bin: '/x/bin' });
 });
 
+test('unsupported os/arch gets its own message, exit 127', () => {
+  for (const [platform, arch] of [['linux', 'ppc64'], ['win32', 'arm64'], ['freebsd', 'x64']]) {
+    const r = resolveBinary('happy-platform-mcp', { env: {}, platform, arch, report: { header: { glibcVersionRuntime: '2.39' } } });
+    assert.equal(r.code, 127);
+    assert.match(r.error, new RegExp(`unsupported platform ${platform}/${arch}`));
+    assert.doesNotMatch(r.error, /omit=optional/);
+  }
+});
+
 test('installed platform package resolves bin/<name>(.exe)', () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hpm-shim-')));
   const pkg = path.join(root, 'node_modules', '@happy-platform-mcp', 'win32-x64');
@@ -106,6 +115,15 @@ test('child terminating signal is re-raised', { skip: isWin }, () => {
   const r = runShim('happy-platform-mcp', fakeBinary('kill -TERM $$'));
   assert.equal(r.signal, 'SIGTERM');
 });
+
+for (const sig of ['SIGPIPE', 'SIGUSR1']) {
+  test(`child killed by ${sig} => wrapper exits 128+n, no inspector`, { skip: isWin }, () => {
+    const r = runShim('happy-platform-mcp', fakeBinary(`kill -${sig.slice(3)} $$`));
+    assert.equal(r.signal, null);
+    assert.equal(r.status, 128 + os.constants.signals[sig]);
+    assert.doesNotMatch(r.stderr, /Debugger listening/);
+  });
+}
 
 test('SIGTERM to the wrapper is forwarded to the child', { skip: isWin }, async () => {
   const { spawn } = await import('node:child_process');
