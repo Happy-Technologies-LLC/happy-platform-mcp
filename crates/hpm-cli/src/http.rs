@@ -46,7 +46,8 @@ pub fn load_dotenv() {
 /// Process entry of `happy-platform-mcp-http`. Arguments are ignored, as `node
 /// src/server.js` ignores them, except the 7.0 `--version`/`-V` used by release smokes.
 pub fn main() -> ExitCode {
-    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+    let first = std::env::args_os().nth(1);
+    if matches!(first.as_ref().and_then(|a| a.to_str()), Some("--version" | "-V")) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }

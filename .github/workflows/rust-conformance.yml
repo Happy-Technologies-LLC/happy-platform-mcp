@@ -61,7 +61,7 @@ jobs:
         run: cargo run -p xtask --locked -- check-trusted-root
 
   # Each lane crate must build on its own, without the composition-root-only
-  # `trusted-root` feature that only hpm-cli enables.
+  # `trusted-root` feature that only the composition root (package happy-platform-mcp) enables.
   feature-isolation:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -111,7 +111,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
 
       - name: Build the HTTP binary
-        run: cargo build -p hpm-cli --bin happy-platform-mcp-http --locked
+        run: cargo build -p happy-platform-mcp --bin happy-platform-mcp-http --locked
 
       - name: Run the conformance suite
         shell: bash

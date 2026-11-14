@@ -11,6 +11,10 @@
 3. **Background scripts:** the `sys_trigger` fallback of `SN-Execute-Background-Script` is now opt-in (`allow_trigger_fallback: true` or `HAPPY_MCP_ALLOW_TRIGGER_FALLBACK=1`).
 4. **Pinned installs:** `npx -y happy-platform-mcp@6` and Docker `:latest` stay on 6.x. Try 7.0 with `@next`, Docker `:next` (or the image digest), Homebrew or a release archive.
 
+### Added
+
+- `--version` / `-V` on all three binaries (6.2.0 answered "Unknown command", exit 2).
+
 ### Changed
 
 - Rust implementation of the stdio and HTTP servers and the `happy-platform-mcp instance` commands. The three commands are the same as before: `happy-platform-mcp`, `servicenow-mcp-server` and `happy-platform-mcp-http`.

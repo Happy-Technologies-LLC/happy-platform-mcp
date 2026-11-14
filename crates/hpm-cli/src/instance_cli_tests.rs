@@ -1880,7 +1880,10 @@ fn version_flag_prints_package_version() {
     for flag in ["--version", "-V"] {
         let (d, out, err) = route_of(&[flag]);
         assert_eq!(d, Dispatch::Exit(0));
-        assert_eq!((out.as_str(), err.as_str()), (concat!(env!("CARGO_PKG_VERSION"), "\n"), ""));
+        assert_eq!(
+            (out.as_str(), err.as_str()),
+            (concat!(env!("CARGO_PKG_VERSION"), "\n"), "")
+        );
     }
 }
 
