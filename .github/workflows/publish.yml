@@ -96,6 +96,9 @@ jobs:
     needs: [check-version, test]
     if: needs.check-version.outputs.should-publish == 'true'
     runs-on: ubuntu-latest
+    environment: release
+    outputs:
+      npm_tag: ${{ steps.npm-tag.outputs.tag }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -136,13 +139,23 @@ jobs:
       - name: Scan packed npm tarball for secrets
         run: scripts/secret-scan.sh package
 
+      # 7.x (Rust) owns npm `latest` once promoted; 6.x patches then go to `latest-6`.
+      - name: Select npm dist-tag
+        id: npm-tag
+        run: |
+          set -euo pipefail
+          current="$(npm view happy-platform-mcp dist-tags.latest)"
+          if [ "${current%%.*}" = "6" ]; then tag=latest; else tag=latest-6; fi
+          echo "npm latest is $current; publishing with --tag $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Publish to npm with trusted publishing
         if: needs.check-version.outputs.npm_publish_mode == 'trusted'
-        run: npm publish --access public
+        run: npm publish --access public --tag "${{ steps.npm-tag.outputs.tag }}"
 
       - name: Publish to npm with token fallback
         if: needs.check-version.outputs.npm_publish_mode == 'token'
-        run: npm publish --access public
+        run: npm publish --access public --tag "${{ steps.npm-tag.outputs.tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -151,6 +164,7 @@ jobs:
     needs: [check-version, publish-npm]
     if: needs.check-version.outputs.should-publish == 'true'
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 10
     permissions:
       contents: write
@@ -184,11 +198,14 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          # "Latest" only while 6.x still owns npm latest; never steal it from a 7.x release.
+          make_latest: ${{ needs.publish-npm.outputs.npm_tag == 'latest' }}
 
   publish-docker:
     needs: [check-version, test, publish-npm, create-release]
     if: needs.check-version.outputs.should-publish == 'true'
     runs-on: ubuntu-latest
+    environment: release
     timeout-minutes: 60
     permissions:
       contents: read
@@ -204,7 +221,7 @@ jobs:
               node -e "let input = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (chunk) => input += chunk).on('end', () => { const value = JSON.parse(input); if (typeof value !== 'string') throw new TypeError('npm latest version must be a string'); process.stdout.write(value); });"
           )"
           CURRENT_VERSION="${{ needs.check-version.outputs.version }}"
-          if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
+          if [ "${LATEST_VERSION%%.*}" = "6" ] && [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
             echo "promote=true" >> "$GITHUB_OUTPUT"
           else
             echo "promote=false" >> "$GITHUB_OUTPUT"

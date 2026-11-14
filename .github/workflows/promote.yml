@@ -2,16 +2,31 @@
 # (plan P5-1). This is the ONLY workflow allowed to move npm `latest` and the
 # image tags `latest`, `<major>` and `<major>.<minor>`.
 #
-# Fails closed: every precondition below must hold before anything is moved.
-#   1. GitHub Release v<version> exists and is still a prerelease.
-#   2. npm dist-tag `next` of happy-platform-mcp points at <version>, and the
-#      five platform packages exist at <version>.
-#   3. docker.io/nczitzer/happy-platform-mcp:<version> resolves to a digest.
-#   4. Signing gate (P5-2): macOS binaries carry a valid Developer ID
-#      signature, the Windows exe a valid Authenticode signature. Checked on
-#      the downloaded release assets. `skip-signing-gate` bypasses it and is
-#      reported as an error annotation plus a job summary banner.
-#   5. `npx -y happy-platform-mcp@<version> --version` works on 3 OSes.
+# Dispatch it FROM THE RELEASE TAG, so the gate logic is the tagged revision:
+#   gh workflow run promote.yml --ref v7.0.0 -f version=7.0.0
+#
+# Fails closed: every check below passes before anything is moved.
+#   preconditions
+#     - github.ref is refs/tags/v<version>.
+#     - GitHub Release v<version> exists, is published and is still a prerelease.
+#     - npm dist-tag `next` of happy-platform-mcp is <version>; the five
+#       platform packages exist at <version>.
+#     - The image tag <version> resolves to a digest that carries a keyless
+#       cosign signature from publish-image.yml@refs/tags/v<version>.
+#     - scripts/release/verify-release.sh passes on the downloaded assets
+#       (cosign over SHA256SUMS + pinned-signer attestations).
+#     - The binaries inside each npm platform tarball are byte-identical to the
+#       binaries in the verified release archive for that target.
+#   registry-preflight
+#     - server.json validates, and mcp-publisher can log in with a registry
+#       token whose publish permission covers the server name.
+#   signing gate (P5-2), on the verified archives
+#     - macOS: Developer ID Application signature + hardened runtime.
+#     - Windows: Authenticode status Valid.
+#     `skip-signing-gate` replaces both with a waiver job in the separate
+#     environment `release-unsigned` (own required reviewer), and the release
+#     notes get a permanent "Promoted without code signing" line.
+#   smoke: `npx -y happy-platform-mcp@<version> --version` on 3 OSes.
 name: Promote release to latest
 
 on:
@@ -22,7 +37,7 @@ on:
         required: true
         type: string
       skip-signing-gate:
-        description: "DANGER: promote without verified macOS/Windows code signatures"
+        description: "DANGER: promote without verified macOS/Windows code signatures (needs release-unsigned approval)"
         required: false
         type: boolean
         default: false
@@ -37,6 +52,7 @@ concurrency:
 env:
   VERSION: ${{ inputs.version }}
   NPM_WRAPPER: happy-platform-mcp
+  NPM_SCOPE: "@happy-platform-mcp"
   NPM_PLATFORM_PACKAGES: >-
     @happy-platform-mcp/darwin-arm64
     @happy-platform-mcp/darwin-x64
@@ -44,6 +60,7 @@ env:
     @happy-platform-mcp/linux-arm64-gnu
     @happy-platform-mcp/win32-x64
   IMAGE: docker.io/nczitzer/happy-platform-mcp
+  OIDC_ISSUER: https://token.actions.githubusercontent.com
   MCP_PUBLISHER_VERSION: v1.8.9
   MCP_PUBLISHER_SHA256: 4d527ca8f1ced0394c962dc925c2a4a4addef441cbefd62501c875e9481823a8
 
@@ -54,13 +71,21 @@ jobs:
     outputs:
       digest: ${{ steps.image.outputs.digest }}
     steps:
-      - name: Validate version input
+      - name: Validate version input and ref
         run: |
           set -euo pipefail
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::version '$VERSION' must be a plain X.Y.Z release (no v prefix, no prerelease suffix)"
             exit 1
           fi
+          if [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
+            echo "::error::dispatch from the release tag: gh workflow run promote.yml --ref v$VERSION -f version=$VERSION (got $GITHUB_REF)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
 
       - name: GitHub Release exists and is a prerelease
         env:
@@ -97,33 +122,124 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "$IMAGE:$VERSION -> $digest"
 
-  signing-gate-macos:
-    name: Signing gate (macOS Developer ID)
-    needs: preconditions
-    runs-on: macos-latest
-    steps:
-      - name: Signing gate SKIPPED
-        if: inputs.skip-signing-gate
-        run: |
-          echo "::error title=SIGNING GATE SKIPPED::Promoting v$VERSION WITHOUT verifying the macOS Developer ID signature (requested by $GITHUB_ACTOR)"
-          echo "## ⚠️ SIGNING GATE SKIPPED (macOS) by $GITHUB_ACTOR for v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
-      - name: Verify Developer ID signatures on release assets
-        if: ${{ !inputs.skip-signing-gate }}
+      - name: Image digest is signed by publish-image.yml at the tag
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-oidc-issuer "$OIDC_ISSUER" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/publish-image.yml@refs/tags/v$VERSION" \
+            >/dev/null
+          echo "ok cosign $IMAGE@$DIGEST"
+
+      - name: Release assets verify against signed SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p assets && cd assets
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/assets"
+          scripts/release/verify-release.sh "$VERSION" "$RUNNER_TEMP/assets"
+          # Only archives covered by the cosign-verified SHA256SUMS go further.
+          mkdir -p "$RUNNER_TEMP/verified"
+          for t in $(jq -r '.platforms[].rust' npm/platforms.json); do
+            ext=tar.xz; [ "$t" = x86_64-pc-windows-msvc ] && ext=zip
+            a="happy-platform-mcp-$t.$ext"
+            grep -qE "^[0-9a-f]{64}[ *]+$a\$" "$RUNNER_TEMP/assets/SHA256SUMS" || { echo "::error::$a not in signed SHA256SUMS"; exit 1; }
+            cp "$RUNNER_TEMP/assets/$a" "$RUNNER_TEMP/verified/"
+          done
+          (cd "$RUNNER_TEMP/verified" && grep -E 'happy-platform-mcp-[^ ]+\.(tar\.xz|zip)$' "$RUNNER_TEMP/assets/SHA256SUMS" | sha256sum --ignore-missing -c -)
+
+      - name: npm platform binaries equal the release archive binaries
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/npmcheck"
+          mkdir -p "$work"
+          jq -c '.platforms[]' npm/platforms.json | while read -r p; do
+            id=$(jq -r .id <<<"$p"); t=$(jq -r .rust <<<"$p")
+            exe=""; ext=tar.xz
+            if [ "$t" = x86_64-pc-windows-msvc ]; then exe=.exe; ext=zip; fi
+            mkdir -p "$work/$id/archive" "$work/$id/npm"
+            if [ "$ext" = zip ]; then
+              unzip -q "$RUNNER_TEMP/verified/happy-platform-mcp-$t.zip" -d "$work/$id/archive"
+            else
+              tar -xJf "$RUNNER_TEMP/verified/happy-platform-mcp-$t.tar.xz" -C "$work/$id/archive"
+            fi
+            tgz=$(cd "$work/$id/npm" && npm pack "$NPM_SCOPE/$id@$VERSION" --silent)
+            tar -xzf "$work/$id/npm/$tgz" -C "$work/$id/npm"
+            for b in $(jq -r '.binaries[]' npm/platforms.json); do
+              from_archive=$(find "$work/$id/archive" -type f -name "$b$exe" | head -n1)
+              from_npm="$work/$id/npm/package/bin/$b$exe"
+              [ -n "$from_archive" ] && [ -f "$from_npm" ] || { echo "::error::$b$exe missing for $id"; exit 1; }
+              a=$(sha256sum "$from_archive" | cut -d' ' -f1); n=$(sha256sum "$from_npm" | cut -d' ' -f1)
+              [ "$a" = "$n" ] || { echo "::error::$NPM_SCOPE/$id $b$exe ($n) differs from release archive ($a)"; exit 1; }
+              echo "ok $id $b$exe $a"
+            done
+          done
+
+      - name: Upload verified archives for the signing gate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-archives
+          path: ${{ runner.temp }}/verified/
+          if-no-files-found: error
+          retention-days: 1
+
+  registry-preflight:
+    name: MCP registry preflight
+    needs: preconditions
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Install mcp-publisher ${{ env.MCP_PUBLISHER_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher --version
+      - name: server.json carries the version
+        run: |
+          set -euo pipefail
+          for v in "$(jq -r .version server.json)" $(jq -r '.packages[] | .version // (.identifier | sub("^.*:"; ""))' server.json); do
+            [ "$v" = "$VERSION" ] || { echo "::error::server.json at v$VERSION carries version '$v'"; exit 1; }
+          done
+      - name: Validate (mcp-publisher has no publish --dry-run)
+        run: ./mcp-publisher validate
+      - name: Log in and check the token covers the server name
+        env:
+          MCP_REGISTRY_GITHUB_TOKEN: ${{ secrets.MCP_REGISTRY_GITHUB_TOKEN }}
+        run: scripts/release/mcp-registry-login.sh
+
+  signing-gate-macos:
+    name: Signing gate (macOS Developer ID)
+    needs: preconditions
+    if: ${{ !inputs.skip-signing-gate }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-archives
+          path: verified
+      - name: Verify Developer ID signatures
+        run: |
+          set -euo pipefail
+          cd verified
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" \
-              --pattern "happy-platform-mcp-$target.tar.xz" --pattern "happy-platform-mcp-$target.tar.xz.sha256"
-            shasum -a 256 -c "happy-platform-mcp-$target.tar.xz.sha256"
             mkdir "$target" && tar -xJf "happy-platform-mcp-$target.tar.xz" -C "$target"
           done
           checked=0
           while IFS= read -r -d '' bin; do
-            [ "$(file -b "$bin" | grep -c Mach-O)" -gt 0 ] || continue
+            file -b "$bin" | grep -q Mach-O || continue
             echo "== $bin"
             codesign --verify --strict --verbose=2 "$bin"
             info=$(codesign -dvv "$bin" 2>&1)
@@ -137,29 +253,18 @@ jobs:
   signing-gate-windows:
     name: Signing gate (Windows Authenticode)
     needs: preconditions
+    if: ${{ !inputs.skip-signing-gate }}
     runs-on: windows-latest
     steps:
-      - name: Signing gate SKIPPED
-        if: inputs.skip-signing-gate
-        shell: bash
-        run: |
-          echo "::error title=SIGNING GATE SKIPPED::Promoting v$VERSION WITHOUT verifying the Windows Authenticode signature (requested by $GITHUB_ACTOR)"
-          echo "## ⚠️ SIGNING GATE SKIPPED (Windows) by $GITHUB_ACTOR for v$VERSION" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Verify Authenticode signatures on release assets
-        if: ${{ !inputs.skip-signing-gate }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-archives
+          path: verified
+      - name: Verify Authenticode signatures
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $asset = 'happy-platform-mcp-x86_64-pc-windows-msvc.zip'
-          gh release download "v$env:VERSION" --repo $env:GITHUB_REPOSITORY --pattern $asset --pattern "$asset.sha256"
-          if ($LASTEXITCODE -ne 0) { throw "download failed" }
-          $expected = ((Get-Content "$asset.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
-          $actual = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
-          if ($expected -ne $actual) { throw "checksum mismatch for $asset" }
-          Expand-Archive $asset -DestinationPath win
+          Expand-Archive verified/happy-platform-mcp-x86_64-pc-windows-msvc.zip -DestinationPath win
           $exes = Get-ChildItem win -Recurse -Filter *.exe
           if ($exes.Count -lt 3) { throw "expected 3 executables, found $($exes.Count)" }
           foreach ($exe in $exes) {
@@ -171,9 +276,28 @@ jobs:
             }
           }
 
+  signing-gate-waiver:
+    name: Signing gate WAIVED (release-unsigned approval)
+    needs: preconditions
+    if: ${{ inputs.skip-signing-gate }}
+    runs-on: ubuntu-latest
+    environment: release-unsigned
+    steps:
+      - name: Record waiver
+        run: |
+          echo "::error title=SIGNING GATE SKIPPED::Promoting v$VERSION WITHOUT verified macOS/Windows code signatures (dispatched by $GITHUB_ACTOR, approved via environment release-unsigned)"
+          echo "## ⚠️ SIGNING GATE SKIPPED for v$VERSION (dispatched by $GITHUB_ACTOR)" >> "$GITHUB_STEP_SUMMARY"
+
   smoke:
     name: Smoke (${{ matrix.os }})
-    needs: [preconditions, signing-gate-macos, signing-gate-windows]
+    needs: [preconditions, registry-preflight, signing-gate-macos, signing-gate-windows, signing-gate-waiver]
+    # Fail closed: either both real gates passed, or (skip requested) the approved waiver passed.
+    if: >-
+      ${{ !cancelled()
+      && needs.preconditions.result == 'success'
+      && needs.registry-preflight.result == 'success'
+      && ((!inputs.skip-signing-gate && needs.signing-gate-macos.result == 'success' && needs.signing-gate-windows.result == 'success')
+          || (inputs.skip-signing-gate && needs.signing-gate-waiver.result == 'success')) }}
     strategy:
       fail-fast: true
       matrix:
@@ -252,14 +376,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          ref: v${{ inputs.version }}
           persist-credentials: false
-      - name: Check server.json version
-        run: |
-          set -euo pipefail
-          for v in "$(jq -r .version server.json)" $(jq -r '.packages[] | .version // (.identifier | sub("^.*:"; ""))' server.json); do
-            [ "$v" = "$VERSION" ] || { echo "::error::server.json at v$VERSION carries version '$v'"; exit 1; }
-          done
       - name: Install mcp-publisher ${{ env.MCP_PUBLISHER_VERSION }}
         run: |
           set -euo pipefail
@@ -267,12 +384,13 @@ jobs:
             "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
           echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
           tar -xzf mcp-publisher.tar.gz mcp-publisher
-          ./mcp-publisher --version
-      - name: Validate, log in (GitHub OIDC) and publish
+      - name: Log in and publish
+        env:
+          MCP_REGISTRY_GITHUB_TOKEN: ${{ secrets.MCP_REGISTRY_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           ./mcp-publisher validate
-          ./mcp-publisher login github-oidc
+          scripts/release/mcp-registry-login.sh
           ./mcp-publisher publish
 
   finalize-release:
@@ -283,12 +401,18 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Un-prerelease and mark latest
+      - name: Record unsigned promotion in the release notes
+        if: ${{ inputs.skip-signing-gate }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
-          if [ "${{ inputs.skip-signing-gate }}" = "true" ]; then
-            echo "## ⚠️ v$VERSION was promoted with the signing gate SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+          printf '\n\n> **Promoted without code signing** (signing gate waived by %s, run %s/%s/actions/runs/%s).\n' \
+            "$GITHUB_ACTOR" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> notes.md
+          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          echo "## ⚠️ v$VERSION was promoted with the signing gate SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+      - name: Un-prerelease and mark latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
