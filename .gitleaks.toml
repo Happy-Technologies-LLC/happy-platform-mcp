@@ -25,6 +25,7 @@ description = "Variable references, templates, fixtures and documentation placeh
 regexTarget = "secret"
 regexes = [
   '''^\$\{''',
+  '''^\{[A-Za-z_][A-Za-z0-9_]*\}(?:\\n\\?)?$''',
   '''^\$[A-Za-z_][A-Za-z0-9_]*$''',
   '''^\$\(''',
   '''^<[^>]*>?$''',
@@ -48,8 +49,16 @@ description = "Keychain credential-reference fixtures are pointers to stored sec
 targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "match"
-paths = ['''^tests/instance-credential-store\.test\.js$''']
+paths = ['''^tests/instance-credential-store\.test\.js$''', '''^crates/hpm-core/src/(?:keychain_tests|credential/mod)\.rs$''']
 regexes = ['''keychain:instance/''']
+
+[[allowlists]]
+description = "Rust doc comment in the docs vector index: 'L2-normalized' is prose, not a key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^crates/hpm-docs/src/vector\.rs$''']
+regexes = ['''^L2-normalized$''']
 
 [[allowlists]]
 description = "Documentation curl examples that use the literal placeholder bearer token"
