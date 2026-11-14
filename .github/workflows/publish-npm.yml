@@ -23,6 +23,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     environment: release
     permissions:
       contents: read
@@ -40,18 +41,23 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Resolve version from the dist plan tag
+      - name: Resolve version from the dist plan (tag must equal app_version)
         id: version
         env:
-          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+          PLAN: ${{ inputs.plan }}
         run: |
           set -euo pipefail
-          V="${TAG#v}"
-          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "bad tag: $TAG" >&2; exit 1; }
+          tag="$(jq -er '.announcement_tag' <<<"$PLAN")"
+          V="$(jq -er '.releases[] | select(.app_name == "happy-platform-mcp") | .app_version' <<<"$PLAN")"
+          if [ "$tag" != "v${V}" ]; then
+            echo "::error::plan tag ${tag} does not match happy-platform-mcp version ${V}"
+            exit 1
+          fi
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::bad version: $V"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
       - name: Download this run's dist archives
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           merge-multiple: true
@@ -71,14 +77,34 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          mkdir -p packs
+          # npm pack is reproducible (fixed mtimes), so a re-run of the same archives yields the
+          # same integrity. Already published + equal => skip; already published + different => fail.
           publish() {
-            local dir="$1" name
+            local dir="$1" name json tgz local_sri remote_sri err
             name="$(node -p "require('./$dir/package.json').name")"
-            if npm view "$name@$V" version >/dev/null 2>&1; then
-              echo "skip: $name@$V already published"
-              return
+            # npm <=11 prints an array, npm 12 an object keyed by package name.
+            json="$(npm pack "./$dir" --json --pack-destination packs \
+              | jq -c 'if type == "array" then .[0] else (to_entries[0].value) end')"
+            tgz="packs/$(jq -er '.filename' <<<"$json")"
+            local_sri="$(jq -er '.integrity' <<<"$json")"
+            err="$(mktemp)"
+            if remote_sri="$(npm view "$name@$V" dist.integrity 2>"$err")"; then
+              :
+            elif grep -q E404 "$err"; then
+              remote_sri=""
+            else
+              cat "$err" >&2; echo "::error::cannot query $name@$V on the registry"; exit 1
             fi
-            (cd "$dir" && npm publish --provenance --access public --tag next)
+            if [ -n "$remote_sri" ]; then
+              if [ "$remote_sri" = "$local_sri" ]; then
+                echo "skip: $name@$V already published with identical integrity"
+                return
+              fi
+              echo "::error::$name@$V is already published with different bytes (registry $remote_sri, local $local_sri)"
+              exit 1
+            fi
+            npm publish "$tgz" --provenance --access public --tag next
           }
           for d in npm-out/*/; do
             d="${d%/}"
@@ -93,6 +119,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
