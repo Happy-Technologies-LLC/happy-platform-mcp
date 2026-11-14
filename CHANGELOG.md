@@ -1,6 +1,8 @@
 # Changelog
 
-## 7.0.0 - unreleased (npm `next` first; `latest` stays 6.2.0 until a separate promotion)
+## 7.0.1 - unreleased (npm `next` first; `latest` stays 6.2.0 until a separate promotion)
+
+7.0.0 was tagged but never published: its release run failed at the npm and Docker publish steps, so 7.0.1 is the first 7.x release. The stray, unverified Docker `7.0.0` tag is not supported.
 
 7.0 is a rewrite of the server in Rust. It keeps the same 60 tools, tool names, arguments and normal output, the same instance registry and the same keychain service and account names as 6.2.0. Read [Migrating to 7.0](docs/MIGRATING_TO_7.md) before you upgrade.
 
@@ -44,19 +46,19 @@
 - Native binaries for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`, built once and attached to the GitHub Release as `happy-platform-mcp-<target>.tar.xz` (`.zip` on Windows) with `.sha256` files.
 - npm: the existing `happy-platform-mcp` package becomes a launcher for per-platform packages `@happy-platform-mcp/{darwin-arm64,darwin-x64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`; published on the `next` dist-tag.
 - Homebrew: `brew install happy-technologies-llc/tap/happy-platform-mcp`.
-- Docker: `nczitzer/happy-platform-mcp` tags `7.0.0` and `next` and a digest, on a glibc base image; `latest`, `7` and `7.0` are not moved until promotion.
+- Docker: `nczitzer/happy-platform-mcp` tags `7.0.1` and `next` and a digest, on a glibc base image; `latest`, `7` and `7.0` are not moved until promotion.
 - Linux builds are glibc only (no musl or Alpine) and need `libdbus-1` for the keychain. The preview binaries are not signed or notarised yet; signing is added before promotion to `latest`.
 - Each release carries `SHA256SUMS` with a keyless signature, a CycloneDX SBOM and build provenance; see [Verifying releases](docs/VERIFYING_RELEASES.md). Verify a download, pinned to the signing workflow and tag:
 
 ```bash
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml@refs/tags/v7.0.0'
+  --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml@refs/tags/v7.0.1'
 sha256sum -c --ignore-missing SHA256SUMS
 gh attestation verify happy-platform-mcp-x86_64-unknown-linux-gnu.tar.xz \
   --repo Happy-Technologies-LLC/happy-platform-mcp \
   --signer-workflow Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml \
-  --source-ref refs/tags/v7.0.0 --deny-self-hosted-runners
+  --source-ref refs/tags/v7.0.1 --deny-self-hosted-runners
 ```
 
 ## 6.2.0 - 2026-11-02

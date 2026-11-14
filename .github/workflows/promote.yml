@@ -3,7 +3,7 @@
 # image tags `latest`, `<major>` and `<major>.<minor>`.
 #
 # Dispatch it FROM THE RELEASE TAG, so the gate logic is the tagged revision:
-#   gh workflow run promote.yml --ref v7.0.0 -f version=7.0.0
+#   gh workflow run promote.yml --ref v7.0.1 -f version=7.0.1
 #
 # Fails closed: every check below passes before anything is moved.
 #   preconditions

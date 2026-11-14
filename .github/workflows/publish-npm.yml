@@ -89,7 +89,8 @@ jobs:
             # npm <=11 prints an array, npm 12 an object keyed by package name.
             json="$(npm pack "./$dir" --json --pack-destination packs \
               | jq -c 'if type == "array" then .[0] else (to_entries[0].value) end')"
-            tgz="packs/$(jq -er '.filename' <<<"$json")"
+            # Leading ./ so npm treats it as a file, not GitHub "owner/repo" shorthand.
+            tgz="./packs/$(jq -er '.filename' <<<"$json")"
             local_sri="$(jq -er '.integrity' <<<"$json")"
             err="$(mktemp)"
             if remote_sri="$(npm view "$name@$V" dist.integrity 2>"$err")"; then
