@@ -32,6 +32,9 @@ The npm package is a small Node launcher that starts the Rust binary for your pl
 - To test 7.0 use `:next`, or pin the digest: `nczitzer/happy-platform-mcp@sha256:<digest>`. The digest is in the GitHub Release notes. Pinning the digest is the safer choice, because `next` moves with each 7.x preview.
 - The image is built on a glibc base (`gcr.io/distroless/cc-debian12:nonroot`) and has no shell. A container has no OS keychain session, so pass credentials as environment variables (`SERVICENOW_INSTANCE_URL`, `SERVICENOW_USERNAME`, `SERVICENOW_PASSWORD`), as with the 6.x image. Section 12 lists the keys a `.env` file still loads.
 - The HTTP server still requires `HAPPY_MCP_API_TOKEN`, as since 6.0.
+- The default command is still the HTTP server on port 3000, as in 6.x. For stdio (Claude Desktop and other MCP clients), run `docker run -i --rm nczitzer/happy-platform-mcp:next servicenow-mcp-server`.
+- The container runs as the distroless `nonroot` user (uid 65532), not root. Mounted files, such as `/app/config/servicenow-instances.json`, must be readable by uid 65532. Generated fix scripts are written to `/app/scripts`, which uid 65532 owns; mount a host directory there that uid 65532 can write to if you want to keep them.
+- The healthcheck in the repository's `docker-compose.yml` runs `node`. The 7.0 image has no Node.js or shell, so that healthcheck fails with the 7.0 image. Remove it, or replace it with an external check, when you run 7.0 with compose.
 
 ### D. macOS: a keychain prompt may appear
 

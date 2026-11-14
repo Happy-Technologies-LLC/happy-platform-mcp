@@ -70,6 +70,10 @@ docker pull nczitzer/happy-platform-mcp@sha256:<digest>
 cosign verify nczitzer/happy-platform-mcp@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/publish-image.yml@refs/tags/v7.0.0'
+gh attestation verify oci://nczitzer/happy-platform-mcp@sha256:<digest> \
+  --repo Happy-Technologies-LLC/happy-platform-mcp \
+  --signer-workflow Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/publish-image.yml \
+  --source-ref refs/tags/v7.0.0 --deny-self-hosted-runners
 ```
 
 ## 6. npm
