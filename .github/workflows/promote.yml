@@ -1,0 +1,294 @@
+# Manual promotion of a released 7.x version from the `next` channel to `latest`
+# (plan P5-1). This is the ONLY workflow allowed to move npm `latest` and the
+# image tags `latest`, `<major>` and `<major>.<minor>`.
+#
+# Fails closed: every precondition below must hold before anything is moved.
+#   1. GitHub Release v<version> exists and is still a prerelease.
+#   2. npm dist-tag `next` of happy-platform-mcp points at <version>, and the
+#      five platform packages exist at <version>.
+#   3. docker.io/nczitzer/happy-platform-mcp:<version> resolves to a digest.
+#   4. Signing gate (P5-2): macOS binaries carry a valid Developer ID
+#      signature, the Windows exe a valid Authenticode signature. Checked on
+#      the downloaded release assets. `skip-signing-gate` bypasses it and is
+#      reported as an error annotation plus a job summary banner.
+#   5. `npx -y happy-platform-mcp@<version> --version` works on 3 OSes.
+name: Promote release to latest
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to promote (e.g. 7.0.0, no leading v)"
+        required: true
+        type: string
+      skip-signing-gate:
+        description: "DANGER: promote without verified macOS/Windows code signatures"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version }}
+  NPM_WRAPPER: happy-platform-mcp
+  NPM_PLATFORM_PACKAGES: >-
+    @happy-platform-mcp/darwin-arm64
+    @happy-platform-mcp/darwin-x64
+    @happy-platform-mcp/linux-x64-gnu
+    @happy-platform-mcp/linux-arm64-gnu
+    @happy-platform-mcp/win32-x64
+  IMAGE: docker.io/nczitzer/happy-platform-mcp
+  MCP_PUBLISHER_VERSION: v1.8.9
+  MCP_PUBLISHER_SHA256: 4d527ca8f1ced0394c962dc925c2a4a4addef441cbefd62501c875e9481823a8
+
+jobs:
+  preconditions:
+    name: Preconditions
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - name: Validate version input
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version '$VERSION' must be a plain X.Y.Z release (no v prefix, no prerelease suffix)"
+            exit 1
+          fi
+
+      - name: GitHub Release exists and is a prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          json=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease,isDraft)
+          echo "$json"
+          [ "$(jq -r .isDraft <<<"$json")" = "false" ] || { echo "::error::release v$VERSION is still a draft"; exit 1; }
+          [ "$(jq -r .isPrerelease <<<"$json")" = "true" ] || { echo "::error::release v$VERSION is not a prerelease (already promoted?)"; exit 1; }
+
+      - name: npm next points at the version
+        run: |
+          set -euo pipefail
+          next=$(npm view "$NPM_WRAPPER" dist-tags.next)
+          if [ "$next" != "$VERSION" ]; then
+            echo "::error::npm dist-tag next of $NPM_WRAPPER is '$next', expected '$VERSION'"
+            exit 1
+          fi
+          for pkg in $NPM_PLATFORM_PACKAGES; do
+            got=$(npm view "$pkg@$VERSION" version)
+            [ "$got" = "$VERSION" ] || { echo "::error::$pkg@$VERSION not found on npm"; exit 1; }
+          done
+
+      - name: Image tag resolves to a digest
+        id: image
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::could not resolve a digest for $IMAGE:$VERSION"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "$IMAGE:$VERSION -> $digest"
+
+  signing-gate-macos:
+    name: Signing gate (macOS Developer ID)
+    needs: preconditions
+    runs-on: macos-latest
+    steps:
+      - name: Signing gate SKIPPED
+        if: inputs.skip-signing-gate
+        run: |
+          echo "::error title=SIGNING GATE SKIPPED::Promoting v$VERSION WITHOUT verifying the macOS Developer ID signature (requested by $GITHUB_ACTOR)"
+          echo "## ⚠️ SIGNING GATE SKIPPED (macOS) by $GITHUB_ACTOR for v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify Developer ID signatures on release assets
+        if: ${{ !inputs.skip-signing-gate }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets && cd assets
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+              --pattern "happy-platform-mcp-$target.tar.xz" --pattern "happy-platform-mcp-$target.tar.xz.sha256"
+            shasum -a 256 -c "happy-platform-mcp-$target.tar.xz.sha256"
+            mkdir "$target" && tar -xJf "happy-platform-mcp-$target.tar.xz" -C "$target"
+          done
+          checked=0
+          while IFS= read -r -d '' bin; do
+            [ "$(file -b "$bin" | grep -c Mach-O)" -gt 0 ] || continue
+            echo "== $bin"
+            codesign --verify --strict --verbose=2 "$bin"
+            info=$(codesign -dvv "$bin" 2>&1)
+            echo "$info"
+            grep -q '^Authority=Developer ID Application:' <<<"$info" || { echo "::error::$bin is not signed with a Developer ID Application certificate"; exit 1; }
+            grep -q '^Runtime Version=' <<<"$info" || { echo "::error::$bin lacks the hardened runtime"; exit 1; }
+            checked=$((checked + 1))
+          done < <(find . -type f -perm -u+x -print0)
+          [ "$checked" -ge 6 ] || { echo "::error::expected 3 binaries x 2 macOS targets, verified $checked"; exit 1; }
+
+  signing-gate-windows:
+    name: Signing gate (Windows Authenticode)
+    needs: preconditions
+    runs-on: windows-latest
+    steps:
+      - name: Signing gate SKIPPED
+        if: inputs.skip-signing-gate
+        shell: bash
+        run: |
+          echo "::error title=SIGNING GATE SKIPPED::Promoting v$VERSION WITHOUT verifying the Windows Authenticode signature (requested by $GITHUB_ACTOR)"
+          echo "## ⚠️ SIGNING GATE SKIPPED (Windows) by $GITHUB_ACTOR for v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify Authenticode signatures on release assets
+        if: ${{ !inputs.skip-signing-gate }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = 'happy-platform-mcp-x86_64-pc-windows-msvc.zip'
+          gh release download "v$env:VERSION" --repo $env:GITHUB_REPOSITORY --pattern $asset --pattern "$asset.sha256"
+          if ($LASTEXITCODE -ne 0) { throw "download failed" }
+          $expected = ((Get-Content "$asset.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
+          $actual = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) { throw "checksum mismatch for $asset" }
+          Expand-Archive $asset -DestinationPath win
+          $exes = Get-ChildItem win -Recurse -Filter *.exe
+          if ($exes.Count -lt 3) { throw "expected 3 executables, found $($exes.Count)" }
+          foreach ($exe in $exes) {
+            $sig = Get-AuthenticodeSignature $exe.FullName
+            Write-Host "$($exe.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::error::$($exe.Name) Authenticode status is $($sig.Status)"
+              exit 1
+            }
+          }
+
+  smoke:
+    name: Smoke (${{ matrix.os }})
+    needs: [preconditions, signing-gate-macos, signing-gate-windows]
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - name: npx --version
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(npx -y "$NPM_WRAPPER@$VERSION" --version)
+          echo "$out"
+          grep -qF "$VERSION" <<<"$out" || { echo "::error::--version did not report $VERSION"; exit 1; }
+
+  promote-npm:
+    name: npm latest -> ${{ inputs.version }}
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Move dist-tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Platform packages first so the wrapper's pinned optionalDependencies resolve.
+          for pkg in $NPM_PLATFORM_PACKAGES "$NPM_WRAPPER"; do
+            npm dist-tag add "$pkg@$VERSION" latest
+          done
+          [ "$(npm view "$NPM_WRAPPER" dist-tags.latest)" = "$VERSION" ]
+
+  promote-image:
+    name: Image latest/major/minor -> digest
+    needs: [preconditions, smoke]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Retag by digest
+        env:
+          DIGEST: ${{ needs.preconditions.outputs.digest }}
+        run: |
+          set -euo pipefail
+          major=${VERSION%%.*}
+          minor=${VERSION#*.}; minor="$major.${minor%%.*}"
+          # Re-check that the version tag still points at the digest gated above.
+          now=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          [ "$now" = "$DIGEST" ] || { echo "::error::$IMAGE:$VERSION moved from $DIGEST to $now"; exit 1; }
+          docker buildx imagetools create \
+            --tag "$IMAGE:latest" --tag "$IMAGE:$major" --tag "$IMAGE:$minor" \
+            "$IMAGE@$DIGEST"
+          for t in latest "$major" "$minor"; do
+            got=$(docker buildx imagetools inspect "$IMAGE:$t" --format '{{json .Manifest}}' | jq -r .digest)
+            [ "$got" = "$DIGEST" ] || { echo "::error::$IMAGE:$t is $got, expected $DIGEST"; exit 1; }
+          done
+
+  publish-registry:
+    name: MCP registry publish
+    needs: [promote-npm, promote-image]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: v${{ inputs.version }}
+          persist-credentials: false
+      - name: Check server.json version
+        run: |
+          set -euo pipefail
+          for v in "$(jq -r .version server.json)" $(jq -r '.packages[] | .version // (.identifier | sub("^.*:"; ""))' server.json); do
+            [ "$v" = "$VERSION" ] || { echo "::error::server.json at v$VERSION carries version '$v'"; exit 1; }
+          done
+      - name: Install mcp-publisher ${{ env.MCP_PUBLISHER_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher --version
+      - name: Validate, log in (GitHub OIDC) and publish
+        run: |
+          set -euo pipefail
+          ./mcp-publisher validate
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+  finalize-release:
+    name: Mark GitHub Release latest
+    needs: publish-registry
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Un-prerelease and mark latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          if [ "${{ inputs.skip-signing-gate }}" = "true" ]; then
+            echo "## ⚠️ v$VERSION was promoted with the signing gate SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+          fi

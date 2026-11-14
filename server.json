@@ -1,38 +1,38 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.nickzitzer/happy-platform-mcp",
-  "description": "Happy MCP Server — Model Context Protocol server for the ServiceNow platform with 60 tools that work on any table, multi-instance support, and natural language search",
+  "description": "ServiceNow MCP server: 60 tools for any table, multi-instance, natural language search",
   "repository": {
     "url": "https://github.com/Happy-Technologies-LLC/happy-platform-mcp",
     "source": "github"
   },
-  "version": "6.1.0",
+  "version": "7.0.0-alpha.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "happy-platform-mcp",
-      "version": "6.1.0",
+      "version": "7.0.0-alpha.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "description": "ServiceNow instance URL (e.g., https://dev123456.service-now.com)",
-          "isRequired": true,
+          "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "SERVICENOW_INSTANCE_URL"
         },
         {
           "description": "ServiceNow username",
-          "isRequired": true,
+          "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "SERVICENOW_USERNAME"
         },
         {
           "description": "ServiceNow password",
-          "isRequired": true,
+          "isRequired": false,
           "format": "string",
           "isSecret": true,
           "name": "SERVICENOW_PASSWORD"
@@ -85,6 +85,141 @@
           "format": "string",
           "isSecret": false,
           "name": "HAPPY_DOCS_EMBEDDING_PROVIDER"
+        },
+        {
+          "description": "OAuth client ID (when SERVICENOW_AUTH_TYPE=oauth)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_CLIENT_ID"
+        },
+        {
+          "description": "OAuth client secret (when SERVICENOW_AUTH_TYPE=oauth)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "SERVICENOW_CLIENT_SECRET"
+        },
+        {
+          "description": "OAuth grant type (when SERVICENOW_AUTH_TYPE=oauth); passwordless grants do not need SERVICENOW_USERNAME/SERVICENOW_PASSWORD",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_OAUTH_GRANT_TYPE"
+        },
+        {
+          "description": "Path to an instances.json multi-instance config file (optional)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "HAPPY_CONFIG_PATH"
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "docker.io/nczitzer/happy-platform-mcp:7.0.0-alpha.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "description": "ServiceNow instance URL (e.g., https://dev123456.service-now.com)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_INSTANCE_URL"
+        },
+        {
+          "description": "ServiceNow username",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_USERNAME"
+        },
+        {
+          "description": "ServiceNow password",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "SERVICENOW_PASSWORD"
+        },
+        {
+          "description": "Authentication type (default: basic)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_AUTH_TYPE"
+        },
+        {
+          "description": "Specific instance name from config file (optional)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_INSTANCE"
+        },
+        {
+          "description": "Start with only ServiceNowDocs tools. Use true for docs-only deployments without ServiceNow credentials.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "HAPPY_MCP_DOCS_ONLY"
+        },
+        {
+          "description": "Enable optional local SQLite FTS indexing for ServiceNowDocs search",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "HAPPY_DOCS_ENABLE_LOCAL_INDEX"
+        },
+        {
+          "description": "Directory for cached ServiceNowDocs markdown and SQLite index",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "HAPPY_DOCS_CACHE_DIR"
+        },
+        {
+          "description": "Enable optional ServiceNowDocs vector search when local indexing, sqlite-vec, and an embedding provider are available.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "HAPPY_DOCS_ENABLE_VECTOR"
+        },
+        {
+          "description": "Embedding provider for ServiceNowDocs vector search. Use local for deterministic local embeddings or none to disable embeddings.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "HAPPY_DOCS_EMBEDDING_PROVIDER"
+        },
+        {
+          "description": "OAuth client ID (when SERVICENOW_AUTH_TYPE=oauth)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_CLIENT_ID"
+        },
+        {
+          "description": "OAuth client secret (when SERVICENOW_AUTH_TYPE=oauth)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "SERVICENOW_CLIENT_SECRET"
+        },
+        {
+          "description": "OAuth grant type (when SERVICENOW_AUTH_TYPE=oauth); passwordless grants do not need SERVICENOW_USERNAME/SERVICENOW_PASSWORD",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SERVICENOW_OAUTH_GRANT_TYPE"
+        },
+        {
+          "description": "Path to an instances.json multi-instance config file (optional)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "HAPPY_CONFIG_PATH"
         }
       ]
     }
