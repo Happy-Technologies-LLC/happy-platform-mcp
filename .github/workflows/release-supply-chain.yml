@@ -84,6 +84,13 @@ jobs:
         with:
           name: supply-chain-sbom
           path: dist-out
+      - name: Plan belongs to this tag
+        env:
+          PLAN: ${{ inputs.plan }}
+        run: |
+          set -euo pipefail
+          planned="$(jq -r '.announcement_tag' <<<"$PLAN")"
+          [ "$planned" = "$TAG" ] || { echo "::error::dist plan tag '$planned' != $TAG"; exit 1; }
       - name: Archives match the digests the build jobs reported
         working-directory: dist-out
         run: |
@@ -96,13 +103,16 @@ jobs:
             n=$((n + 1))
           done
           [ "$n" -eq 5 ] || { echo "::error::expected 5 archives, found $n"; exit 1; }
+      # Every asset this run produced and the release carries: archives, installers, Homebrew formula,
+      # source tarball, dist's own sha256.sum, SBOMs. A missing file fails sha256sum.
       - name: Aggregate checksums
         working-directory: dist-out
         run: |
           set -euo pipefail
-          sha256sum -- *.tar.xz *.zip *-installer.sh *-installer.ps1 *.cdx.json > SHA256SUMS
+          sha256sum -- *.tar.xz *.zip *-installer.sh *-installer.ps1 *.rb source.tar.gz sha256.sum \
+            *.cdx.json > SHA256SUMS
           cat SHA256SUMS
-      - name: Build provenance for every archive and installer
+      - name: Build provenance for every release asset
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -110,6 +120,9 @@ jobs:
             dist-out/*.zip
             dist-out/*-installer.sh
             dist-out/*-installer.ps1
+            dist-out/*.rb
+            dist-out/source.tar.gz
+            dist-out/sha256.sum
             dist-out/SHA256SUMS
       - name: Attest SBOM (happy-platform-mcp) against the archives
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
