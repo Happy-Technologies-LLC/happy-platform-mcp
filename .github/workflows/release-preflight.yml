@@ -43,7 +43,9 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git rev-list --first-parent origin/main | grep -qxF "$GITHUB_SHA" \
+          # grep without -q reads all input: -q exits on the first match, rev-list then dies of
+          # SIGPIPE, and pipefail fails the step exactly when the tag is on main.
+          git rev-list --first-parent origin/main | grep -xF "$GITHUB_SHA" >/dev/null \
             || { echo "::error::$GITHUB_SHA is not on main's first-parent history; refusing to release"; exit 1; }
           echo "$GITHUB_SHA is on origin/main (first-parent)"
 
