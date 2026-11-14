@@ -1876,6 +1876,15 @@ fn dispatch_keeps_unknown_command_output_free_of_argv_tokens() {
 }
 
 #[test]
+fn version_flag_prints_package_version() {
+    for flag in ["--version", "-V"] {
+        let (d, out, err) = route_of(&[flag]);
+        assert_eq!(d, Dispatch::Exit(0));
+        assert_eq!((out.as_str(), err.as_str()), (concat!(env!("CARGO_PKG_VERSION"), "\n"), ""));
+    }
+}
+
+#[test]
 fn help_prints_usage_without_starting_stdio() {
     let (d, out, err) = route_of(&["--help"]);
     assert_eq!(d, Dispatch::Exit(0));

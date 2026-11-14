@@ -41,6 +41,11 @@ pub fn route(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         let _ = writeln!(stdout, "{USAGE}\n{BIND_USAGE_LINE}");
         return Dispatch::Exit(0);
     }
+    // 7.0 addition: release smoke tests (npm, image, Homebrew) call `--version`.
+    if matches!(args[0].as_str(), "--version" | "-V") {
+        let _ = writeln!(stdout, "{}", env!("CARGO_PKG_VERSION"));
+        return Dispatch::Exit(0);
+    }
     let _ = writeln!(stderr, "Unknown command. Use --help for usage.");
     Dispatch::Exit(2)
 }
