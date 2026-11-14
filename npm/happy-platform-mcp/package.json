@@ -1,0 +1,22 @@
+{
+  "name": "happy-platform-mcp",
+  "version": "0.0.0-assembled-at-release",
+  "mcpName": "io.github.nickzitzer/happy-platform-mcp",
+  "description": "Happy MCP Server for ServiceNow (native binary; this package selects the build for your platform)",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Happy-Technologies-LLC/happy-platform-mcp.git"
+  },
+  "homepage": "https://github.com/Happy-Technologies-LLC/happy-platform-mcp#readme",
+  "bugs": { "url": "https://github.com/Happy-Technologies-LLC/happy-platform-mcp/issues" },
+  "keywords": ["mcp", "model-context-protocol", "servicenow"],
+  "bin": {
+    "happy-platform-mcp": "bin/happy-platform-mcp.js",
+    "servicenow-mcp-server": "bin/servicenow-mcp-server.js",
+    "happy-platform-mcp-http": "bin/happy-platform-mcp-http.js"
+  },
+  "files": ["bin/", "README.md", "LICENSE", "NOTICE"],
+  "engines": { "node": ">=20" },
+  "optionalDependencies": {}
+}

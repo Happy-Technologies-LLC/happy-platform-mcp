@@ -1,0 +1,11 @@
+{
+  "scope": "@happy-platform-mcp",
+  "binaries": ["happy-platform-mcp", "servicenow-mcp-server", "happy-platform-mcp-http"],
+  "platforms": [
+    { "id": "darwin-arm64",    "rust": "aarch64-apple-darwin",      "os": "darwin", "cpu": "arm64" },
+    { "id": "darwin-x64",      "rust": "x86_64-apple-darwin",       "os": "darwin", "cpu": "x64" },
+    { "id": "linux-x64-gnu",   "rust": "x86_64-unknown-linux-gnu",  "os": "linux",  "cpu": "x64",   "libc": "glibc" },
+    { "id": "linux-arm64-gnu", "rust": "aarch64-unknown-linux-gnu", "os": "linux",  "cpu": "arm64", "libc": "glibc" },
+    { "id": "win32-x64",       "rust": "x86_64-pc-windows-msvc",    "os": "win32",  "cpu": "x64" }
+  ]
+}
