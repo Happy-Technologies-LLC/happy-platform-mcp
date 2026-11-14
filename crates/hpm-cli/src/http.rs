@@ -51,7 +51,7 @@ pub fn main() -> ExitCode {
         first.as_ref().and_then(|a| a.to_str()),
         Some("--version" | "-V")
     ) {
-        println!("{}", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(std::io::stdout(), "{}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     load_dotenv();
