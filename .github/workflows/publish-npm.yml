@@ -1,0 +1,119 @@
+# Publishes the 7.x native npm packages on dist-tag `next`. Called from release.yml after the
+# supply-chain job (dist custom job): the archives come from THAT run's artifacts, never from a
+# rebuild or the (mutable) draft GitHub Release. Platform packages are published first, the
+# wrapper last (it exact-pins them). Re-runs skip versions that are already on the registry.
+# This workflow never touches dist-tag `latest`; only promote.yml does that, manually.
+name: publish-npm
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan JSON (announcement_tag, ...)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      actions: read     # download this run's artifacts
+      id-token: write   # npm provenance (OIDC)
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve version from the dist plan tag
+        id: version
+        env:
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "bad tag: $TAG" >&2; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Download this run's dist archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: artifacts-*
+          merge-multiple: true
+          path: archives
+
+      - name: Assemble packages (verifies every archive's sha256)
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -l archives
+          node scripts/release/assemble-npm.mjs --archives archives --version "$V" --out npm-out
+
+      - name: Publish platform packages, then the wrapper (tag next)
+        env:
+          V: ${{ steps.version.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          publish() {
+            local dir="$1" name
+            name="$(node -p "require('./$dir/package.json').name")"
+            if npm view "$name@$V" version >/dev/null 2>&1; then
+              echo "skip: $name@$V already published"
+              return
+            fi
+            (cd "$dir" && npm publish --provenance --access public --tag next)
+          }
+          for d in npm-out/*/; do
+            d="${d%/}"
+            [ "$(basename "$d")" = happy-platform-mcp ] || publish "$d"
+          done
+          publish npm-out/happy-platform-mcp
+
+  smoke:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: npx happy-platform-mcp@version --version (both bins)
+        shell: bash
+        env:
+          V: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Registry reads can lag a fresh publish by a minute or two.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            npm view "happy-platform-mcp@$V" version >/dev/null 2>&1 && break
+            echo "waiting for happy-platform-mcp@$V on the registry ($i)"; sleep 30
+          done
+          out="$(npx -y "happy-platform-mcp@$V" --version)"
+          echo "$out"
+          grep -F -- "$V" <<<"$out"
+          out="$(npx -y -p "happy-platform-mcp@$V" servicenow-mcp-server --version)"
+          echo "$out"
+          grep -F -- "$V" <<<"$out"
