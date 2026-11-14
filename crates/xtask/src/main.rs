@@ -34,9 +34,9 @@ const USAGE: &str =
     "usage: cargo xtask fixtures verify | cargo xtask check-trusted-root [--offline]";
 
 /// The composition root: the only crate allowed to use `trusted-root`.
-const TRUSTED_ROOT_CRATE: &str = "hpm-cli";
+const TRUSTED_ROOT_CRATE: &str = "happy-platform-mcp";
 /// Skipped by the grep only: hpm-types defines the items, xtask names the patterns.
-const GREP_EXEMPT: &[&str] = &["hpm-cli", "hpm-types", "xtask"];
+const GREP_EXEMPT: &[&str] = &["happy-platform-mcp", "hpm-types", "xtask"];
 /// Rejected in non-root `src/` and `Cargo.toml`.
 const TRUSTED_ROOT_PATTERNS: &[&str] = &[
     "mint(",

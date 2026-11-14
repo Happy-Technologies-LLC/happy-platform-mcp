@@ -1,5 +1,7 @@
 [package]
-name = "hpm-cli"
+# Package name = release artifact name (dist names archives, installers and the
+# Homebrew formula after the package). Library keeps the `hpm_cli` crate name.
+name = "happy-platform-mcp"
 description = "happy-platform-mcp composition root and command line: wires the trusted root, services, tools and transports."
 version.workspace = true
 edition.workspace = true
@@ -8,6 +10,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = false
+
+[lib]
+name = "hpm_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "happy-platform-mcp"
