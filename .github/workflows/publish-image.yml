@@ -148,6 +148,9 @@ jobs:
                 exit 1
               fi
             done
+            # Docker's containerd store refuses to re-pull the same index digest
+            # for a second platform ("cannot overwrite digest"); drop it first.
+            docker image rm "${IMAGE}@${DIGEST}" >/dev/null 2>&1 || true
           done
 
       - name: Point next at the verified digest
