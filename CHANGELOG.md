@@ -1,5 +1,49 @@
 # Changelog
 
+## 7.0.0 - unreleased (npm `next` first; `latest` stays 6.2.0 until a separate promotion)
+
+7.0 is a rewrite of the server in Rust. It keeps the same 60 tools, tool names, arguments and normal output, the same instance registry and the same keychain service and account names as 6.2.0. Read [Migrating to 7.0](docs/MIGRATING_TO_7.md) before you upgrade.
+
+### Upgrade guide (6.x → 7.0)
+
+1. **Credentials saved by 6.x:** run `happy-platform-mcp instance credential bind <name>` once per instance. 7.0 sends a saved secret only to the address it is bound to, and does not send unbound secrets.
+2. **`.env`:** only the `SERVICENOW_*` instance and credential keys and `HAPPY_MCP_API_TOKEN` are read from a `.env` file. Move any other setting (bind host, allowed hosts and origins, telemetry, `HAPPY_CONFIG_PATH`, `PORT`) to the real environment.
+3. **Background scripts:** the `sys_trigger` fallback of `SN-Execute-Background-Script` is now opt-in (`allow_trigger_fallback: true` or `HAPPY_MCP_ALLOW_TRIGGER_FALLBACK=1`).
+4. **Pinned installs:** `npx -y happy-platform-mcp@6` and Docker `:latest` stay on 6.x. Try 7.0 with `@next`, Docker `:next` (or the image digest), Homebrew or a release archive.
+
+### Changed
+
+- Rust implementation of the stdio and HTTP servers and the `happy-platform-mcp instance` commands. The three commands are the same as before: `happy-platform-mcp`, `servicenow-mcp-server` and `happy-platform-mcp-http`.
+- Credentials are bound to the instance address they were saved for; two new errors, `CREDENTIAL_ORIGIN_UNBOUND` and `CREDENTIAL_ORIGIN_MISMATCH`, mean nothing was sent. `instance credential set` shows the target address and asks you to confirm.
+- `tools/list` carries MCP annotations (such as `readOnlyHint`) on all 60 tools; one optional argument is added (`allow_trigger_fallback` on `SN-Execute-Background-Script`).
+- A 408 or 5xx answer to a write, or a connection failure after the request left, reports "outcome unknown: do not retry; check the affected records first" instead of a plain failure. A client cancel stops the running REST request, and a cancelled request is never retried.
+- `SN-Execute-Background-Script` with `scope` fails (`status: "scope_mismatch"`) when the script ran in another scope.
+- `SN-Set-Update-Set` no longer writes a fix script or says the change is unavailable when the picker change was sent but could not be confirmed; fix scripts are written under the directory the server was started in.
+- Encoded-query arguments (record numbers, user and group names and similar) refuse `^` and control characters before anything is sent.
+- `SN-Get-ATF-Results` and `SN-Run-ATF-Test` add `failing_steps` and `failure_message` for failed tests.
+- Stricter `table_name` and `sys_id` checks on the generic record tools; the instance URL shown by `servicenow://instance` never includes a login part.
+- `SN-Batch-Create` documents that `transaction` is not all-or-nothing (behaviour unchanged) and its error lists the records that stay created.
+- Telemetry (still off by default) counts only tool names the server knows; an override URL must be https (or http to the local machine).
+- Protocol: an unknown resource URI answers `-32602` with `data.uri` (6.2.0 answered `-32603`); JSON-RPC batches are refused with `-32600`; an unknown session id answers HTTP 404; HTTP connections that never authenticate are closed after 10 seconds and limited per remote address.
+
+### Fixed
+
+- `SN-Create-Workflow` refuses numeric `from` and `to` transition endpoints up front (invalid params) instead of writing seven records and crashing.
+
+### Removed
+
+- `script-sync.js` (never a tool; nothing called it). Stay on 6.x if you used it directly.
+- The `✅ Loaded metadata …` and per-request `📋 Tool list requested…` stderr lines.
+
+### Distribution
+
+- Native binaries for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`, built once and attached to the GitHub Release as `happy-platform-mcp-<target>.tar.xz` (`.zip` on Windows) with `.sha256` files.
+- npm: the existing `happy-platform-mcp` package becomes a launcher for per-platform packages `@happy-platform-mcp/{darwin-arm64,darwin-x64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`; published on the `next` dist-tag.
+- Homebrew: `brew install happy-technologies-llc/tap/happy-platform-mcp`.
+- Docker: `nczitzer/happy-platform-mcp` tags `7.0.0` and `next` and a digest, on a glibc base image; `latest`, `7` and `7.0` are not moved until promotion.
+- Linux builds are glibc only (no musl or Alpine) and need `libdbus-1` for the keychain. The preview binaries are not signed or notarised yet; signing is added before promotion to `latest`.
+- Each release carries `SHA256SUMS` with a keyless signature, a CycloneDX SBOM and build provenance; see [Verifying releases](docs/VERIFYING_RELEASES.md).
+
 ## 6.2.0 - 2026-11-02
 
 ### Added

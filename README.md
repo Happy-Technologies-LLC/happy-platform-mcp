@@ -106,6 +106,28 @@ npm install
 node src/cli.js instance list
 ```
 
+### Install 7.0 (preview)
+
+7.0 is a Rust rewrite with the same 60 tools. It is released on the npm `next` channel first; `latest` and the Docker `:latest` tag stay on 6.x until 7.0 is promoted, so everything above keeps working unchanged. 7.0 needs a one-time step for credentials saved by 6.x and changes a few behaviours: read [Migrating to 7.0](docs/MIGRATING_TO_7.md) first.
+
+```bash
+# npm (Node is only needed to run the small launcher; 7.0 itself is a native binary)
+npx -y happy-platform-mcp@next instance list
+npm install -g happy-platform-mcp@next
+
+# Homebrew
+brew install happy-technologies-llc/tap/happy-platform-mcp
+
+# Docker: docker run does not pull on its own, so pull first.
+# Use the next tag, or pin the digest printed in the GitHub Release notes.
+docker pull nczitzer/happy-platform-mcp:next
+docker pull nczitzer/happy-platform-mcp@sha256:<digest>
+```
+
+Release archives (`happy-platform-mcp-<target>.tar.xz`, `.zip` on Windows) for macOS (Apple silicon and Intel), Linux (x86_64 and aarch64, glibc only) and Windows (x86_64) are attached to the GitHub Release `v7.0.0`. Each release has checksums, a signed checksum file, build provenance and an SBOM; see [Verifying releases](docs/VERIFYING_RELEASES.md).
+
+To stay on 6.x, pin it: `npx -y happy-platform-mcp@6`. Linux needs glibc and the `libdbus-1` library (no Alpine or musl). On macOS the unsigned preview binary may make the keychain ask for permission once per upgrade.
+
 ### Start the stdio server
 
 After a global install, `happy-platform-mcp` with no arguments starts the
