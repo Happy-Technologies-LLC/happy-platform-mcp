@@ -584,8 +584,8 @@ async function verifyPackage(resources) {
   assert(sourceSdk.dependencies?.['@hono/node-server'] === '^1.19.9 || ^2.0.5', 'source SDK does not retain its native Hono range');
   const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
   for (const [path, version] of Object.entries({
-    'node_modules/@modelcontextprotocol/sdk': '1.32.2', 'node_modules/@hono/node-server': '2.1.3',
-    'node_modules/hono': '4.13.14', 'node_modules/axios': '1.20.0', 'node_modules/fast-uri': '3.1.9',
+    'node_modules/@modelcontextprotocol/sdk': '1.32.2', 'node_modules/@hono/node-server': '2.1.8',
+    'node_modules/hono': '4.13.18', 'node_modules/axios': '1.20.0', 'node_modules/fast-uri': '3.1.9',
     'node_modules/qs': '6.16.1', 'node_modules/brace-expansion': '5.0.12',
   })) {
     assert(lock.packages?.[path]?.version === version, 'committed lock has an unexpected version for ' + path);
@@ -663,7 +663,7 @@ async function verifyPackage(resources) {
   assert(packedSdk.name === '@modelcontextprotocol/sdk' && packedSdk.version === '1.32.2', 'packed SDK is not @modelcontextprotocol/sdk@1.32.2');
   assert(packedSdk.dependencies?.['@hono/node-server'] === '^1.19.9 || ^2.0.5', 'packed SDK does not retain its native Hono range');
   assert((await readFile(join(installedPackageRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json'))).equals(sourceSdkManifest), 'packaged SDK manifest differs from its unmodified installed source');
-  assert(packedHono.name === '@hono/node-server' && packedHono.version === '2.1.3', 'packed Hono is not @hono/node-server@2.1.3');
+  assert(packedHono.name === '@hono/node-server' && packedHono.version === '2.1.8', 'packed Hono is not @hono/node-server@2.1.8');
   for (const directory of bundledPaths) {
     const relativeManifest = directory + '/package.json';
     assert(packedPaths.has(relativeManifest), 'packed tarball is missing bundled manifest ' + directory);
@@ -685,7 +685,7 @@ async function verifyPackage(resources) {
     ),
   );
   requireOnlyVersion(tree, '@modelcontextprotocol/sdk', '1.32.2');
-  requireOnlyVersion(tree, '@hono/node-server', '2.1.3');
+  requireOnlyVersion(tree, '@hono/node-server', '2.1.8');
   requireOnlyVersion(tree, 'axios', '1.20.0');
 
   const auditOutput = runNpm(npmCliPath, ['audit', '--audit-level=low'], consumerDir);
