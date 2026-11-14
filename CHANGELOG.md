@@ -46,7 +46,18 @@
 - Homebrew: `brew install happy-technologies-llc/tap/happy-platform-mcp`.
 - Docker: `nczitzer/happy-platform-mcp` tags `7.0.0` and `next` and a digest, on a glibc base image; `latest`, `7` and `7.0` are not moved until promotion.
 - Linux builds are glibc only (no musl or Alpine) and need `libdbus-1` for the keychain. The preview binaries are not signed or notarised yet; signing is added before promotion to `latest`.
-- Each release carries `SHA256SUMS` with a keyless signature, a CycloneDX SBOM and build provenance; see [Verifying releases](docs/VERIFYING_RELEASES.md).
+- Each release carries `SHA256SUMS` with a keyless signature, a CycloneDX SBOM and build provenance; see [Verifying releases](docs/VERIFYING_RELEASES.md). Verify a download, pinned to the signing workflow and tag:
+
+```bash
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml@refs/tags/v7.0.0'
+sha256sum -c --ignore-missing SHA256SUMS
+gh attestation verify happy-platform-mcp-x86_64-unknown-linux-gnu.tar.xz \
+  --repo Happy-Technologies-LLC/happy-platform-mcp \
+  --signer-workflow Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml \
+  --source-ref refs/tags/v7.0.0 --deny-self-hosted-runners
+```
 
 ## 6.2.0 - 2026-11-02
 
