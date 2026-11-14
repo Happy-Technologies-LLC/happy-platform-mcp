@@ -221,6 +221,27 @@
           "isSecret": false,
           "name": "HAPPY_CONFIG_PATH"
         }
+      ],
+      "runtimeHint": "docker",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "-i",
+          "description": "Keep stdin open for the stdio transport"
+        },
+        {
+          "type": "named",
+          "name": "--rm",
+          "description": "Remove the container on exit"
+        }
+      ],
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "servicenow-mcp-server",
+          "valueHint": "command",
+          "description": "Run the stdio server; overrides the image default CMD (HTTP server on port 3000)"
+        }
       ]
     }
   ]
