@@ -67,8 +67,11 @@ jobs:
             echo "$wf: success on $GITHUB_SHA"
           done
           # No check run on the commit may have failed (catches re-runs and other required checks).
+          # Exception: the "Dependabot" check is GitHub's dependency-update job, which attaches to
+          # the default-branch head but builds and tests nothing in it (it fails when it cannot
+          # open an update PR, e.g. for a dev-only advisory with no compatible fix).
           checks="$(gh api --paginate --slurp "repos/$REPO/commits/$GITHUB_SHA/check-runs?per_page=100")"
-          bad="$(jq -r '[.[].check_runs[] | select(.status == "completed" and
+          bad="$(jq -r '[.[].check_runs[] | select(.status == "completed" and .name != "Dependabot" and
               (.conclusion | IN("failure","cancelled","timed_out","action_required","startup_failure")))
               | "\(.name): \(.conclusion)"] | .[]' <<<"$checks")"
           [ -z "$bad" ] || { echo "::error::failed check runs on $GITHUB_SHA:"; echo "$bad"; exit 1; }
