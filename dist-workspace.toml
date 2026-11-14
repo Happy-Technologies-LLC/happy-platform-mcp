@@ -1,0 +1,53 @@
+[workspace]
+members = ["cargo:."]
+
+# cargo-dist (binary `dist`) configuration for the 7.x release pipeline.
+# Lane plan p5 §2 fixes targets and names; owner decisions P5-2 (unsigned `next`), P5-3 (glibc only),
+# P5-4 (Homebrew tap). `.github/workflows/release.yml` is GENERATED from this file by
+# `scripts/release/gen-dist-ci.sh`; never edit it by hand, rerun the script.
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.34.0"
+# release.yml is generated in a scratch repo and then patched (dist 0.34 `$/` custom-job bug,
+# SHA-pinned dist installer, draft/prerelease release); dist must not check or rewrite it in-tree.
+allow-dirty = ["ci"]
+# CI backends to support
+ci = "github"
+# Tag pushes only: no pull_request trigger.
+pr-run-mode = "skip"
+# The installers to generate for each app. No dist npm installer: lane B ships its own wrapper.
+installers = ["shell", "powershell", "homebrew"]
+# A GitHub repo to push Homebrew formulas to (token secret HOMEBREW_TAP_TOKEN)
+tap = "Happy-Technologies-LLC/homebrew-tap"
+# Target platforms to build apps for (Rust target-triple syntax). glibc only (P5-3).
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+checksum = "sha256"
+# Embed the dependency tree so `cargo audit bin` works on shipped binaries.
+cargo-auditable = true
+# Steps run before `dist build` on every build runner (lockfile gate: the build is `--locked`).
+github-build-setup = "../release-build-setup.yml"
+# The GitHub Release is created in `host` (patched to draft + prerelease by gen-dist-ci.sh) so the
+# supply-chain job can attach SBOMs/signatures to it; `announce` undrafts it after every publish job.
+# Custom jobs. Order in the generated release.yml:
+# plan -> release-preflight -> build -> host (draft release) -> release-supply-chain
+# -> homebrew / publish-npm / publish-image -> announce (undraft, stays prerelease).
+plan-jobs = ["./release-preflight"]
+host-jobs = ["./release-supply-chain"]
+publish-jobs = ["homebrew", "./publish-npm", "./publish-image"]
+
+# Third-party actions in the generated workflow, pinned by full commit SHA.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803" # v6.1.0
+"actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
+"actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+
+# Called workflows get exactly the permissions they elevate to (top level stays read-only there).
+[dist.github-custom-job-permissions]
+"release-preflight" = { contents = "read", checks = "read", actions = "read" }
+"release-supply-chain" = { contents = "write", id-token = "write", attestations = "write" }
+"publish-npm" = { contents = "write", id-token = "write", attestations = "write", actions = "read" }
+"publish-image" = { contents = "write", id-token = "write", attestations = "write", actions = "read", packages = "write" }

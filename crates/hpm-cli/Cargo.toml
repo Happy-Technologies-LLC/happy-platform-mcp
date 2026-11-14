@@ -9,6 +9,12 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+# cargo-dist (dist-workspace.toml): `publish = false` hides a package from dist, so opt in here.
+# All three [[bin]] targets ship in every archive and installer.
+[package.metadata.dist]
+dist = true
+formula = "happy-platform-mcp"
+
 [[bin]]
 name = "happy-platform-mcp"
 path = "src/main.rs"

@@ -1,0 +1,12 @@
+# Steps dist inserts before `dist build` on every build runner (dist-workspace.toml `github-build-setup`).
+# Regenerate .github/workflows/release.yml after editing: scripts/release/gen-dist-ci.sh
+- name: Install libdbus (Linux Secret Service keyring backend)
+  if: ${{ runner.os == 'Linux' }}
+  run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+- name: Lockfile gate (release builds are --locked)
+  shell: bash
+  run: |
+    set -euo pipefail
+    rustup show active-toolchain
+    cargo metadata --locked --format-version 1 > /dev/null
+    cargo fetch --locked
