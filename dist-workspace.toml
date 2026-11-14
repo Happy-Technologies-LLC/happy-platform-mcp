@@ -8,8 +8,9 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.34.0"
-# release.yml is generated in a scratch repo and then patched (dist 0.34 `$/` custom-job bug,
-# SHA-pinned dist installer, draft/prerelease release); dist must not check or rewrite it in-tree.
+# release.yml is generated in a scratch repo and then patched by scripts/release/gen-dist-ci.sh
+# (dist 0.34 `$/` custom-job bug, sha256-pinned / --locked tool installs, draft+prerelease release,
+# no `secrets: inherit`); dist must not check or rewrite it in-tree.
 allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"

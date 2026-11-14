@@ -1,8 +1,9 @@
 # Release preflight (design §2.9 stage 0, gate R-1). Called by release.yml (dist `plan-jobs`)
 # before any build. Refuses the release unless:
 #   1. the tag equals v<[workspace.package].version> of the tagged commit;
-#   2. the tagged commit is an ancestor of origin/main (it passed golden-guard on main);
-#   3. Rust CI and Rust conformance succeeded on exactly that commit (push run).
+#   2. the tagged commit is on origin/main's FIRST-PARENT history (a commit main itself pointed at,
+#      not an intermediate commit of a merged branch);
+#   3. Rust CI and Rust conformance succeeded on exactly that commit, in a push run on main.
 # Every API error fails the job (fail closed).
 name: Release preflight
 
@@ -38,13 +39,13 @@ jobs:
           [ "$TAG" = "v$version" ] || { echo "::error::tag $TAG does not match workspace version v$version"; exit 1; }
           echo "tag $TAG matches workspace version $version"
 
-      - name: Tagged commit is on main
+      - name: Tagged commit is on main (first-parent)
         run: |
           set -euo pipefail
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
-            || { echo "::error::$GITHUB_SHA is not on main; refusing to release"; exit 1; }
-          echo "$GITHUB_SHA is an ancestor of origin/main"
+          git rev-list --first-parent origin/main | grep -qxF "$GITHUB_SHA" \
+            || { echo "::error::$GITHUB_SHA is not on main's first-parent history; refusing to release"; exit 1; }
+          echo "$GITHUB_SHA is on origin/main (first-parent)"
 
       - name: Rust CI succeeded on the tagged commit
         env:
@@ -55,11 +56,12 @@ jobs:
           for wf in rust-ci.yml rust-conformance.yml; do
             # gh exits non-zero on any HTTP/API error, which fails this step (fail closed).
             runs="$(gh api --method GET "repos/$REPO/actions/workflows/$wf/runs" \
-              -f head_sha="$GITHUB_SHA" -f event=push -f per_page=100)"
-            conclusion="$(jq -r '[.workflow_runs[] | select(.head_sha == env.GITHUB_SHA)]
+              -f head_sha="$GITHUB_SHA" -f branch=main -f event=push -f per_page=100)"
+            conclusion="$(jq -r '[.workflow_runs[] | select(.head_sha == env.GITHUB_SHA
+                and .head_branch == "main" and .event == "push")]
               | sort_by(.created_at) | last | .conclusion // "missing"' <<<"$runs")"
             [ "$conclusion" = success ] \
-              || { echo "::error::$wf on $GITHUB_SHA: latest push run is '$conclusion', need success"; exit 1; }
+              || { echo "::error::$wf on $GITHUB_SHA: latest push run on main is '$conclusion', need success"; exit 1; }
             echo "$wf: success on $GITHUB_SHA"
           done
           # No check run on the commit may have failed (catches re-runs and other required checks).

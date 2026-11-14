@@ -16,6 +16,11 @@ on:
         description: dist plan JSON for this release run
         required: true
         type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
 
 permissions:
   contents: read

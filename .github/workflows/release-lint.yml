@@ -1,0 +1,64 @@
+# Release pipeline lint (design §2.9 item 2): the generated release.yml must equal what
+# scripts/release/gen-dist-ci.sh produces from dist-workspace.toml (no hand edits), and every
+# release workflow must pass actionlint. Tools are pinned by version + sha256.
+name: Release lint
+
+on:
+  push:
+    branches:
+      - main
+      - 'rust-replatform/**'
+    paths:
+      - '.github/**'
+      - 'dist-workspace.toml'
+      - 'scripts/release/**'
+      - 'crates/hpm-cli/Cargo.toml'
+  pull_request:
+    branches:
+      - main
+      - 'rust-replatform/**'
+    paths:
+      - '.github/**'
+      - 'dist-workspace.toml'
+      - 'scripts/release/**'
+      - 'crates/hpm-cli/Cargo.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  release-lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install dist 0.34.0 and actionlint 1.7.12 (sha256-pinned)
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"; mkdir -p "$bin"
+          cd "$RUNNER_TEMP"
+          d=cargo-dist-x86_64-unknown-linux-gnu.tar.xz
+          curl --proto '=https' --tlsv1.2 -fLsS -o "$d" "https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/$d"
+          echo "7fee44ff3ff71ed0064b32d4ec62fee6b58bd37c5887b12a86aedddc5af0c7b5  $d" | sha256sum -c -
+          tar -xJf "$d" -C "$bin" --strip-components=1 cargo-dist-x86_64-unknown-linux-gnu/dist
+          a=actionlint_1.7.12_linux_amd64.tar.gz
+          curl --proto '=https' --tlsv1.2 -fLsS -o "$a" "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$a"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $a" | sha256sum -c -
+          tar -xzf "$a" -C "$bin" actionlint
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: release.yml matches gen-dist-ci.sh output
+        run: scripts/release/gen-dist-ci.sh --check
+
+      - name: actionlint (hand-written release workflows, with shellcheck)
+        run: |
+          actionlint .github/workflows/release-preflight.yml .github/workflows/release-supply-chain.yml \
+            .github/workflows/release-lint.yml .github/workflows/publish-npm.yml \
+            .github/workflows/publish-image.yml .github/workflows/promote.yml
+
+      # dist's own template carries shellcheck style notes; structure/expressions are still checked.
+      - name: actionlint (generated release.yml, no shellcheck)
+        run: actionlint -shellcheck= .github/workflows/release.yml

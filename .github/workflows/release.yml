@@ -59,11 +59,16 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install dist
-        # we specify bash to get pipefail; it guards against the `curl` command
-        # failing. otherwise `sh` won't catch that `curl` returned non-0
+      - name: Install dist 0.34.0 (sha256-pinned)
         shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/cargo-dist-installer.sh | sh"
+        run: |
+          set -euo pipefail
+          f=cargo-dist-x86_64-unknown-linux-gnu.tar.xz
+          curl --proto '=https' --tlsv1.2 -fLsS -o "$RUNNER_TEMP/$f" "https://github.com/axodotdev/cargo-dist/releases/download/v0.34.0/$f"
+          echo "7fee44ff3ff71ed0064b32d4ec62fee6b58bd37c5887b12a86aedddc5af0c7b5  $RUNNER_TEMP/$f" | sha256sum -c -
+          mkdir -p ~/.cargo/bin
+          tar -xJf "$RUNNER_TEMP/$f" -C ~/.cargo/bin --strip-components=1 cargo-dist-x86_64-unknown-linux-gnu/dist
+          ~/.cargo/bin/dist --version
       - name: Cache dist
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -75,8 +80,12 @@ jobs:
       # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::bad tag"; exit 1; }
+          dist host --steps=create --tag="$TAG" --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -88,7 +97,6 @@ jobs:
 
   custom-release-preflight:
     uses: ./.github/workflows/release-preflight.yml
-    secrets: inherit
     permissions:
       "actions": "read"
       "checks": "read"
@@ -146,7 +154,7 @@ jobs:
           cargo fetch --locked
         shell: "bash"
       - name: Install dist
-        run: ${{ matrix.install_dist.run }}
+        run: cargo install cargo-dist --version 0.34.0 --locked
       # Get the dist-manifest
       - name: Fetch local artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -155,7 +163,7 @@ jobs:
           path: target/distrib/
           merge-multiple: true
       - name: Install cargo-auditable
-        run: ${{ matrix.install_cargo_auditable.run }}
+        run: cargo install cargo-auditable --version 0.7.7 --locked
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
@@ -310,7 +318,6 @@ jobs:
     uses: ./.github/workflows/release-supply-chain.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
     permissions:
       "attestations": "write"
       "contents": "write"
@@ -320,8 +327,7 @@ jobs:
     environment: release
     needs:
       - plan
-      - host
-      - custom-release-supply-chain
+      - announce
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -332,9 +338,8 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          persist-credentials: true
+          persist-credentials: false
           repository: "Happy-Technologies-LLC/homebrew-tap"
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       # So we have access to the formula
       - name: Fetch homebrew formulae
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -354,15 +359,14 @@ jobs:
             name=$(echo "$filename" | sed "s/\.rb$//")
             version=$(echo "$release" | jq .app_version --raw-output)
 
-            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
-            brew update
-            # We avoid reformatting user-provided data such as the app description and homepage.
-            brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
 
             git add "Formula/${filename}"
             git commit -m "${name} ${version}"
           done
-          git push
+      - name: Push formula to the tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: git push "https://x-access-token:${TAP_TOKEN}@github.com/Happy-Technologies-LLC/homebrew-tap.git" HEAD
 
   custom-publish-npm:
     needs:
@@ -373,7 +377,8 @@ jobs:
     uses: ./.github/workflows/publish-npm.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     # publish jobs get escalated permissions
     permissions:
       "actions": "read"
@@ -390,7 +395,9 @@ jobs:
     uses: ./.github/workflows/publish-image.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     # publish jobs get escalated permissions
     permissions:
       "actions": "read"
@@ -405,14 +412,13 @@ jobs:
     needs:
       - plan
       - host
-      - publish-homebrew-formula
       - custom-publish-npm
       - custom-publish-image
       - custom-release-supply-chain
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && needs.custom-release-supply-chain.result == 'success' && needs.publish-homebrew-formula.result == 'success' && needs.custom-publish-npm.result == 'success' && needs.custom-publish-image.result == 'success' }}
+    if: ${{ always() && needs.host.result == 'success' && needs.custom-release-supply-chain.result == 'success' && needs.custom-publish-npm.result == 'success' && needs.custom-publish-image.result == 'success' }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
