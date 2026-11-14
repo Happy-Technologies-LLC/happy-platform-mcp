@@ -172,7 +172,7 @@ jobs:
             for b in $(jq -r '.binaries[]' npm/platforms.json); do
               from_archive=$(find "$work/$id/archive" -type f -name "$b$exe" | head -n1)
               from_npm="$work/$id/npm/package/bin/$b$exe"
-              [ -n "$from_archive" ] && [ -f "$from_npm" ] || { echo "::error::$b$exe missing for $id"; exit 1; }
+              if [ -z "$from_archive" ] || [ ! -f "$from_npm" ]; then echo "::error::$b$exe missing for $id"; exit 1; fi
               a=$(sha256sum "$from_archive" | cut -d' ' -f1); n=$(sha256sum "$from_npm" | cut -d' ' -f1)
               [ "$a" = "$n" ] || { echo "::error::$NPM_SCOPE/$id $b$exe ($n) differs from release archive ($a)"; exit 1; }
               echo "ok $id $b$exe $a"
