@@ -47,7 +47,10 @@ pub fn load_dotenv() {
 /// src/server.js` ignores them, except the 7.0 `--version`/`-V` used by release smokes.
 pub fn main() -> ExitCode {
     let first = std::env::args_os().nth(1);
-    if matches!(first.as_ref().and_then(|a| a.to_str()), Some("--version" | "-V")) {
+    if matches!(
+        first.as_ref().and_then(|a| a.to_str()),
+        Some("--version" | "-V")
+    ) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }

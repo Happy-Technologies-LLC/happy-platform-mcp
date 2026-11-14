@@ -9,7 +9,7 @@ cycle (P5-5); not part of CI and not shipped.
 ## Run
 
 ```sh
-cargo build --release -p hpm-cli --locked   # package renamed to `happy-platform-mcp` on p5-release: use that name there
+cargo build --release -p happy-platform-mcp --locked
 node scripts/side-by-side/run.mjs                       # full run (read set + write set)
 node scripts/side-by-side/run.mjs --phase reads         # read set only, writes nothing
 ```
