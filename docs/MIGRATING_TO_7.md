@@ -40,7 +40,7 @@ The npm package is a small Node launcher that starts the Rust binary for your pl
 ### E. Linux
 
 - glibc only: `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. There is no musl or Alpine build. The npm launcher on a musl system prints a clear error and exits with 127.
-- The keychain is the Secret Service over D-Bus (GNOME Keyring, KWallet and similar). The binary needs the system library `libdbus-1` at run time (package `libdbus-1-3` on Debian and Ubuntu). <!-- lead: confirm against lane A ldd report -->
+- The keychain is the Secret Service over D-Bus (GNOME Keyring, KWallet and similar). The binary needs the system library `libdbus-1` at run time (package `libdbus-1-3` on Debian and Ubuntu) and glibc 2.34 or newer. The Docker image already contains it.
 - A headless server or container with no running Secret Service answers `KEYCHAIN_UNAVAILABLE` (section 9) and never falls back to a file. Set the credentials through the environment there.
 - Difference from 6.x: the 6.x README says that without a Secret Service the JavaScript binding falls back to the Linux kernel keyring. 7.0 has no such fallback.
 
