@@ -1,5 +1,5 @@
 {
-  "scope": "@happy-platform-mcp",
+  "packagePrefix": "@happy-technologies/happy-platform-mcp-",
   "binaries": ["happy-platform-mcp", "servicenow-mcp-server", "happy-platform-mcp-http"],
   "platforms": [
     { "id": "darwin-arm64",    "rust": "aarch64-apple-darwin",      "os": "darwin", "cpu": "arm64" },

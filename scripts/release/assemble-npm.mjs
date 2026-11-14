@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const npmDir = path.join(repo, 'npm');
-const { scope, binaries, platforms } = JSON.parse(
+const { packagePrefix, binaries, platforms } = JSON.parse(
   fs.readFileSync(path.join(npmDir, 'platforms.json'), 'utf8')
 );
 const WRAPPER = 'happy-platform-mcp';
@@ -103,7 +103,7 @@ try {
     }
     copyLegal(dir, ['LICENSE', 'NOTICE']);
     const pkg = {
-      name: `${scope}/${p.id}`,
+      name: `${packagePrefix}${p.id}`,
       version,
       description: `Native happy-platform-mcp binaries for ${p.rust}. Install happy-platform-mcp instead.`,
       license: 'Apache-2.0',
@@ -126,7 +126,7 @@ try {
   fs.cpSync(path.join(npmDir, WRAPPER), wdir, { recursive: true });
   const main = JSON.parse(fs.readFileSync(path.join(wdir, 'package.json'), 'utf8'));
   main.version = version;
-  main.optionalDependencies = Object.fromEntries(platforms.map((p) => [`${scope}/${p.id}`, version]));
+  main.optionalDependencies = Object.fromEntries(platforms.map((p) => [`${packagePrefix}${p.id}`, version]));
   fs.writeFileSync(path.join(wdir, 'package.json'), JSON.stringify(main, null, 2) + '\n');
   copyLegal(wdir, ['README.md', 'LICENSE', 'NOTICE']);
   console.log(`assembled ${WRAPPER}@${version} (optionalDependencies: ${platforms.length})`);

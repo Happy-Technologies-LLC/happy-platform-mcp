@@ -60,9 +60,9 @@ test('unsupported os/arch gets its own message, exit 127', () => {
 
 test('installed platform package resolves bin/<name>(.exe)', () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hpm-shim-')));
-  const pkg = path.join(root, 'node_modules', '@happy-platform-mcp', 'win32-x64');
+  const pkg = path.join(root, 'node_modules', '@happy-technologies', 'happy-platform-mcp-win32-x64');
   fs.mkdirSync(path.join(pkg, 'bin'), { recursive: true });
-  fs.writeFileSync(path.join(pkg, 'package.json'), '{"name":"@happy-platform-mcp/win32-x64","version":"0.0.0"}');
+  fs.writeFileSync(path.join(pkg, 'package.json'), '{"name":"@happy-technologies/happy-platform-mcp-win32-x64","version":"0.0.0"}');
   fs.writeFileSync(path.join(pkg, 'bin', 'servicenow-mcp-server.exe'), '');
   const r = resolveBinary('servicenow-mcp-server', { env: {}, platform: 'win32', arch: 'x64', from: root });
   assert.equal(r.bin, path.join(pkg, 'bin', 'servicenow-mcp-server.exe'));
