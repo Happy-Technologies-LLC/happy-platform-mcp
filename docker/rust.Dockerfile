@@ -24,7 +24,7 @@ RUN set -eu; \
     esac; \
     dpkg --add-architecture "$TARGETARCH"; \
     apt-get update -qq; \
-    mkdir -p /pkgs /extract "/out/usr/lib/$triple" /out/usr/local/bin; \
+    mkdir -p /pkgs /extract "/out/usr/lib/$triple" /out/usr/local/bin /scripts; \
     cd /pkgs; \
     apt-get download \
       "libdbus-1-3:$TARGETARCH" "libsystemd0:$TARGETARCH" "libcap2:$TARGETARCH" \
@@ -59,6 +59,8 @@ COPY --from=libs /out/ /
 COPY --from=bin --chmod=0755 / /app/bin/
 
 WORKDIR /app
+# Generated fix scripts are written to <cwd>/scripts; the nonroot user owns it.
+COPY --from=libs --chown=65532:65532 /scripts /app/scripts
 
 EXPOSE 3000
 

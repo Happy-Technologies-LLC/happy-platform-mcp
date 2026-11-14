@@ -2,8 +2,10 @@
 #
 # Called from release.yml after the supply-chain job. Packages the glibc Linux
 # binaries that THIS release run built (no rebuild, no draft-release reads) into
-# docker/rust.Dockerfile, pushes linux/amd64 + linux/arm64 to Docker Hub with
-# the tags <version> and `next` only, then signs and attests the image digest.
+# docker/rust.Dockerfile and pushes linux/amd64 + linux/arm64 to Docker Hub
+# under the version tag. Each platform is then run by digest; only when both
+# print the release version does `next` point at that digest, and the digest
+# is signed, attested and written into the GitHub Release notes.
 # `latest`, `7` and `7.0` move only in promote.yml (manual promotion).
 name: Publish image
 
@@ -27,12 +29,13 @@ env:
 
 jobs:
   image:
-    name: Build, push, sign image
+    name: Build, verify, push, sign image
     runs-on: ubuntu-24.04
     environment: release
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
-      contents: write # upload image-digest.txt to this run's release
+      actions: read # download this run's artifacts
+      contents: write # edit release notes, upload image-digest.txt
       id-token: write # keyless cosign + attestation (Sigstore OIDC)
       attestations: write
     env:
@@ -44,28 +47,32 @@ jobs:
 
       - name: Read version and tag from the dist plan
         id: meta
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           tag="$(jq -er '.announcement_tag' <<<"$PLAN")"
           version="$(jq -er '.releases[] | select(.app_name == "happy-platform-mcp") | .app_version' <<<"$PLAN")"
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if ! [[ "$version" =~ $semver ]]; then
+            echo "::error::version '${version}' is not semver; refusing to tag"
+            exit 1
+          fi
           if [ "$tag" != "v${version}" ]; then
             echo "::error::plan tag ${tag} does not match happy-platform-mcp version ${version}"
             exit 1
           fi
-          case "$version" in
-            latest|next|7|7.0) echo "::error::refusing reserved tag ${version}"; exit 1 ;;
-          esac
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Download this run's release archives
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           path: dist-artifacts
           merge-multiple: true
 
       - name: Verify and extract Linux archives into the build context
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
@@ -85,8 +92,15 @@ jobs:
           done
           ls -lR docker/context
 
+      - name: Set up QEMU (run the arm64 image by digest)
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe # buildx-stable-1
 
       - name: Log in to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -94,8 +108,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push (version + next only)
+      - name: Build and push (version tag only)
         id: build
+        timeout-minutes: 20
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: docker/context
@@ -105,19 +120,42 @@ jobs:
           provenance: mode=max
           sbom: true
           no-cache: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
-            ${{ env.IMAGE }}:next
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
           labels: |
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             io.modelcontextprotocol.server.name=io.github.nickzitzer/happy-platform-mcp
 
+      - name: Run the pushed image by digest on each platform
+        timeout-minutes: 5
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            for bin in happy-platform-mcp servicenow-mcp-server happy-platform-mcp-http; do
+              out="$(docker run --rm --pull always --platform "$platform" "${IMAGE}@${DIGEST}" "$bin" --version)"
+              echo "${platform} ${bin}: ${out}"
+              if [ "$(tr -d '\r' <<<"$out" | awk '{print $NF}')" != "$VERSION" ]; then
+                echo "::error::${platform} ${bin} --version printed '${out}', expected ${VERSION}"
+                exit 1
+              fi
+            done
+          done
+
+      - name: Point next at the verified digest
+        timeout-minutes: 5
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: docker buildx imagetools create --tag "${IMAGE}:next" "${IMAGE}@${DIGEST}"
+
       - name: Install cosign
         uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign image by digest (keyless)
+        timeout-minutes: 5
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
@@ -129,7 +167,8 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-      - name: Record digest (summary + release asset)
+      - name: Record digest (summary, release notes, image-digest.txt)
+        timeout-minutes: 5
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.meta.outputs.version }}
@@ -137,18 +176,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          printf '%s@%s\n' "$IMAGE" "$DIGEST" > image-digest.txt
+          repo_image="${IMAGE#docker.io/}"
+          workflow="${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml"
+          printf '%s@%s\n' "$repo_image" "$DIGEST" > image-digest.txt
           {
-            echo "### OCI image"
+            echo "## Docker image"
             echo ""
-            echo "- Tags: \`${IMAGE}:${VERSION}\`, \`${IMAGE}:next\`"
-            echo "- Digest: \`${IMAGE}@${DIGEST}\`"
+            echo "- Tags: \`${repo_image}:${VERSION}\`, \`${repo_image}:next\`"
+            echo "- Digest: \`${repo_image}@${DIGEST}\`"
             echo ""
-            echo '```sh'
-            echo "cosign verify ${IMAGE}@${DIGEST} \\"
-            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/' \\"
-            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
-            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}"
+            echo '```bash'
+            echo "docker pull ${repo_image}@${DIGEST}"
+            echo "cosign verify ${repo_image}@${DIGEST} \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  --certificate-identity 'https://github.com/${workflow}@${GITHUB_REF}'"
+            echo "gh attestation verify oci://${repo_image}@${DIGEST} \\"
+            echo "  --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --signer-workflow ${workflow} \\"
+            echo "  --source-ref ${GITHUB_REF} --deny-self-hosted-runners"
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > image-section.md
+          cat image-section.md >> "$GITHUB_STEP_SUMMARY"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+          if ! grep -q '^## Docker image$' notes.md; then
+            { echo ""; cat image-section.md; } >> notes.md
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          fi
           gh release upload "$TAG" image-digest.txt --clobber --repo "$GITHUB_REPOSITORY"
