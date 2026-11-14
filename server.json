@@ -6,12 +6,12 @@
     "url": "https://github.com/Happy-Technologies-LLC/happy-platform-mcp",
     "source": "github"
   },
-  "version": "7.0.0-alpha.0",
+  "version": "7.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "happy-platform-mcp",
-      "version": "7.0.0-alpha.0",
+      "version": "7.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -118,7 +118,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "docker.io/nczitzer/happy-platform-mcp:7.0.0-alpha.0",
+      "identifier": "docker.io/nczitzer/happy-platform-mcp:7.0.0",
       "transport": {
         "type": "stdio"
       },
