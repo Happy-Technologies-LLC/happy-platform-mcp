@@ -1,0 +1,154 @@
+# OCI image for the Rust 7.x release (design §2.9, lane C).
+#
+# Called from release.yml after the supply-chain job. Packages the glibc Linux
+# binaries that THIS release run built (no rebuild, no draft-release reads) into
+# docker/rust.Dockerfile, pushes linux/amd64 + linux/arm64 to Docker Hub with
+# the tags <version> and `next` only, then signs and attests the image digest.
+# `latest`, `7` and `7.0` move only in promote.yml (manual promotion).
+name: Publish image
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan JSON for this release run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: docker.io/nczitzer/happy-platform-mcp
+
+jobs:
+  image:
+    name: Build, push, sign image
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      contents: write # upload image-digest.txt to this run's release
+      id-token: write # keyless cosign + attestation (Sigstore OIDC)
+      attestations: write
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Read version and tag from the dist plan
+        id: meta
+        run: |
+          set -euo pipefail
+          tag="$(jq -er '.announcement_tag' <<<"$PLAN")"
+          version="$(jq -er '.releases[] | select(.app_name == "happy-platform-mcp") | .app_version' <<<"$PLAN")"
+          if [ "$tag" != "v${version}" ]; then
+            echo "::error::plan tag ${tag} does not match happy-platform-mcp version ${version}"
+            exit 1
+          fi
+          case "$version" in
+            latest|next|7|7.0) echo "::error::refusing reserved tag ${version}"; exit 1 ;;
+          esac
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Download this run's release archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: artifacts-*
+          path: dist-artifacts
+          merge-multiple: true
+
+      - name: Verify and extract Linux archives into the build context
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            archive="dist-artifacts/happy-platform-mcp-${target}.tar.xz"
+            (cd dist-artifacts && sha256sum -c "happy-platform-mcp-${target}.tar.xz.sha256")
+            dest="docker/context/${target}"
+            mkdir -p "$dest" "tmp-${target}"
+            tar -xJf "$archive" -C "tmp-${target}"
+            for bin in happy-platform-mcp servicenow-mcp-server happy-platform-mcp-http; do
+              found="$(find "tmp-${target}" -type f -name "$bin" -print -quit)"
+              if [ -z "$found" ]; then
+                echo "::error::${bin} missing from ${archive}"
+                exit 1
+              fi
+              install -m 0755 "$found" "${dest}/${bin}"
+            done
+          done
+          ls -lR docker/context
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (version + next only)
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: docker/context
+          file: docker/rust.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          no-cache: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:next
+          labels: |
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            io.modelcontextprotocol.server.name=io.github.nickzitzer/happy-platform-mcp
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign image by digest (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record digest (summary + release asset)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s@%s\n' "$IMAGE" "$DIGEST" > image-digest.txt
+          {
+            echo "### OCI image"
+            echo ""
+            echo "- Tags: \`${IMAGE}:${VERSION}\`, \`${IMAGE}:next\`"
+            echo "- Digest: \`${IMAGE}@${DIGEST}\`"
+            echo ""
+            echo '```sh'
+            echo "cosign verify ${IMAGE}@${DIGEST} \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          gh release upload "$TAG" image-digest.txt --clobber --repo "$GITHUB_REPOSITORY"
