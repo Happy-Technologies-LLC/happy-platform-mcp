@@ -3,7 +3,7 @@
 # image tags `latest`, `<major>` and `<major>.<minor>`.
 #
 # Dispatch it FROM THE RELEASE TAG, so the gate logic is the tagged revision:
-#   gh workflow run promote.yml --ref v7.0.2 -f version=7.0.2
+#   gh workflow run promote.yml --ref v7.0.3 -f version=7.0.3
 #
 # Fails closed: every check below passes before anything is moved.
 #   preconditions
@@ -318,6 +318,8 @@ jobs:
   promote-npm:
     name: npm latest -> ${{ inputs.version }}
     needs: smoke
+    # Explicit: the implicit success() also requires the skipped signing gates, so a waived run would skip this.
+    if: ${{ !cancelled() && needs.smoke.result == 'success' }}
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -339,6 +341,7 @@ jobs:
   promote-image:
     name: Image latest/major/minor -> digest
     needs: [preconditions, smoke]
+    if: ${{ !cancelled() && needs.smoke.result == 'success' }}
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -368,6 +371,7 @@ jobs:
   publish-registry:
     name: MCP registry publish
     needs: [promote-npm, promote-image]
+    if: ${{ !cancelled() && needs.promote-npm.result == 'success' && needs.promote-image.result == 'success' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -396,6 +400,7 @@ jobs:
   finalize-release:
     name: Mark GitHub Release latest
     needs: publish-registry
+    if: ${{ !cancelled() && needs.publish-registry.result == 'success' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:

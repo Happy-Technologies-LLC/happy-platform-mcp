@@ -5,7 +5,7 @@ exclude = ["spikes"] # P1 spikes are standalone projects with their own [workspa
 
 [workspace.package]
 # Lockstep with the npm major (D8).
-version = "7.0.2"
+version = "7.0.3"
 edition = "2024"
 rust-version = "1.89" # workspace MSRV: rusqlite 0.42 needs 1.89; rmcp floor is 1.88 (plan §3.3)
 license = "Apache-2.0"
@@ -14,11 +14,11 @@ authors = ["Happy Technologies LLC"]
 
 [workspace.dependencies]
 # Internal crates carry BOTH path and exact version so `cargo publish` works (D-07 §1.6).
-hpm-types = { path = "crates/hpm-types", version = "=7.0.2" }
-hpm-core = { path = "crates/hpm-core", version = "=7.0.2" }
-hpm-docs = { path = "crates/hpm-docs", version = "=7.0.2" }
-hpm-tools = { path = "crates/hpm-tools", version = "=7.0.2" }
-hpm-protocol = { path = "crates/hpm-protocol", version = "=7.0.2" }
+hpm-types = { path = "crates/hpm-types", version = "=7.0.3" }
+hpm-core = { path = "crates/hpm-core", version = "=7.0.3" }
+hpm-docs = { path = "crates/hpm-docs", version = "=7.0.3" }
+hpm-tools = { path = "crates/hpm-tools", version = "=7.0.3" }
+hpm-protocol = { path = "crates/hpm-protocol", version = "=7.0.3" }
 # External dependencies are declared here only (lead-owned); crates use `x.workspace = true`.
 # Floors are the versions proven by the P1 spikes (spikes/*/Cargo.lock); rmcp is exact.
 # Lanes enable extra features per crate (`features = [...]` adds to these).
