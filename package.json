@@ -64,8 +64,8 @@
     "@istanbuljs/load-nyc-config": {
       "js-yaml": "4.3.2"
     },
-    "glob": "13.0.6",
-    "minimatch": "10.2.6",
+    "glob": "14.0.6",
+    "minimatch": "11.0.9",
     "test-exclude": "8.0.0"
   },
   "author": "Happy Technologies LLC",
