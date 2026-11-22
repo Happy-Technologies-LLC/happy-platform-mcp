@@ -121,6 +121,72 @@ my $img_secrets = q{    secrets:
 p('npm secrets', 1, sub { $y =~ s{(uses: \./\.github/workflows/publish-npm\.yml\n    with:\n      plan: .*\n)    secrets: inherit\n}{$1$npm_secrets} });
 p('image secrets', 1, sub { $y =~ s{(uses: \./\.github/workflows/publish-image\.yml\n    with:\n      plan: .*\n)    secrets: inherit\n}{$1$img_secrets} });
 
+# 13. Windows Authenticode (Azure Artifact Signing). `dist build` compiles and zips in one step, so
+#     the Windows runner first builds the same binaries with dist's exact cargo invocation (dist sets
+#     RUSTFLAGS=-Ctarget-feature=+crt-static for msvc; any other value makes dist recompile and drop the
+#     signatures, verified on a probe run), signs them in place, and `dist build` then reuses them and
+#     zips the signed files. The final step fails the build unless every exe in the zip is validly signed.
+#     OIDC login uses the `release-signing` environment (no reviewers, v* tags only), which is also
+#     the Entra federated-credential subject; it sits on the whole matrix because a job-level
+#     environment cannot vary per matrix entry. Account `happytech-signing`, profile `happytech-public`.
+p('build environment + oidc', 1, sub { $y =~ s{^(  build-local-artifacts:\n    name: [^\n]*\n)}{$1    environment: release-signing\n    permissions:\n      "contents": "read"\n      "id-token": "write"\n}m });
+my $win_sign = q{      - name: Prebuild Windows binaries for signing
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        env:
+          RUSTFLAGS: "-Ctarget-feature=+crt-static"
+        run: cargo auditable build --locked --profile dist --workspace --target x86_64-pc-windows-msvc
+      - name: Azure login (OIDC)
+        if: ${{ runner.os == 'Windows' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Authenticode-sign Windows binaries
+        if: ${{ runner.os == 'Windows' }}
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: happytech-signing
+          certificate-profile-name: happytech-public
+          files: |
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\dist\happy-platform-mcp.exe
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\dist\servicenow-mcp-server.exe
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\dist\happy-platform-mcp-http.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+      - name: Build artifacts
+};
+p('windows sign steps', 1, sub { $y =~ s{      - name: Build artifacts\n}{$win_sign} });
+my $win_verify = q{          echo "dist ran successfully"
+      - name: Verify Authenticode signatures in the Windows zip
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive target/distrib/happy-platform-mcp-x86_64-pc-windows-msvc.zip -DestinationPath signcheck
+          $exes = Get-ChildItem signcheck -Recurse -Filter *.exe
+          if ($exes.Count -lt 3) { throw "expected 3 executables, found $($exes.Count)" }
+          foreach ($exe in $exes) {
+            $sig = Get-AuthenticodeSignature $exe.FullName
+            Write-Host "$($exe.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { throw "$($exe.Name) Authenticode status is $($sig.Status)" }
+          }
+};
+p('windows verify step', 1, sub { $y =~ s{          echo "dist ran successfully"\n}{$win_verify} });
+
 open my $out, '>', $f or die $!; print $out $y; close $out;
 PERL
 

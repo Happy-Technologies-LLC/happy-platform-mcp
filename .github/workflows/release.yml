@@ -87,6 +87,19 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::bad tag"; exit 1; }
           dist host --steps=create --tag="$TAG" --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
+      - name: Verify Authenticode signatures in the Windows zip
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive target/distrib/happy-platform-mcp-x86_64-pc-windows-msvc.zip -DestinationPath signcheck
+          $exes = Get-ChildItem signcheck -Recurse -Filter *.exe
+          if ($exes.Count -lt 3) { throw "expected 3 executables, found $($exes.Count)" }
+          foreach ($exe in $exes) {
+            $sig = Get-AuthenticodeSignature $exe.FullName
+            Write-Host "$($exe.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { throw "$($exe.Name) Authenticode status is $($sig.Status)" }
+          }
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
@@ -105,6 +118,10 @@ jobs:
   # Build and packages all the platform-specific things
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+    environment: release-signing
+    permissions:
+      "contents": "read"
+      "id-token": "write"
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
@@ -167,6 +184,43 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      - name: Prebuild Windows binaries for signing
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        env:
+          RUSTFLAGS: "-Ctarget-feature=+crt-static"
+        run: cargo auditable build --locked --profile dist --workspace --target x86_64-pc-windows-msvc
+      - name: Azure login (OIDC)
+        if: ${{ runner.os == 'Windows' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Authenticode-sign Windows binaries
+        if: ${{ runner.os == 'Windows' }}
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: happytech-signing
+          certificate-profile-name: happytech-public
+          files: |
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\dist\happy-platform-mcp.exe
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\dist\servicenow-mcp-server.exe
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\dist\happy-platform-mcp-http.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
