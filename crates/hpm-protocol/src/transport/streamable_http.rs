@@ -6,7 +6,7 @@
 //! - The front guard (rate limit → Host → Origin → bearer) runs before any body
 //!   read or session allocation and inserts the verified identity.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -40,7 +40,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 
-use super::auth::{AuthFailureLimiter, operator_identity};
+use super::auth::{AuthFailureLimiter, AuthRequest, HttpAuthenticator, StaticBearerAuthenticator};
 use super::json_error;
 use super::limits::{HttpLimits, HttpSecurity, host_allowed, origin_allowed};
 use super::sse::{
@@ -107,13 +107,23 @@ impl Connected<IncomingStream<'_, TcpListener>> for PeerAddrs {
     }
 }
 
+/// The front guard's state: failure limiter, Host/Origin allow-lists and the
+/// authenticator.
+struct FrontDoor {
+    allowed_hosts: BTreeSet<String>,
+    allowed_origins: BTreeSet<String>,
+    auth_failures: AuthFailureLimiter,
+    authenticator: Arc<dyn HttpAuthenticator>,
+    /// RFC 9728 body, served unauthenticated when the authenticator provides one.
+    resource_metadata: Option<Value>,
+}
+
 struct AppState {
-    security: HttpSecurity,
+    front: FrontDoor,
     limits: HttpLimits,
     shutdown_grace: Duration,
     /// Cancelled by `close_all_sessions`.
     stopping: CancellationToken,
-    auth_failures: AuthFailureLimiter,
     rmcp: StreamableHttpService<McpHandler, LocalSessionManager>,
     rmcp_sessions: Arc<LocalSessionManager>,
     /// Streamable session id → the principal that initialized it (rule 5).
@@ -138,7 +148,27 @@ pub struct HttpApp {
 }
 
 impl HttpApp {
+    /// Single-user listener: requests authenticate with the static bearer token
+    /// in `config.security` ([`StaticBearerAuthenticator`]).
     pub fn new(streamable: McpHandler, sse: McpHandler, config: HttpConfig) -> Self {
+        let authenticator = Arc::new(StaticBearerAuthenticator::new(
+            config.security.token.clone(),
+        ));
+        Self::with_authenticator(streamable, sse, config, authenticator)
+    }
+
+    /// Listener whose requests authenticate with `authenticator` instead of the
+    /// static bearer token (`config.security.token` is then unused). Every other
+    /// front rule (failure limiter, Host/Origin, deadlines, connection caps,
+    /// session-to-principal binding) is unchanged. When the authenticator returns
+    /// [`HttpAuthenticator::protected_resource_metadata`], GET
+    /// `/.well-known/oauth-protected-resource` serves it without authentication.
+    pub fn with_authenticator(
+        streamable: McpHandler,
+        sse: McpHandler,
+        config: HttpConfig,
+        authenticator: Arc<dyn HttpAuthenticator>,
+    ) -> Self {
         let HttpConfig {
             security,
             limits,
@@ -172,11 +202,17 @@ impl HttpApp {
         let global = Arc::new(GlobalLimits::new(&limits));
         let streamable_count = Arc::new(AtomicUsize::new(0));
         let state = Arc::new(AppState {
-            auth_failures: AuthFailureLimiter::new(
-                limits.auth_failure_limit,
-                limits.auth_failure_window,
-                limits.max_tracked_auth_peers,
-            ),
+            front: FrontDoor {
+                auth_failures: AuthFailureLimiter::new(
+                    limits.auth_failure_limit,
+                    limits.auth_failure_window,
+                    limits.max_tracked_auth_peers,
+                ),
+                resource_metadata: authenticator.protected_resource_metadata(),
+                authenticator,
+                allowed_hosts: security.allowed_hosts,
+                allowed_origins: security.allowed_origins,
+            },
             sse: SseSessions::new(
                 sse,
                 limits.clone(),
@@ -187,7 +223,6 @@ impl HttpApp {
             limits,
             shutdown_grace,
             stopping: shutdown.clone(),
-            security,
             rmcp,
             rmcp_sessions,
             bindings: Mutex::new(HashMap::new()),
@@ -439,33 +474,66 @@ fn peer_key(ip: std::net::IpAddr) -> String {
     }
 }
 
-async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
+async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    front_guard(&st.front, req, next).await
+}
+
+/// RFC 9728 well-known path of the protected-resource metadata.
+const RESOURCE_METADATA_PATH: &str = "/.well-known/oauth-protected-resource";
+
+/// Failure limiter → Host → Origin → (metadata) → authenticator → eviction check;
+/// inserts the verified identity.
+async fn front_guard(front: &FrontDoor, mut req: Request, next: Next) -> Response {
     let Some(ConnectInfo(addrs)) = req.extensions().get::<ConnectInfo<PeerAddrs>>().copied() else {
         // Served without connect info: no Host or peer basis, fail closed.
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     };
     let peer = peer_key(addrs.remote.ip());
     let now = Instant::now();
-    if let Some(retry) = st.auth_failures.retry_after_seconds(&peer, now) {
+    if let Some(retry) = front.auth_failures.retry_after_seconds(&peer, now) {
         return too_many_failures(retry);
     }
     let h = req.headers();
-    if !host_allowed(h, addrs.local, &st.security.allowed_hosts) {
+    if !host_allowed(h, addrs.local, &front.allowed_hosts) {
         return json_error(StatusCode::FORBIDDEN, "Host not allowed");
     }
-    if !origin_allowed(h, &st.security.allowed_origins) {
+    if !origin_allowed(h, &front.allowed_origins) {
         return json_error(StatusCode::FORBIDDEN, "Origin not allowed");
     }
-    if !st.security.token.matches(h) {
-        if !st.auth_failures.record_failure(&peer, now) {
-            let window = st.auth_failures.window().as_millis().div_ceil(1000) as u64;
-            return too_many_failures(window);
-        }
-        let mut r = json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
-        r.headers_mut()
-            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-        return r;
+    if let Some(metadata) = &front.resource_metadata
+        && req.method() == Method::GET
+        && req.uri().path() == RESOURCE_METADATA_PATH
+    {
+        return Json(metadata.clone()).into_response();
     }
+    let verdict = front
+        .authenticator
+        .authenticate(AuthRequest {
+            headers: h,
+            method: req.method(),
+            path: req.uri().path(),
+            peer: addrs.remote.ip(),
+        })
+        .await;
+    let identity = match verdict {
+        Ok(identity) => identity,
+        Err(challenge) => {
+            if challenge.counts_as_failure && !front.auth_failures.record_failure(&peer, now) {
+                let window = front.auth_failures.window().as_millis().div_ceil(1000) as u64;
+                return too_many_failures(window);
+            }
+            let msg = match challenge.status {
+                StatusCode::UNAUTHORIZED => "Unauthorized",
+                StatusCode::FORBIDDEN => "Forbidden",
+                StatusCode::SERVICE_UNAVAILABLE => "Service unavailable",
+                s => s.canonical_reason().unwrap_or("Error"),
+            };
+            let mut r = json_error(challenge.status, msg);
+            r.headers_mut()
+                .insert(header::WWW_AUTHENTICATE, challenge.www_authenticate);
+            return r;
+        }
+    };
     // Review L2: the flag moves Unauth → Authed only if eviction has not won.
     if let Some(ConnAuth(state)) = req.extensions().get::<ConnAuth>()
         && let Err(EVICTED) =
@@ -476,8 +544,7 @@ async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) ->
             .insert(header::CONNECTION, HeaderValue::from_static("close"));
         return r;
     }
-    req.extensions_mut()
-        .insert(operator_identity(&st.security.token));
+    req.extensions_mut().insert(identity);
     next.run(req).await
 }
 
@@ -866,5 +933,226 @@ mod tests {
             peer_key("2001:db8:1:2:ffff:ffff:ffff:ffff".parse().expect("ip"))
         );
         assert_ne!(a, peer_key("2001:db8:1:3::1".parse().expect("ip")));
+    }
+
+    use std::sync::atomic::AtomicU32;
+
+    use axum::body::to_bytes;
+    use hpm_types::BoxFut;
+    use hpm_types::context::ClientIdentity;
+    use tower::ServiceExt;
+
+    use crate::transport::auth::{API_TOKEN_CLIENT_ID, ApiToken, AuthChallenge, operator_identity};
+
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const LOCAL: &str = "127.0.0.1:3000";
+    const METADATA_URL: &str = "https://mcp.example/.well-known/oauth-protected-resource";
+
+    /// Accepts `Bearer good`, answers 403 for `Bearer forbidden`, else 401 with
+    /// `resource_metadata`; counts its calls.
+    struct Custom {
+        calls: AtomicU32,
+    }
+
+    fn federated() -> VerifiedHttpIdentity {
+        VerifiedHttpIdentity::new(
+            Principal::Federated {
+                org: "acme".into(),
+                iss: "https://idp.example".into(),
+                sub: "alice".into(),
+            },
+            ClientIdentity {
+                client_id: "custom".into(),
+                verified: true,
+            },
+            vec!["scope:mcp:tools.read".to_string()].into(),
+        )
+    }
+
+    impl HttpAuthenticator for Custom {
+        fn authenticate<'a>(
+            &'a self,
+            req: AuthRequest<'a>,
+        ) -> BoxFut<'a, Result<VerifiedHttpIdentity, AuthChallenge>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let auth = req.headers.get(header::AUTHORIZATION).cloned();
+            let peer_ok = req.peer.is_loopback() && req.path == "/probe";
+            Box::pin(async move {
+                match auth.as_ref().and_then(|v| v.to_str().ok()) {
+                    Some("Bearer good") if peer_ok => Ok(federated()),
+                    Some("Bearer forbidden") => Err(AuthChallenge {
+                        status: StatusCode::FORBIDDEN,
+                        www_authenticate: HeaderValue::from_static(
+                            "Bearer error=\"insufficient_scope\"",
+                        ),
+                        counts_as_failure: false,
+                    }),
+                    _ => Err(AuthChallenge::unauthorized(Some(METADATA_URL))),
+                }
+            })
+        }
+
+        fn protected_resource_metadata(&self) -> Option<Value> {
+            Some(json!({"resource": "https://mcp.example", "bearer_methods_supported": ["header"]}))
+        }
+    }
+
+    fn front(authenticator: Arc<dyn HttpAuthenticator>, failure_limit: u32) -> Arc<FrontDoor> {
+        Arc::new(FrontDoor {
+            allowed_hosts: BTreeSet::new(),
+            allowed_origins: BTreeSet::new(),
+            auth_failures: AuthFailureLimiter::new(failure_limit, Duration::from_secs(60), 16),
+            resource_metadata: authenticator.protected_resource_metadata(),
+            authenticator,
+        })
+    }
+
+    /// `/probe` echoes the principal the guard inserted.
+    fn app(front: Arc<FrontDoor>) -> Router {
+        async fn probe(req: Request) -> Response {
+            match req.extensions().get::<VerifiedHttpIdentity>() {
+                Some(id) => format!("{:?}|{}", id.principal, id.client.client_id).into_response(),
+                None => StatusCode::IM_A_TEAPOT.into_response(),
+            }
+        }
+        async fn layer(State(f): State<Arc<FrontDoor>>, req: Request, next: Next) -> Response {
+            front_guard(&f, req, next).await
+        }
+        Router::new()
+            .route("/probe", any(probe))
+            .layer(middleware::from_fn_with_state(front, layer))
+    }
+
+    async fn send(app: &Router, method: Method, path: &str, auth: Option<&str>) -> Response {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, LOCAL);
+        if let Some(a) = auth {
+            req = req.header(header::AUTHORIZATION, a);
+        }
+        let mut req = req.body(Body::empty()).expect("request");
+        let local: SocketAddr = LOCAL.parse().expect("addr");
+        req.extensions_mut().insert(ConnectInfo(PeerAddrs {
+            local,
+            remote: "127.0.0.1:50000".parse().expect("addr"),
+        }));
+        app.clone().oneshot(req).await.expect("infallible")
+    }
+
+    async fn body(r: Response) -> String {
+        String::from_utf8(
+            to_bytes(r.into_body(), 1 << 16)
+                .await
+                .expect("body")
+                .to_vec(),
+        )
+        .expect("utf8")
+    }
+
+    fn www(r: &Response) -> Option<&str> {
+        r.headers()
+            .get(header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn static_bearer_default_keeps_single_user_behaviour() {
+        let token = ApiToken::parse(Some(TOKEN)).expect("token");
+        let app = app(front(
+            Arc::new(StaticBearerAuthenticator::new(token.clone())),
+            2,
+        ));
+
+        let ok = send(
+            &app,
+            Method::POST,
+            "/probe",
+            Some(&format!("Bearer {TOKEN}")),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let expected = operator_identity(&token);
+        assert_eq!(
+            body(ok).await,
+            format!("{:?}|{API_TOKEN_CLIENT_ID}", expected.principal)
+        );
+
+        // No metadata route in single-user: the path needs auth like any other.
+        let meta = send(&app, Method::GET, RESOURCE_METADATA_PATH, None).await;
+        assert_eq!(meta.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(www(&meta), Some("Bearer"));
+        assert_eq!(body(meta).await, r#"{"error":"Unauthorized"}"#);
+
+        let bad = send(&app, Method::POST, "/probe", Some("Bearer nope")).await;
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(www(&bad), Some("Bearer"));
+        // Third failure trips the limiter (limit 2), then the peer is locked out.
+        let limited = send(&app, Method::POST, "/probe", None).await;
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            limited
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("60")
+        );
+        let ok_but_locked = send(
+            &app,
+            Method::POST,
+            "/probe",
+            Some(&format!("Bearer {TOKEN}")),
+        )
+        .await;
+        assert_eq!(ok_but_locked.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn custom_authenticator_principal_reaches_extensions() {
+        let custom = Arc::new(Custom {
+            calls: AtomicU32::new(0),
+        });
+        let app = app(front(custom.clone(), 5));
+        let ok = send(&app, Method::POST, "/probe", Some("Bearer good")).await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(
+            body(ok).await,
+            format!("{:?}|custom", federated().principal)
+        );
+        assert_eq!(custom.calls.load(Ordering::SeqCst), 1);
+
+        // Metadata is served before (and without) authentication.
+        let meta = send(&app, Method::GET, RESOURCE_METADATA_PATH, None).await;
+        assert_eq!(meta.status(), StatusCode::OK);
+        let meta: Value = serde_json::from_str(&body(meta).await).expect("json");
+        assert_eq!(meta["resource"], "https://mcp.example");
+        assert_eq!(custom.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn custom_authenticator_rejections() {
+        let custom = Arc::new(Custom {
+            calls: AtomicU32::new(0),
+        });
+        let app = app(front(custom.clone(), 1));
+
+        // 403 does not count toward the limiter.
+        for _ in 0..3 {
+            let r = send(&app, Method::POST, "/probe", Some("Bearer forbidden")).await;
+            assert_eq!(r.status(), StatusCode::FORBIDDEN);
+            assert_eq!(www(&r), Some("Bearer error=\"insufficient_scope\""));
+            assert_eq!(body(r).await, r#"{"error":"Forbidden"}"#);
+        }
+
+        let r = send(&app, Method::POST, "/probe", None).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            www(&r),
+            Some(format!("Bearer resource_metadata=\"{METADATA_URL}\"").as_str())
+        );
+        // The 401 counted: the peer is now limited before the authenticator runs.
+        let r = send(&app, Method::POST, "/probe", None).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(custom.calls.load(Ordering::SeqCst), 4);
     }
 }

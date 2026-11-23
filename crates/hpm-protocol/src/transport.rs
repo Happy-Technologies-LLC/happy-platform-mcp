@@ -12,6 +12,7 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
+pub use auth::{AuthChallenge, AuthRequest, HttpAuthenticator, StaticBearerAuthenticator};
 pub use streamable_http::{HttpApp, HttpConfig, InstancesFn, JsonFn, PeerAddrs};
 
 /// 6.2.0 `sendJson(res, status, { error })`.

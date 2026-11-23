@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `hpm-protocol`: pluggable HTTP authentication seam. `transport::auth::HttpAuthenticator` (with `AuthRequest` and `AuthChallenge`) decides who a request is; `HttpApp::with_authenticator` plugs one in behind the unchanged front rules (failure limiter, Host/Origin checks, deadlines, connection caps, session-to-principal binding). An authenticator that returns protected-resource metadata gets an unauthenticated `GET /.well-known/oauth-protected-resource` route (RFC 9728). `HttpApp::new` keeps the single-user static bearer check, now `StaticBearerAuthenticator`; single-user behaviour is unchanged.
+
 ## 7.0.3 - unreleased (npm `next` first; `latest` stays 6.2.0 until a separate promotion)
 
 7.0.3 has the same code as 7.0.2. It fixes the promotion workflow, which skipped every promotion step when the signing gate was waived, so 7.0.2 could not be promoted. 7.0.0 and 7.0.1 were tagged but never published: their release runs failed at the npm publish step. The stray, unverified Docker `7.0.0` and `7.0.1` tags are not supported.
