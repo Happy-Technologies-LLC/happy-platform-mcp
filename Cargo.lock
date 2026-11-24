@@ -780,6 +780,7 @@ dependencies = [
 name = "happy-platform-mcp"
 version = "7.0.3"
 dependencies = [
+ "axum",
  "hpm-core",
  "hpm-docs",
  "hpm-protocol",
@@ -791,6 +792,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower",
  "url",
  "zeroize",
 ]
