@@ -41,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 use tower::Service;
 
 use super::auth::{AuthFailureLimiter, AuthRequest, HttpAuthenticator, StaticBearerAuthenticator};
+use super::expiry::StreamDeadline;
 use super::json_error;
 use super::limits::{HttpLimits, HttpSecurity, host_allowed, origin_allowed};
 use super::sse::{
@@ -118,6 +119,12 @@ struct FrontDoor {
     resource_metadata: Option<Value>,
 }
 
+/// A Streamable session's owner and its streams' credential deadline.
+struct Binding {
+    principal: Principal,
+    deadline: StreamDeadline,
+}
+
 struct AppState {
     front: FrontDoor,
     limits: HttpLimits,
@@ -127,7 +134,7 @@ struct AppState {
     rmcp: StreamableHttpService<McpHandler, LocalSessionManager>,
     rmcp_sessions: Arc<LocalSessionManager>,
     /// Streamable session id → the principal that initialized it (rule 5).
-    bindings: Mutex<HashMap<String, Principal>>,
+    bindings: Mutex<HashMap<String, Binding>>,
     /// `bindings.len()`, read synchronously by the SSE session cap.
     streamable_count: Arc<AtomicUsize>,
     /// Serializes session admission so the shared cap cannot be overshot.
@@ -663,9 +670,22 @@ fn session_header(headers: &HeaderMap) -> Option<String> {
 /// unknown one. Every session rmcp creates is bound in `post`, so an id we never
 /// bound is refused here rather than handed to rmcp (review F2).
 fn bound_elsewhere(st: &AppState, sid: &str, principal: &Principal) -> bool {
-    st.bindings
-        .lock()
-        .map_or(true, |b| b.get(sid).is_none_or(|p| p != principal))
+    st.bindings.lock().map_or(true, |b| {
+        b.get(sid).is_none_or(|s| &s.principal != principal)
+    })
+}
+
+/// T-K02: the stream deadline of a session bound to `identity`'s principal,
+/// refreshed by this request's identity. `None` for any other session.
+fn session_deadline(
+    st: &AppState,
+    sid: &str,
+    identity: &VerifiedHttpIdentity,
+) -> Option<StreamDeadline> {
+    let b = st.bindings.lock().ok()?;
+    let s = b.get(sid).filter(|s| s.principal == identity.principal)?;
+    s.deadline.refresh(identity);
+    Some(s.deadline.clone())
 }
 
 fn live_sessions(st: &AppState) -> usize {
@@ -674,11 +694,19 @@ fn live_sessions(st: &AppState) -> usize {
 
 /// Records the initializing principal and enforces the 6.2.0 lifetime cap; the
 /// binding is dropped once rmcp no longer holds the session (idle, DELETE, close).
-fn bind_session(st: &Arc<AppState>, sid: String, principal: Principal) {
+fn bind_session(st: &Arc<AppState>, sid: String, principal: Principal, deadline: StreamDeadline) {
     let Ok(mut b) = st.bindings.lock() else {
         return;
     };
-    if b.insert(sid.clone(), principal).is_none() {
+    if b.insert(
+        sid.clone(),
+        Binding {
+            principal,
+            deadline,
+        },
+    )
+    .is_none()
+    {
         st.streamable_count.fetch_add(1, Ordering::AcqRel);
     }
     drop(b);
@@ -782,6 +810,9 @@ async fn post(
     {
         return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED);
     }
+    let session = sid
+        .as_deref()
+        .and_then(|sid| session_deadline(st, sid, &identity));
     // Review F2: rmcp opens a session for every initialize, `_meta` or not, so
     // each one is admitted against the cap and bound.
     let creates_session =
@@ -824,9 +855,13 @@ async fn post(
         reserved,
     };
     let resp = forward(st, parts, Body::from(bytes)).await;
+    // T-K02: a session's streams share its deadline; a stateless response gets one
+    // from this request's identity.
+    let deadline = session.unwrap_or_else(|| StreamDeadline::new(&identity));
     if creates_session && let Some(new_sid) = session_header(resp.headers()) {
-        bind_session(st, new_sid, identity.principal.clone());
+        bind_session(st, new_sid, identity.principal.clone(), deadline.clone());
     }
+    let resp = deadline.bound(resp);
     let (parts, body) = resp.into_parts();
     Response::from_parts(
         parts,
@@ -864,7 +899,15 @@ async fn mcp(State(st): State<Arc<AppState>>, req: Request) -> Response {
         }
         Method::GET => {
             if header_sid {
-                return forward(&st, parts, body).await; // Rule 5.
+                // Rule 5.
+                let deadline = sid
+                    .as_deref()
+                    .and_then(|sid| session_deadline(&st, sid, &identity));
+                let resp = forward(&st, parts, body).await;
+                return match deadline {
+                    Some(d) => d.bound(resp),
+                    None => resp,
+                };
             }
             if accepts_sse(&parts.headers) {
                 return st.sse.open(identity); // Rule 6.

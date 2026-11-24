@@ -4,6 +4,7 @@
 //! RFC §5.3 dispatch and -32022 mapping.
 
 pub mod auth;
+mod expiry;
 pub mod limits;
 pub mod sse;
 pub mod streamable_http;

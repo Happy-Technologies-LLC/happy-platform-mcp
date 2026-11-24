@@ -29,6 +29,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, WriteHalf};
 use tokio::sync::{Notify, Semaphore, mpsc};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
+use super::expiry::StreamDeadline;
 use super::json_error;
 use super::limits::HttpLimits;
 use crate::handler::McpHandler;
@@ -147,6 +148,8 @@ struct Session {
     initialized: AtomicBool,
     closed: CancellationToken,
     activity: Notify,
+    /// T-K02: the stream (and with it this session) ends at the credential expiry.
+    deadline: StreamDeadline,
 }
 
 /// Process-wide request accounting shared by the SSE and Streamable paths.
@@ -288,6 +291,7 @@ impl SseSessions {
             initialized: AtomicBool::new(false),
             closed: CancellationToken::new(),
             activity: Notify::new(),
+            deadline: StreamDeadline::new(&identity),
         });
         {
             let Ok(mut map) = self.sessions.lock() else {
@@ -320,9 +324,12 @@ impl SseSessions {
             let limits = &sessions.limits;
             let lifetime = tokio::time::sleep(limits.session_max_lifetime);
             tokio::pin!(lifetime);
+            let expired = s.deadline.expired();
+            tokio::pin!(expired);
             let running = tokio::select! {
                 r = handler.serve(server_end) => r.ok(),
                 () = tokio::time::sleep(limits.session_setup_timeout) => None,
+                () = &mut expired => None,
                 () = s.closed.cancelled() => None,
             };
             if let Some(running) = running {
@@ -332,6 +339,7 @@ impl SseSessions {
                         () = s.activity.notified() => {}
                         () = tokio::time::sleep(limits.session_idle_timeout) => break,
                         () = &mut lifetime => break,
+                        () = &mut expired => break,
                         () = s.closed.cancelled() => break,
                     }
                 }
@@ -417,6 +425,7 @@ impl SseSessions {
         if session.principal != identity.principal {
             return json_error(StatusCode::NOT_FOUND, SESSION_REFUSED);
         }
+        session.deadline.refresh(identity);
         let is_json = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())

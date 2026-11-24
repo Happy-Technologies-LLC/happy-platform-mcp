@@ -215,6 +215,11 @@ pub struct VerifiedHttpIdentity {
     pub principal: Principal,
     pub client: ClientIdentity,
     pub scopes: Arc<[String]>,
+    /// When the credential stops being acceptable, skew already included (token
+    /// `exp` plus the verifier's clock-skew allowance). `None` (the static bearer)
+    /// never expires. The HTTP transport ends streams opened under this identity at
+    /// this time unless a later request on the same session refreshes it.
+    pub expires_at: Option<std::time::SystemTime>,
 }
 
 impl VerifiedHttpIdentity {
@@ -223,7 +228,15 @@ impl VerifiedHttpIdentity {
             principal,
             client,
             scopes,
+            expires_at: None,
         }
+    }
+
+    /// Sets [`Self::expires_at`] (token `exp` plus the allowed clock skew).
+    #[must_use]
+    pub fn with_expires_at(mut self, expires_at: std::time::SystemTime) -> Self {
+        self.expires_at = Some(expires_at);
+        self
     }
 }
 

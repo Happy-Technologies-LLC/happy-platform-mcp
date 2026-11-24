@@ -5,6 +5,7 @@
 ### Added
 
 - `hpm-protocol`: pluggable HTTP authentication seam. `transport::auth::HttpAuthenticator` (with `AuthRequest` and `AuthChallenge`) decides who a request is; `HttpApp::with_authenticator` plugs one in behind the unchanged front rules (failure limiter, Host/Origin checks, deadlines, connection caps, session-to-principal binding). An authenticator that returns protected-resource metadata gets an unauthenticated `GET /.well-known/oauth-protected-resource` route (RFC 9728). `HttpApp::new` keeps the single-user static bearer check, now `StaticBearerAuthenticator`; single-user behaviour is unchanged.
+- `hpm-types`/`hpm-protocol`: streams end when the credential expires (threat T-K02). `VerifiedHttpIdentity` has an optional `expires_at` (set with `with_expires_at`); the authenticator includes its clock-skew allowance in it. A legacy SSE stream, a Streamable HTTP `GET` stream or a streaming `POST` response opened under an identity with an expiry ends cleanly at that time. A later request on the same session by the same principal with a newer token moves the deadline to the later expiry; requests from any other principal are still refused by the session binding and never extend it. Identities without an expiry, including the single-user static bearer, are unaffected.
 
 ### Security
 
