@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 7.1.0 - unreleased (npm `next` only; `latest` stays 6.2.0)
+
+7.1.0 adds the enterprise authentication seam and stream expiry. There are no tool changes: it has the same 60 tools as 7.0.3. It is published to the npm `next` tag only; `latest` stays on 6.2.0.
 
 ### Added
 
