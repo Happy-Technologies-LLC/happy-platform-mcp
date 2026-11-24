@@ -1,18 +1,103 @@
-//! Single-user bearer token and the per-peer authentication-failure limiter
+//! HTTP authentication: the pluggable [`HttpAuthenticator`] seam, its single-user
+//! static bearer implementation, and the per-peer authentication-failure limiter
 //! (6.2.0 `validateApiToken`, `bearerMatches`, `createAuthFailureLimiter`).
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use hpm_types::BoxFut;
 use hpm_types::context::{ClientIdentity, Principal, VerifiedHttpIdentity};
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::limits::ConfigError;
+
+/// What an [`HttpAuthenticator`] sees of a request. The front guard has already
+/// passed the failure limiter and the Host and Origin checks; no body has been read.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthRequest<'a> {
+    pub headers: &'a HeaderMap,
+    pub method: &'a Method,
+    pub path: &'a str,
+    /// Socket peer address (forwarding headers are never consulted).
+    pub peer: IpAddr,
+}
+
+/// A refusal. The front guard answers `status` with a JSON error body and this
+/// `WWW-Authenticate` value.
+#[derive(Clone, Debug)]
+pub struct AuthChallenge {
+    /// 401 or 403 (503 for fail-closed).
+    pub status: StatusCode,
+    pub www_authenticate: HeaderValue,
+    /// 401s count toward the per-peer failure limiter; 403/503 do not.
+    pub counts_as_failure: bool,
+}
+
+impl AuthChallenge {
+    /// 401 with a bare `Bearer` challenge, or `Bearer resource_metadata="<url>"`
+    /// when a protected-resource metadata URL is configured. Counts as a failure.
+    pub fn unauthorized(resource_metadata: Option<&str>) -> Self {
+        let www_authenticate = resource_metadata
+            .and_then(|url| {
+                HeaderValue::from_str(&format!("Bearer resource_metadata=\"{url}\"")).ok()
+            })
+            .unwrap_or_else(|| HeaderValue::from_static("Bearer"));
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            www_authenticate,
+            counts_as_failure: true,
+        }
+    }
+}
+
+/// Authenticates every HTTP request before any body read or session allocation.
+/// The returned identity is inserted into the request extensions; Streamable
+/// sessions bind to its principal.
+pub trait HttpAuthenticator: Send + Sync {
+    fn authenticate<'a>(
+        &'a self,
+        req: AuthRequest<'a>,
+    ) -> BoxFut<'a, Result<VerifiedHttpIdentity, AuthChallenge>>;
+
+    /// RFC 9728 body for GET /.well-known/oauth-protected-resource; None in single-user.
+    fn protected_resource_metadata(&self) -> Option<serde_json::Value> {
+        None
+    }
+}
+
+/// The single-user authenticator: exactly one `Authorization: Bearer <token>`
+/// matching [`ApiToken`], yielding [`operator_identity`]. The default of
+/// [`super::HttpApp::new`].
+#[derive(Clone, Debug)]
+pub struct StaticBearerAuthenticator {
+    token: ApiToken,
+}
+
+impl StaticBearerAuthenticator {
+    pub fn new(token: ApiToken) -> Self {
+        Self { token }
+    }
+}
+
+impl HttpAuthenticator for StaticBearerAuthenticator {
+    fn authenticate<'a>(
+        &'a self,
+        req: AuthRequest<'a>,
+    ) -> BoxFut<'a, Result<VerifiedHttpIdentity, AuthChallenge>> {
+        let result = if self.token.matches(req.headers) {
+            Ok(operator_identity(&self.token))
+        } else {
+            Err(AuthChallenge::unauthorized(None))
+        };
+        Box::pin(std::future::ready(result))
+    }
+}
 
 /// Owner decision O3 (2026-11-13): the token comes only from the process
 /// environment; `.env` files are not read (6.2.0 loaded them).
