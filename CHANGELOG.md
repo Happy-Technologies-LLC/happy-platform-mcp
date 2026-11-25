@@ -27,6 +27,10 @@
 
 - `hpm-tools`: the encoded-query analyser reports exact field names for operator-suffixed conditions. `descriptionLIKEx`, `short_descriptionSTARTSWITHx`, `priorityIN1,2` and `priorityNOT IN1,2` now give `description`, `short_description` and `priority` (they gave the whole token before). A condition whose field is followed by an uppercase run that starts no known operator (`u_Foo=1`) is reported as unanalyzable (`*`). No tool output changes: these fields only feed the policy and data-protection hooks, which allow everything in single-user mode.
 
+### Fixed
+
+- `hpm-tools`: the encoded-query analyser trims leading whitespace and control characters at the start of each condition and after the `OR`, `NQ`, `ORDERBY`, `ORDERBYDESC` and `GROUPBY` prefixes (any Unicode whitespace, `%20` and the other escapes through the decoded pass). ServiceNow trims them, so `" descriptionSTARTSWITHa"` and `"ORDERBY description"` filter and order by `description`; the analyser used to report no field for them, which let a field-based data-protection guard miss the condition. A non-empty condition whose field still cannot be read (`=1`, a raw `%20…` form) is now reported as unanalyzable (`*`) instead of being dropped. Empty conditions (`a=1^^b=2`) still add nothing.
+
 ## 7.1.0 - unreleased (npm `next` only; `latest` stays 6.2.0)
 
 7.1.0 adds the enterprise authentication seam and stream expiry. There are no tool changes: it has the same 60 tools as 7.0.3. It is published to the npm `next` tag only; `latest` stays on 6.2.0.
