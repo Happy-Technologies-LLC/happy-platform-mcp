@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## 7.2.0 - unreleased (npm `next` only; `latest` stays 6.2.0)
+
+7.2.0 adds the seams an embedding application needs to run the server as a multi-user service: visible tool and resource lists, extended audit events, a data-protection tally, an admission limiter for calls, sessions and streams, list-changed notifications, per-principal `/instances`, and an inline fix-script mode. All additions are additive. In the stdio and single-user HTTP servers nothing changes: it has the same 60 tools as 7.1.0, with the same arguments and output. It is published to the npm `next` tag only; `latest` stays on 6.2.0.
 
 ### Added
 

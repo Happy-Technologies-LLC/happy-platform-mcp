@@ -2,7 +2,7 @@
 
 Every 7.x release is built once, and the same bytes go to every channel: the GitHub Release archives, the Homebrew formula, the npm platform packages and the Docker image. This page shows how to check that what you downloaded is what the project's release workflow built.
 
-Replace `v7.1.0` and the archive name with the release and platform you downloaded. All commands below need the [GitHub CLI](https://cli.github.com/) (`gh`) 2.49 or newer and [cosign](https://docs.sigstore.dev/cosign/installation/) 2 or newer.
+Replace `v7.2.0` and the archive name with the release and platform you downloaded. All commands below need the [GitHub CLI](https://cli.github.com/) (`gh`) 2.49 or newer and [cosign](https://docs.sigstore.dev/cosign/installation/) 2 or newer.
 
 ## What a release contains
 
@@ -33,7 +33,7 @@ A checksum alone only proves the download is intact. Use steps 2 and 3 to prove 
 gh attestation verify happy-platform-mcp-x86_64-unknown-linux-gnu.tar.xz \
   --repo Happy-Technologies-LLC/happy-platform-mcp \
   --signer-workflow Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml \
-  --source-ref refs/tags/v7.1.0 --deny-self-hosted-runners
+  --source-ref refs/tags/v7.2.0 --deny-self-hosted-runners
 ```
 
 Pin the signer, as above. A bare `gh attestation verify --repo ...` accepts an attestation made by any workflow in the repository, which is not enough. `--source-ref` pins the tag the attestation was made for, and `--deny-self-hosted-runners` refuses a build that ran on a self-hosted runner.
@@ -45,7 +45,7 @@ Pin the signer, as above. A bare `gh attestation verify --repo ...` accepts an a
 ```bash
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml@refs/tags/v7.1.0'
+  --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml@refs/tags/v7.2.0'
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
@@ -57,7 +57,7 @@ The certificate identity names the exact workflow file and tag that signed `SHA2
 gh attestation verify happy-platform-mcp-x86_64-unknown-linux-gnu.tar.xz \
   --repo Happy-Technologies-LLC/happy-platform-mcp \
   --signer-workflow Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/release-supply-chain.yml \
-  --source-ref refs/tags/v7.1.0 --deny-self-hosted-runners \
+  --source-ref refs/tags/v7.2.0 --deny-self-hosted-runners \
   --predicate-type https://cyclonedx.org/bom
 ```
 
@@ -69,11 +69,11 @@ Pull and run the image by digest; the digest is in the GitHub Release notes. A t
 docker pull nczitzer/happy-platform-mcp@sha256:<digest>
 cosign verify nczitzer/happy-platform-mcp@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/publish-image.yml@refs/tags/v7.1.0'
+  --certificate-identity 'https://github.com/Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/publish-image.yml@refs/tags/v7.2.0'
 gh attestation verify oci://nczitzer/happy-platform-mcp@sha256:<digest> \
   --repo Happy-Technologies-LLC/happy-platform-mcp \
   --signer-workflow Happy-Technologies-LLC/happy-platform-mcp/.github/workflows/publish-image.yml \
-  --source-ref refs/tags/v7.1.0 --deny-self-hosted-runners
+  --source-ref refs/tags/v7.2.0 --deny-self-hosted-runners
 ```
 
 ## 6. npm
