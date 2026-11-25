@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "happy-platform-mcp"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "axum",
  "hpm-core",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "hpm-core"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "apple-native-keyring-store",
  "base64 0.22.1",
@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "hpm-docs"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "bytes",
  "reqwest",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "hpm-protocol"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "axum",
  "futures-core",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "hpm-tools"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "hpm-types"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2912,7 +2912,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "serde_json",
  "sha2 0.11.1",

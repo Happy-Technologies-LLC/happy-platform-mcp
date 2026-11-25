@@ -2,7 +2,7 @@
 
 7.0 is a Rust rewrite of the server. It keeps all 60 tools, their names, their arguments (one optional argument is added, section 6) and their normal output, and it keeps your instance registry and saved credentials. This page says how to get 7.0, what you must do once, and what looks different.
 
-7.2.1 is released on the npm `next` channel first. The `latest` tag, and the Docker `:latest` tag, stay on 6.x until 7.0 is promoted in a later, separate step. Nothing changes for you until you choose 7.0.
+7.2.2 is released on the npm `next` channel first. The `latest` tag, and the Docker `:latest` tag, stay on 6.x until 7.0 is promoted in a later, separate step. Nothing changes for you until you choose 7.0.
 
 It is written for people who run happy-platform-mcp on their own machine or server and keep its credentials in the OS keychain. For install commands see the README ("Install 7.0 (preview)"); to check a download see [VERIFYING_RELEASES.md](VERIFYING_RELEASES.md).
 
@@ -15,9 +15,9 @@ It is written for people who run happy-platform-mcp on their own machine or serv
 | `npx -y happy-platform-mcp` (no tag) | 6.2.0 until 7.0 is promoted, then 7.x | `npx -y happy-platform-mcp@next` | pin `@6` |
 | `npx -y happy-platform-mcp@6` | the JavaScript 6.x server; a 7.x release never matches `@6` | n/a | nothing to do |
 | `npm install -g happy-platform-mcp` | 6.2.0 until promotion | `npm install -g happy-platform-mcp@next` | `npm install -g happy-platform-mcp@6` |
-| `docker run nczitzer/happy-platform-mcp:latest` | 6.x until promotion | `:next`, `:7.2.1`, or pin the digest | keep `:latest`, or pin a 6.x tag |
+| `docker run nczitzer/happy-platform-mcp:latest` | 6.x until promotion | `:next`, `:7.2.2`, or pin the digest | keep `:latest`, or pin a 6.x tag |
 | Homebrew | new in 7.0 | `brew install happy-technologies-llc/tap/happy-platform-mcp` | n/a |
-| Release archive | new in 7.0 | download from the GitHub Release `v7.2.1` | n/a |
+| Release archive | new in 7.0 | download from the GitHub Release `v7.2.2` | n/a |
 
 ### B. npm
 
@@ -28,7 +28,7 @@ The npm package is a small Node launcher that starts the Rust binary for your pl
 ### C. Docker
 
 - `docker run` keeps using an image it already cached; it does not pull a newer one on its own. Run `docker pull nczitzer/happy-platform-mcp:<tag>` when you want a newer image.
-- Before promotion the 7.0 image has only the tags `7.2.1` and `next`, plus a digest. It does not get `latest`, `7` or `7.0` until promotion, so an existing launcher that runs `:latest` keeps running 6.x.
+- Before promotion the 7.0 image has only the tags `7.2.2` and `next`, plus a digest. It does not get `latest`, `7` or `7.0` until promotion, so an existing launcher that runs `:latest` keeps running 6.x.
 - To test 7.0 use `:next`, or pin the digest: `nczitzer/happy-platform-mcp@sha256:<digest>`. The digest is in the GitHub Release notes. Pinning the digest is the safer choice, because `next` moves with each 7.x preview.
 - The image is built on a glibc base (`gcr.io/distroless/cc-debian12:nonroot`) and has no shell. A container has no OS keychain session, so pass credentials as environment variables (`SERVICENOW_INSTANCE_URL`, `SERVICENOW_USERNAME`, `SERVICENOW_PASSWORD`), as with the 6.x image. Section 12 lists the keys a `.env` file still loads.
 - The HTTP server still requires `HAPPY_MCP_API_TOKEN`, as since 6.0.
@@ -54,7 +54,7 @@ Credentials are kept in Windows Credential Manager. The preview binary is not si
 ### G. Homebrew and release archives
 
 - `brew install happy-technologies-llc/tap/happy-platform-mcp`
-- Archives: `happy-platform-mcp-<target>.tar.xz` (`.zip` on Windows) with a `.sha256` file each, for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`. Each archive holds all three binaries. They are attached to the GitHub Release `v7.2.1`, which is marked as a prerelease until promotion.
+- Archives: `happy-platform-mcp-<target>.tar.xz` (`.zip` on Windows) with a `.sha256` file each, for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`. Each archive holds all three binaries. They are attached to the GitHub Release `v7.2.2`, which is marked as a prerelease until promotion.
 - Each release also carries `SHA256SUMS`, its Sigstore bundle `SHA256SUMS.sigstore.json` and a CycloneDX SBOM (`happy-platform-mcp.cdx.json`); the archives have build provenance. See [VERIFYING_RELEASES.md](VERIFYING_RELEASES.md).
 
 ### H. Same files, same credentials
