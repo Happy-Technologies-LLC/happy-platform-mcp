@@ -27,6 +27,7 @@ use hpm_core::keychain::{MemorySecretStore, SERVICE_NAME};
 use hpm_core::registry::InstanceRegistry;
 use hpm_protocol::McpHandler;
 use hpm_tools::dispatcher::Dispatcher;
+use hpm_tools::families::FixScriptMode;
 use hpm_types::BoxFut;
 use hpm_types::context::{AdmissionKey, TrustedRoot};
 use serde_json::{Map, Value, json};
@@ -627,6 +628,8 @@ pub struct CallResult {
     pub outbound: Vec<super::http::Described>,
     /// Files the handler left in the sandbox working directory.
     pub files: Value,
+    /// The sandbox working directory (fix scripts go to `work/scripts`).
+    pub work: PathBuf,
 }
 
 /// Runs one `tools/call` of `tool` with `args` through the real composition,
@@ -638,8 +641,24 @@ pub async fn call_tool(
     tool: &str,
     args: Value,
 ) -> Result<CallResult, String> {
+    call_tool_mode(world, id, sc, tool, args, FixScriptMode::File).await
+}
+
+/// [`call_tool`] with the fix-script delivery mode of the composition.
+pub async fn call_tool_mode(
+    world: &World,
+    id: &str,
+    sc: Scenario,
+    tool: &str,
+    args: Value,
+    mode: FixScriptMode,
+) -> Result<CallResult, String> {
     let sandbox = make_sandbox(world, id, &sc)?;
-    let dispatcher = production(&sandbox, *KEY)?;
+    let dispatcher = SingleUser::new(sandbox.config.clone(), sandbox.client_deps())
+        .docs_base_url(sandbox.raw_github_base.clone())
+        .working_dir(sandbox.work.clone())
+        .fix_script_mode(mode)
+        .dispatcher(*KEY)?;
     let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
         .registry(sandbox.config.clone())
         .build();
@@ -679,7 +698,53 @@ pub async fn call_tool(
         response: strip_id(message),
         outbound,
         files,
+        work: sandbox.work.clone(),
     })
+}
+
+/// `tools/list` through the real composition with the given fix-script mode.
+pub async fn list_tools_mode(
+    world: &World,
+    id: &str,
+    mode: FixScriptMode,
+) -> Result<Value, String> {
+    let sc = Scenario::default();
+    let sandbox = make_sandbox(world, id, &sc)?;
+    let dispatcher = SingleUser::new(sandbox.config.clone(), sandbox.client_deps())
+        .docs_base_url(sandbox.raw_github_base.clone())
+        .working_dir(sandbox.work.clone())
+        .fix_script_mode(mode)
+        .dispatcher(*KEY)?;
+    let handler = McpHandler::builder(TrustedRoot::single_user_stdio(), dispatcher)
+        .registry(sandbox.config.clone())
+        .build();
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let server = tokio::spawn(hpm_protocol::stdio::serve_io(
+        handler,
+        server_read,
+        server_write,
+    ));
+    let (client_read, client_write) = tokio::io::split(client_io);
+    let mut client = Client {
+        write: client_write,
+        lines: BufReader::new(client_read).lines(),
+        next_id: 0,
+    };
+    world.stub.reset(sc.stub.clone());
+    let init = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "flow-test", "version": "0.0.0"}
+    });
+    client.request("initialize", &init).await?;
+    client
+        .send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await?;
+    let (message, _) = client.request("tools/list", &json!({})).await?;
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    Ok(strip_id(message))
 }
 
 /// Replays one golden file through `compose`. `Err` carries the per-golden report;

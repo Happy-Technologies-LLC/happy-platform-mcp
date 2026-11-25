@@ -9,7 +9,8 @@ use hpm_types::tool::{MutationOutcome, ToolError};
 use serde_json::{Value, json};
 
 use super::common::{
-    Done, done, error_for, metadata, now_iso, ok_text, ok_text_explicit, pinned, write_fix_script,
+    Done, FixScript, done, error_for, fenced, metadata, now_iso, ok_text, ok_text_explicit, pinned,
+    write_fix_script,
 };
 use super::js_text::{
     collapse_whitespace, pretty_opt, preview, text, truthy, truthy_opt, utf16_prefix,
@@ -251,7 +252,14 @@ async fn trigger_fix_script(
     };
     let file_name = format!("background_script_{}.js", file_timestamp());
     match write_fix_script(deps, file_name, &file).await {
-        Ok(path) => done(
+        Ok(FixScript::Inline(content)) => done(
+            outcome,
+            ok_text(format!(
+                "{notice}⚠️ Direct execution not available (requires UI session).\nFix script for manual execution (not written to disk).\n\n📋 To Execute Manually:\n1. Copy the script below\n2. In ServiceNow: System Definition → Scripts - Background\n3. Paste and click \"Run script\"\n\nScript:\n{}",
+                fenced(&content)
+            )),
+        ),
+        Ok(FixScript::File(path)) => done(
             outcome,
             ok_text(format!(
                 "{notice}⚠️ Direct execution not available (requires UI session).\nCreated fix script for manual execution: {path}\n\n📋 To Execute Manually:\n1. Open: {path}\n2. Copy the script content\n3. In ServiceNow: System Definition → Scripts - Background\n4. Paste and click \"Run script\"\n\nScript Preview:\n{}",
@@ -512,7 +520,14 @@ pub(super) fn create_fix_script<'a>(
         };
         let file_name = format!("{script_name}_{}.js", file_timestamp());
         match write_fix_script(deps, file_name, &file).await {
-            Ok(path) => done(
+            Ok(FixScript::Inline(content)) => done(
+                MutationOutcome::Committed,
+                ok_text(format!(
+                    "✅ Fix script generated (not written to disk)\n\n📋 Next Steps:\n1. Copy the entire script below\n2. In ServiceNow, navigate to: System Definition → Scripts - Background\n3. Paste and run the script\n4. Verify the output\n\nScript:\n{}",
+                    fenced(&content)
+                )),
+            ),
+            Ok(FixScript::File(path)) => done(
                 MutationOutcome::Committed,
                 ok_text(format!(
                     "✅ Fix script created: {path}\n\n📋 Next Steps:\n1. Open the file: {path}\n2. Copy the entire script content\n3. In ServiceNow, navigate to: System Definition → Scripts - Background\n4. Paste and run the script\n5. Verify the output{}\n\nScript Preview (first 200 chars):\n{}",

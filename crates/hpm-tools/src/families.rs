@@ -25,6 +25,18 @@ pub mod instances;
 pub mod itsm;
 pub mod update_sets;
 
+/// Where the fix-script tools put the script they generate
+/// (`SN-Create-Fix-Script`, the sys_trigger and update-set-picker fallbacks).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixScriptMode {
+    /// Write a file under `<working_dir>/scripts` and return its path (6.2.0).
+    #[default]
+    File,
+    /// Never touch the file system: return the script text in the tool result.
+    Inline,
+}
+
 /// What handlers may hold. Built once by the composition root.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -57,6 +69,9 @@ pub struct FamilyDeps {
     /// every family registered and docs-only filtering ran. Read it at request
     /// time (`servicenow://instance` `capabilities.tools`), never at registration.
     pub tool_count: Arc<OnceLock<usize>>,
+    /// Where fix scripts go (default [`FixScriptMode::File`]); set with
+    /// [`FamilyDeps::with_fix_script_mode`].
+    pub fix_script_mode: FixScriptMode,
 }
 
 impl FamilyDeps {
@@ -76,7 +91,15 @@ impl FamilyDeps {
             docs_cache_dir: None,
             docs_only: false,
             tool_count: Arc::new(OnceLock::new()),
+            fix_script_mode: FixScriptMode::File,
         }
+    }
+
+    /// Selects where the fix-script tools put the scripts they generate.
+    #[must_use]
+    pub fn with_fix_script_mode(mut self, mode: FixScriptMode) -> Self {
+        self.fix_script_mode = mode;
+        self
     }
 }
 
