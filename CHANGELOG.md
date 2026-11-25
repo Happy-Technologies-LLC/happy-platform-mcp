@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 7.2.1 - 2026-11-25 (npm `next` only; `latest` stays 6.2.0)
 
 ### Fixed
 
