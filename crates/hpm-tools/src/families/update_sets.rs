@@ -21,7 +21,7 @@ use hpm_types::tool::{
 };
 use serde_json::Value;
 
-use crate::families::FamilyDeps;
+use crate::families::{FamilyDeps, FixScriptMode};
 use crate::registration::{RegistrationError, ToolRegistry};
 
 type Run = for<'a> fn(&'a FamilyDeps, &'a RequestContext, Value) -> BoxFut<'a, HandlerCompletion>;
@@ -127,7 +127,10 @@ pub fn register(registry: &mut ToolRegistry, deps: &FamilyDeps) -> Result<(), Re
         },
         Spec {
             name: "SN-Create-Fix-Script",
-            description: defs::CREATE_FIX_SCRIPT_DESC,
+            description: match deps.fix_script_mode {
+                FixScriptMode::Inline => defs::CREATE_FIX_SCRIPT_INLINE_DESC,
+                _ => defs::CREATE_FIX_SCRIPT_DESC,
+            },
             schema: defs::CREATE_FIX_SCRIPT_SCHEMA,
             normalize: normalize::create_fix_script,
             run: scripts::create_fix_script,

@@ -18,7 +18,7 @@ use hpm_core::keychain::LazySecretStore;
 use hpm_protocol::McpHandler;
 use hpm_tools::dispatcher::{Dispatcher, Services};
 use hpm_tools::families::docs::telemetry::UsageTracker;
-use hpm_tools::families::{self, FamilyDeps};
+use hpm_tools::families::{self, FamilyDeps, FixScriptMode};
 use hpm_tools::registration::{RegistrationError, ToolRegistry};
 use hpm_tools::schema::{CompiledSchemaValidator, SchemaCompileError};
 use hpm_tools::single_user::{AllowAll, PassThrough, StderrAudit, UnloadedClassification};
@@ -74,6 +74,7 @@ pub struct SingleUser {
     working_dir: Option<PathBuf>,
     docs_cache_dir: Option<PathBuf>,
     docs_only: bool,
+    fix_script_mode: FixScriptMode,
     usage: Option<UsageTracker>,
     extra: Vec<ExtraTools>,
 }
@@ -100,6 +101,7 @@ impl SingleUser {
             working_dir: None,
             docs_cache_dir: None,
             docs_only: false,
+            fix_script_mode: FixScriptMode::File,
             usage: None,
             extra: Vec::new(),
         }
@@ -126,6 +128,13 @@ impl SingleUser {
     /// `--docs-only`: list and serve only the 6.2.0 `docsOnlyList` tools.
     pub fn docs_only(mut self, on: bool) -> Self {
         self.docs_only = on;
+        self
+    }
+
+    /// Where the fix-script tools put the scripts they generate. Default:
+    /// [`FixScriptMode::File`] (a file under the working directory).
+    pub fn fix_script_mode(mut self, mode: FixScriptMode) -> Self {
+        self.fix_script_mode = mode;
         self
     }
 
@@ -160,6 +169,7 @@ impl SingleUser {
         family_deps.working_dir = self.working_dir;
         family_deps.docs_cache_dir = self.docs_cache_dir;
         family_deps.docs_only = self.docs_only;
+        family_deps.fix_script_mode = self.fix_script_mode;
         let mut registry = ToolRegistry::new()
             .and_then(|mut r| families::register_all(&mut r, &family_deps).map(|()| r))
             .and_then(|mut r| {

@@ -9,8 +9,8 @@ use hpm_types::tool::{MutationOutcome, ToolError};
 use serde_json::{Map, Value, json};
 
 use super::common::{
-    Done, done, error_for, now_iso, ok_text, ok_text_explicit, pinned, read_failed,
-    write_fix_script,
+    Done, FixScript, done, error_for, fenced, now_iso, ok_text, ok_text_explicit, pinned,
+    read_failed, write_fix_script,
 };
 use super::js_text::{array_index, or, pretty, put, text, truthy, truthy_opt};
 use crate::families::FamilyDeps;
@@ -158,16 +158,23 @@ async fn fix_script_fallback(
         metadata: None,
         body: &body,
     };
-    let path = match write_fix_script(deps, file_name, &file).await {
-        Ok(p) => p,
+    let delivered = match write_fix_script(deps, file_name, &file).await {
+        Ok(d) => d,
         Err(m) => return done(outcome, Err(error_for(outcome, m))),
     };
     done(
         outcome,
-        ok_text(format!(
-            "{headline}\nCreated fix script for manual execution: {path}\n\nUpdate Set: {}\nSys ID: {sys_id}\n\n🔧 To Apply:\n1. Open: {path}\n2. Copy the GlideUpdateSet script\n3. Run in ServiceNow: System Definition → Scripts - Background\n4. Refresh browser to see change\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
-            text(name)
-        )),
+        ok_text(match delivered {
+            FixScript::File(path) => format!(
+                "{headline}\nCreated fix script for manual execution: {path}\n\nUpdate Set: {}\nSys ID: {sys_id}\n\n🔧 To Apply:\n1. Open: {path}\n2. Copy the GlideUpdateSet script\n3. Run in ServiceNow: System Definition → Scripts - Background\n4. Refresh browser to see change\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
+                text(name)
+            ),
+            FixScript::Inline(content) => format!(
+                "{headline}\nFix script for manual execution (not written to disk).\n\nUpdate Set: {}\nSys ID: {sys_id}\n\n🔧 To Apply:\n1. Copy the GlideUpdateSet script below\n2. Run in ServiceNow: System Definition → Scripts - Background\n3. Refresh browser to see change\n\nScript:\n{}\n\n💡 Alternative: Set manually in UI (System Update Sets → Local Update Sets → Make Current)",
+                text(name),
+                fenced(&content)
+            ),
+        }),
     )
 }
 

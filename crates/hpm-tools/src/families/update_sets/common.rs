@@ -8,8 +8,8 @@ use hpm_types::context::RequestContext;
 use hpm_types::tool::{HandlerCompletion, MutationOutcome, ResultBody, ToolError};
 use serde_json::Value;
 
-use crate::families::FamilyDeps;
 use crate::families::common::failed_outcome;
+use crate::families::{FamilyDeps, FixScriptMode};
 use crate::logic::generated_scripts::{self, FixScriptFile};
 use crate::logic::js;
 
@@ -159,14 +159,26 @@ pub(super) fn now_iso() -> String {
     js::to_iso_string(js::now_millis()).unwrap_or_default()
 }
 
-/// Builds and writes a fix-script file; returns its absolute path text or
-/// the 6.2.0 error message.
+/// A generated fix script, delivered by [`write_fix_script`].
+pub(super) enum FixScript {
+    /// Written to this absolute path ([`FixScriptMode::File`]).
+    File(String),
+    /// Not written anywhere; the script text itself ([`FixScriptMode::Inline`]).
+    Inline(String),
+}
+
+/// Builds a fix script and delivers it per `deps.fix_script_mode`: written as a
+/// file (absolute path text, or the 6.2.0 error message), or, inline, returned
+/// as the exact bytes the file would hold with no file-system access at all.
 pub(super) async fn write_fix_script(
     deps: &FamilyDeps,
     file_name: String,
     file: &FixScriptFile<'_>,
-) -> Result<String, String> {
+) -> Result<FixScript, String> {
     let content = generated_scripts::build_fix_script_file_content(file);
+    if deps.fix_script_mode == FixScriptMode::Inline {
+        return Ok(FixScript::Inline(content));
+    }
     let dir = scripts_dir(deps.working_dir.as_deref(), std::env::current_dir)
         .map_err(|e| unresolved_dir_message(&e, &content))?;
     tokio::task::spawn_blocking(move || {
@@ -174,8 +186,20 @@ pub(super) async fn write_fix_script(
     })
     .await
     .map_err(|e| e.to_string())?
-    .map(|path| path.display().to_string())
+    .map(|path| FixScript::File(path.display().to_string()))
     .map_err(|e| e.to_string())
+}
+
+/// `script` in a Markdown code fence longer than any backtick run inside it.
+pub(super) fn fenced(script: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in script.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat((longest + 1).max(3));
+    format!("{fence}javascript\n{script}\n{fence}")
 }
 
 /// `{ key: value }` metadata with `undefined` members dropped.
@@ -206,5 +230,11 @@ mod tests {
         let text = unresolved_dir_message(&err, "gs.info('fix');");
         assert!(text.contains("cwd deleted"), "{text}");
         assert!(text.ends_with("gs.info('fix');"), "{text}");
+    }
+
+    #[test]
+    fn fence_outgrows_backticks_in_the_script() {
+        assert_eq!(fenced("a"), "```javascript\na\n```");
+        assert_eq!(fenced("x```y"), "````javascript\nx```y\n````");
     }
 }

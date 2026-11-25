@@ -72,11 +72,55 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
         .find(|&i| h.len() >= n.len() && h[i..i + n.len()].eq_ignore_ascii_case(n))
 }
 
-fn field_prefix(s: &str) -> &str {
+/// Operator words that may directly follow a field name in an encoded query
+/// (`descriptionLIKEfoo`, `priorityIN1,2`), including the spaced `NOT IN` and
+/// `NOT LIKE` forms. Case-sensitive.
+const OPERATOR_WORDS: &[&str] = &[
+    "GT_OR_EQUALS_FIELD",
+    "LT_OR_EQUALS_FIELD",
+    "CHANGESFROM",
+    "ISNOTEMPTY",
+    "STARTSWITH",
+    "INSTANCEOF",
+    "VALCHANGES",
+    "CHANGESTO",
+    "ENDSWITH",
+    "GT_FIELD",
+    "LT_FIELD",
+    "NSAMEAS",
+    "BETWEEN",
+    "ANYTHING",
+    "DYNAMIC",
+    "NOT LIKE",
+    "NOT IN",
+    "NOTLIKE",
+    "ISEMPTY",
+    "SAMEAS",
+    "LIKE",
+    "IN",
+];
+
+/// The exact field name leading a condition: the `[a-z0-9_.]` run, followed by
+/// end of condition, an operator character (any non-alphanumeric character:
+/// `= ! > < ^`, space, ...) or a known operator word. `None` when the run is
+/// followed by something else (an uppercase run starting no operator, e.g.
+/// `u_Foo=1`): the name cannot be told apart from an operator, so the caller
+/// reports [`OPAQUE_FIELD`].
+fn field_name(s: &str) -> Option<&str> {
     let end = s
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+        .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.'))
         .unwrap_or(s.len());
-    &s[..end]
+    let rest = &s[end..];
+    let ok = match rest.chars().next() {
+        None => true,
+        Some(c) if !c.is_ascii_alphanumeric() => true,
+        Some(_) => OPERATOR_WORDS.iter().any(|w| rest.starts_with(w)),
+    };
+    ok.then_some(&s[..end])
+}
+
+fn push_field(v: &mut Vec<String>, s: &str) {
+    push_unique(v, field_name(s).unwrap_or(OPAQUE_FIELD));
 }
 
 fn push_unique(v: &mut Vec<String>, s: &str) {
@@ -118,14 +162,14 @@ fn analyze_into(query: &str, info: &mut QueryInfo) {
             .iter()
             .find_map(|p| cond.strip_prefix(p));
         if let Some(field) = ordering {
-            push_unique(&mut info.ordering_fields, field_prefix(field));
+            push_field(&mut info.ordering_fields, field);
             continue;
         }
         let cond = cond
             .strip_prefix("NQ")
             .or_else(|| cond.strip_prefix("OR"))
             .unwrap_or(cond);
-        push_unique(&mut info.predicate_fields, field_prefix(cond));
+        push_field(&mut info.predicate_fields, cond);
     }
 }
 
@@ -218,5 +262,46 @@ mod tests {
         for q in ["sys_idIR_AND_QUERYx", "ORcaller_idrlquerysys_user"] {
             assert_eq!(analyze_query(q).predicate_fields, [OPAQUE_FIELD], "{q}");
         }
+    }
+
+    /// SEAM-T-08: operator-suffixed names resolve to the exact field.
+    #[test]
+    fn operator_suffixed_names_give_exact_fields() {
+        for (q, field) in [
+            ("descriptionLIKEx", "description"),
+            ("short_descriptionSTARTSWITHabc", "short_description"),
+            ("short_descriptionENDSWITHabc", "short_description"),
+            ("priorityIN1,2", "priority"),
+            ("priorityNOT IN1,2", "priority"),
+            ("short_descriptionNOT LIKEfoo", "short_description"),
+            ("short_descriptionNOTLIKEfoo", "short_description"),
+            ("assigned_toISEMPTY", "assigned_to"),
+            ("caller_id.nameISNOTEMPTY", "caller_id.name"),
+            ("priorityBETWEEN1@3", "priority"),
+            ("a_bGT_FIELDc_d", "a_b"),
+            ("a_bGT_OR_EQUALS_FIELDc", "a_b"),
+            ("priority>=2", "priority"),
+            ("priority!=2", "priority"),
+            ("priority=1", "priority"),
+            ("priority", "priority"),
+        ] {
+            assert_eq!(analyze_query(q).predicate_fields, [field], "{q}");
+        }
+        let info = analyze_query("ORDERBYDESCpriority^GROUPBYstate^ORsys_class_nameIN1,2");
+        assert_eq!(info.ordering_fields, ["priority", "state"]);
+        assert_eq!(info.predicate_fields, ["sys_class_name"]);
+    }
+
+    /// SEAM-T-08: an uppercase run that starts no known operator cannot be
+    /// told apart from one, so it is unanalyzable.
+    #[test]
+    fn unknown_uppercase_suffix_is_opaque() {
+        for q in ["u_Foo=1", "u_fooBAR=1", "ORu_Foo=1", "UPPER=1"] {
+            assert_eq!(analyze_query(q).predicate_fields, [OPAQUE_FIELD], "{q}");
+        }
+        assert_eq!(
+            analyze_query("ORDERBYu_Foo").ordering_fields,
+            [OPAQUE_FIELD]
+        );
     }
 }
