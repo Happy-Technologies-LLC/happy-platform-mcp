@@ -119,8 +119,23 @@ fn field_name(s: &str) -> Option<&str> {
     ok.then_some(&s[..end])
 }
 
+/// Drops the leading whitespace and control characters ServiceNow trims from
+/// the start of a condition (and after an `NQ`/`OR`/`ORDERBY`/`GROUPBY`
+/// prefix). Any Unicode whitespace counts, which is wider than ServiceNow's
+/// own trim: that only makes the analysis see more, never less.
+fn trim_cond(s: &str) -> &str {
+    s.trim_start_matches(|c: char| c.is_whitespace() || c.is_control())
+}
+
+/// Records the field leading `s` (already trimmed). Nothing for an empty
+/// piece; a non-empty piece whose field cannot be read (`=1`, `%20x`,
+/// `u_Foo=1`) is recorded as [`OPAQUE_FIELD`], never dropped.
 fn push_field(v: &mut Vec<String>, s: &str) {
-    push_unique(v, field_name(s).unwrap_or(OPAQUE_FIELD));
+    if s.is_empty() {
+        return;
+    }
+    let name = field_name(s).filter(|n| !n.is_empty());
+    push_unique(v, name.unwrap_or(OPAQUE_FIELD));
 }
 
 fn push_unique(v: &mut Vec<String>, s: &str) {
@@ -158,18 +173,19 @@ fn analyze_into(query: &str, info: &mut QueryInfo) {
             push_unique(&mut info.predicate_fields, OPAQUE_FIELD);
             continue;
         }
+        let cond = trim_cond(cond);
         let ordering = ["ORDERBYDESC", "ORDERBY", "GROUPBY"]
             .iter()
             .find_map(|p| cond.strip_prefix(p));
         if let Some(field) = ordering {
-            push_field(&mut info.ordering_fields, field);
+            push_field(&mut info.ordering_fields, trim_cond(field));
             continue;
         }
         let cond = cond
             .strip_prefix("NQ")
             .or_else(|| cond.strip_prefix("OR"))
             .unwrap_or(cond);
-        push_field(&mut info.predicate_fields, cond);
+        push_field(&mut info.predicate_fields, trim_cond(cond));
     }
 }
 
@@ -303,5 +319,173 @@ mod tests {
             analyze_query("ORDERBYu_Foo").ordering_fields,
             [OPAQUE_FIELD]
         );
+    }
+
+    fn has_field(info: &QueryInfo, field: &str) -> bool {
+        info.predicate_fields
+            .iter()
+            .chain(&info.ordering_fields)
+            .any(|f| f == field || f == OPAQUE_FIELD)
+    }
+
+    /// ServiceNow trims leading whitespace, so a condition that starts with
+    /// it still filters: the field must not vanish from the analysis.
+    #[test]
+    fn leading_whitespace_conditions_keep_their_field() {
+        for q in [
+            " descriptionSTARTSWITHa",
+            "active=true^ descriptionSTARTSWITHa",
+            "\tdescriptionLIKEa",
+            "%20descriptionSTARTSWITHa",
+            "%09descriptionLIKEa",
+            "\r\n descriptionLIKEa",
+            "\u{a0}descriptionLIKEa",
+            "\u{2003}descriptionLIKEa",
+            "OR descriptionLIKEa",
+            "NQ\tdescriptionLIKEa",
+            "x=1^OR %20 descriptionLIKEa",
+        ] {
+            let info = analyze_query(q);
+            assert!(
+                info.predicate_fields
+                    .iter()
+                    .any(|f| f == "description" || f == OPAQUE_FIELD),
+                "{q:?} -> {info:?}"
+            );
+        }
+        for q in [
+            "ORDERBY description",
+            "ORDERBYDESC\tdescription",
+            "GROUPBY description",
+            " ORDERBY description",
+            "%20ORDERBYdescription",
+            "%20ORDERBY%20description",
+        ] {
+            let info = analyze_query(q);
+            assert!(
+                info.ordering_fields
+                    .iter()
+                    .any(|f| f == "description" || f == OPAQUE_FIELD),
+                "{q:?} -> {info:?}"
+            );
+        }
+        // The decoded form is analysed exactly, so these are not merely opaque.
+        assert_eq!(
+            analyze_query("%20descriptionSTARTSWITHa").predicate_fields,
+            [OPAQUE_FIELD, "description"]
+        );
+        assert_eq!(
+            analyze_query(" descriptionSTARTSWITHa").predicate_fields,
+            ["description"]
+        );
+        assert_eq!(
+            analyze_query("active=true^ descriptionSTARTSWITHa").predicate_fields,
+            ["active", "description"]
+        );
+        assert_eq!(
+            analyze_query("ORDERBY description").ordering_fields,
+            ["description"]
+        );
+    }
+
+    /// A non-empty condition with no readable field is opaque, not dropped.
+    #[test]
+    fn non_empty_condition_without_field_prefix_is_opaque() {
+        for q in ["=1", "!=x", "%zz", "OR=1", "NQ>1", "^ =1"] {
+            assert_eq!(analyze_query(q).predicate_fields, [OPAQUE_FIELD], "{q}");
+        }
+        assert_eq!(analyze_query("ORDERBY=1").ordering_fields, [OPAQUE_FIELD]);
+    }
+
+    /// Empty pieces still contribute nothing.
+    #[test]
+    fn empty_conditions_are_ignored() {
+        let info = analyze_query("a=1^^b=2");
+        assert_eq!(info.predicate_fields, ["a", "b"]);
+        assert!(info.ordering_fields.is_empty());
+        for q in [
+            "",
+            "^",
+            "^^",
+            "OR",
+            "ORDERBY",
+            "a=1^OR^b=2",
+            "  ",
+            "a=1^ ^b=2",
+        ] {
+            let info = analyze_query(q);
+            assert!(
+                info.predicate_fields.iter().all(|f| f != OPAQUE_FIELD),
+                "{q:?} -> {info:?}"
+            );
+        }
+        assert!(analyze_query("").predicate_fields.is_empty());
+        assert!(analyze_query("ORDERBY").ordering_fields.is_empty());
+    }
+
+    /// Property: prepending whitespace to any condition, at the start of the
+    /// query, after `^`, or after an `OR`/`NQ`/`ORDERBY`/`GROUPBY` prefix,
+    /// never removes a field from the analysis.
+    #[test]
+    fn prepending_whitespace_never_removes_a_field() {
+        let fields = ["description", "a", "u_x.y", "sys_id", "u_Foo"];
+        let ops = ["=1", "LIKEx", "STARTSWITHa", "!=b", "IN1,2", "ISEMPTY", ""];
+        let prefixes = ["", "OR", "NQ", "ORDERBY", "ORDERBYDESC", "GROUPBY"];
+        let ws = [
+            " ", "  ", "\t", "\r", "\n", "\r\n", "%20", "%09", "%0A", "\u{a0}", "\u{2003}",
+            "\u{0b}", "\u{1}",
+        ];
+        let mut conds = Vec::new();
+        for p in prefixes {
+            for f in fields {
+                for o in ops {
+                    conds.push(format!("{p}{f}{o}"));
+                }
+            }
+        }
+        conds.push("123TEXTQUERY321=foo".to_owned());
+        conds.push("javascript:gs.x()".to_owned());
+        conds.push("caller_idINSUBQUERYsys_id".to_owned());
+        for c in &conds {
+            let base = analyze_query(c);
+            for w in ws {
+                let variants = [
+                    format!("{w}{c}"),
+                    format!("active=true^{w}{c}"),
+                    format!("{w}{c}^{w}b=2"),
+                ];
+                for q in variants {
+                    let got = analyze_query(&q);
+                    for f in &base.predicate_fields {
+                        assert!(
+                            has_field(&got, f),
+                            "{q:?} lost predicate field {f:?}: {got:?}"
+                        );
+                    }
+                    for f in &base.ordering_fields {
+                        assert!(
+                            has_field(&got, f),
+                            "{q:?} lost ordering field {f:?}: {got:?}"
+                        );
+                    }
+                    assert!(
+                        got.script_operands.len() >= base.script_operands.len(),
+                        "{q:?} lost a script operand"
+                    );
+                }
+            }
+            // Whitespace between a prefix and its field.
+            for p in ["OR", "NQ", "ORDERBY", "ORDERBYDESC", "GROUPBY"] {
+                if let Some(rest) = c.strip_prefix(p) {
+                    for w in ws {
+                        let q = format!("{p}{w}{rest}");
+                        let got = analyze_query(&q);
+                        for f in base.predicate_fields.iter().chain(&base.ordering_fields) {
+                            assert!(has_field(&got, f), "{q:?} lost {f:?}: {got:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
