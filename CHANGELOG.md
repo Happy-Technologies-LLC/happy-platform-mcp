@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `hpm-tools`: `Dispatcher::visible_tools` and `visible_resources` list what a caller may see, in registry order, through `PolicyEngine::visible`. When the engine does not enforce (stdio, single-user HTTP) they return every registered item, so the lists do not change. They filter a listing only; `call_tool` still decides.
+- `hpm-types`/`hpm-tools`: `AuditAux` and the provided `AuditSink` methods `begin_attempt_with`, `complete_with` and `record_with`. The dispatcher calls them at every audit site, with the request context, tool name, operations, validated arguments, a data-protection summary and the elapsed time. Their defaults delegate to `begin_attempt`, `complete` and `record`, so a sink that implements only those keeps working.
+- `hpm-types`: `DpSummary`, `DpKind` and `DpTally`, plus `ProtectionContext::tally`, `with_state` and `state`. A protector records counts and rule ids in the call's tally; the dispatcher snapshots it for the audit aux. `with_state` attaches a typed value (for example a compiled rule set) to the pinned context.
+- `hpm-types`/`hpm-tools`: admission limiter. `limits::AdmissionLimiter` (with `Admission`, `AdmissionKind`, `AdmissionPermit`, `LimitExceeded`) and `Dispatcher::with_admission_limiter`. The limiter runs once per tool call and resource read, after the policy `Allow` and before protection and the attempt row. The permit is held until the result is rendered. A refusal calls no handler, writes no attempt row, records an `Exceptional` audit event with the limit code, and answers `ToolError::RateLimited` (`RATE_LIMITED: <scope>`). Without a limiter nothing changes.
+- `hpm-types`: `ToolError::RateLimited { scope, retry_after_secs }` (`ToolError` is `#[non_exhaustive]`, so this is not a breaking change).
+
 ## 7.1.0 - unreleased (npm `next` only; `latest` stays 6.2.0)
 
 7.1.0 adds the enterprise authentication seam and stream expiry. There are no tool changes: it has the same 60 tools as 7.0.3. It is published to the npm `next` tag only; `latest` stays on 6.2.0.

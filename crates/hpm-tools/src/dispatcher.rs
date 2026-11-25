@@ -8,9 +8,10 @@
 //! `hpm_types::context::TrustedRoot::admit`.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use hpm_types::audit::{
-    AttemptRecord, AuditEvent, AuditSink, OpSummary, PendingAttempt, SinkFailurePolicy,
+    AttemptRecord, AuditAux, AuditEvent, AuditSink, OpSummary, PendingAttempt, SinkFailurePolicy,
     TerminalOutcome,
 };
 use hpm_types::context::{AdmissionKey, ProgressSink, RequestContext};
@@ -19,13 +20,14 @@ use hpm_types::dispatch::{
     DispatchOutcome, EXECUTE_UNDER_PROTECTION, QUERY_SCRIPT_NOT_ALLOWED, Rendered, SchemaValidator,
     UNCLASSIFIED_TABLE, UsageSink,
 };
+use hpm_types::limits::{Admission, AdmissionKind, AdmissionLimiter, AdmissionPermit};
 use hpm_types::operation::{
     Action, ClassificationSource, Operation, OperationSet, ScriptOperandGuard, Subject,
     script_operand_allowed,
 };
 use hpm_types::policy::{Decision, PolicyEngine};
 use hpm_types::protect::{
-    DataProtector, InputVerdict, OnUnanalyzable, ProtectedProgress, ProtectionContext,
+    DataProtector, DpSummary, InputVerdict, OnUnanalyzable, ProtectedProgress, ProtectionContext,
 };
 use hpm_types::tool::{
     HandlerCompletion, MutationOutcome, NormalizeInput, OutputClass, Renderer, ResourceDescriptor,
@@ -62,10 +64,71 @@ pub struct Dispatcher {
     resources: Vec<ResourceDescriptor>,
     services: Services,
     key: AdmissionKey,
+    /// `None`: unlimited (7.1.0 behaviour).
+    limiter: Option<Arc<dyn AdmissionLimiter>>,
 }
 
 fn summaries(ops: &OperationSet) -> Vec<OpSummary> {
     ops.0.iter().map(OpSummary::from).collect()
+}
+
+/// What the audit sink gets beyond the legacy records (PS-4), as the call knows it
+/// at one point of the pipeline.
+#[derive(Clone, Copy)]
+struct Site<'a> {
+    /// Registered tool name; `""` for resource reads.
+    tool: &'a str,
+    /// Validated arguments, once validation has passed.
+    args: Option<&'a serde_json::Value>,
+    ops: Option<&'a OperationSet>,
+    /// Dispatcher entry.
+    start: Instant,
+}
+
+impl<'a> Site<'a> {
+    fn new(tool: &'a str) -> Self {
+        Self {
+            tool,
+            args: None,
+            ops: None,
+            start: Instant::now(),
+        }
+    }
+
+    fn with_args(self, args: &'a serde_json::Value) -> Self {
+        Self {
+            args: Some(args),
+            ..self
+        }
+    }
+
+    fn with_ops(self, ops: &'a OperationSet) -> Self {
+        Self {
+            ops: Some(ops),
+            ..self
+        }
+    }
+
+    fn aux<'c>(&self, ctx: &'c RequestContext, dp: Option<DpSummary>) -> AuditAux<'c>
+    where
+        'a: 'c,
+    {
+        let mut aux = AuditAux::new(ctx, self.tool)
+            .with_dp(dp)
+            .with_elapsed(self.start.elapsed());
+        if let Some(ops) = self.ops {
+            aux = aux.with_ops(ops);
+        }
+        if let Some(args) = self.args {
+            aux = aux.with_args(args);
+        }
+        aux
+    }
+}
+
+/// The call's tally after the last protector hook that ran; `None` without a pin.
+fn dp_of(pinned: Option<&Arc<ProtectionContext>>) -> Option<DpSummary> {
+    pinned.map(|p| p.tally().snapshot())
 }
 
 /// Admission products shared by tool and resource paths.
@@ -73,6 +136,8 @@ struct Admitted {
     ctx: RequestContext,
     pinned: Option<Arc<ProtectionContext>>,
     policy_version: u64,
+    /// Held from here until the caller has rendered the result (LIM-S-01).
+    _permit: AdmissionPermit,
 }
 
 impl Dispatcher {
@@ -85,7 +150,14 @@ impl Dispatcher {
             resources,
             services,
             key,
+            limiter: None,
         }
+    }
+
+    /// Installs an admission limiter (PS-6). Without one every call is admitted.
+    pub fn with_admission_limiter(mut self, l: Arc<dyn AdmissionLimiter>) -> Self {
+        self.limiter = Some(l);
+        self
     }
 
     /// Registered tools in `tools/list` order (C5).
@@ -104,24 +176,79 @@ impl Dispatcher {
         self.tools.iter().find(|t| t.name == name)
     }
 
-    async fn exceptional(&self, ctx: &RequestContext, subject: &Subject, kind: &'static str) {
+    /// Tools visible to the caller, in registry order (C5). A listing filter, never
+    /// authorization: `call_tool` still decides. When the policy engine does not
+    /// enforce, this is every registered tool.
+    pub async fn visible_tools(&self, ctx: &RequestContext) -> Vec<&ToolDescriptor> {
+        if !self.services.policy.enforces() {
+            return self.tools.iter().collect();
+        }
+        let mut out = Vec::with_capacity(self.tools.len());
+        for t in &self.tools {
+            if self
+                .services
+                .policy
+                .visible(ctx, &Subject::Tool(t.name))
+                .await
+            {
+                out.push(t);
+            }
+        }
+        out
+    }
+
+    /// Resources visible to the caller, in registry order. Same contract as
+    /// [`Self::visible_tools`].
+    pub async fn visible_resources(&self, ctx: &RequestContext) -> Vec<&ResourceDescriptor> {
+        if !self.services.policy.enforces() {
+            return self.resources.iter().collect();
+        }
+        let mut out = Vec::with_capacity(self.resources.len());
+        for r in &self.resources {
+            if self
+                .services
+                .policy
+                .visible(ctx, &Subject::Resource(r.uri.to_owned()))
+                .await
+            {
+                out.push(r);
+            }
+        }
+        out
+    }
+
+    async fn exceptional(
+        &self,
+        site: &Site<'_>,
+        ctx: &RequestContext,
+        subject: &Subject,
+        kind: &'static str,
+        dp: Option<DpSummary>,
+    ) {
         // Best effort: an exceptional event never changes the response.
         let _ = self
             .services
             .audit
-            .record(AuditEvent::Exceptional {
-                call_id: ctx.call_id().clone(),
-                principal: ctx.principal().clone(),
-                subject: subject.clone(),
-                kind,
-            })
+            .record_with(
+                AuditEvent::Exceptional {
+                    call_id: ctx.call_id().clone(),
+                    principal: ctx.principal().clone(),
+                    subject: subject.clone(),
+                    kind,
+                },
+                site.aux(ctx, dp),
+            )
             .await;
     }
 
     /// Steps after normalization, shared by tools and resources: script guard,
-    /// authorize, pin protection, guard input, prepare credential, bind context.
+    /// authorize, admission limit, pin protection, guard input, prepare credential,
+    /// bind context.
+    #[allow(clippy::too_many_arguments)]
     async fn admit(
         &self,
+        site: &Site<'_>,
+        kind: AdmissionKind,
         ctx: &RequestContext,
         subject: &Subject,
         ops: Arc<OperationSet>,
@@ -132,7 +259,8 @@ impl Dispatcher {
         let s = &self.services;
         // Unknown classification fails closed when policy or protection applies.
         if ops.has_unknown_class() && (s.policy.enforces() || !s.protector.is_passthrough()) {
-            self.exceptional(ctx, subject, "unclassified_table").await;
+            self.exceptional(site, ctx, subject, "unclassified_table", None)
+                .await;
             return Err(Err(ToolError::Denied {
                 reason: UNCLASSIFIED_TABLE.into(),
             }));
@@ -145,7 +273,7 @@ impl Dispatcher {
             .flat_map(|o| &o.query_script_operands)
             .any(|op| !script_operand_allowed(op, s.script_guard))
         {
-            self.exceptional(ctx, subject, "script_operand_blocked")
+            self.exceptional(site, ctx, subject, "script_operand_blocked", None)
                 .await;
             return Err(Err(ToolError::Denied {
                 reason: QUERY_SCRIPT_NOT_ALLOWED.into(),
@@ -154,7 +282,8 @@ impl Dispatcher {
         let decision = match s.policy.decide(ctx, &ops).await {
             Ok(d) => d,
             Err(_) => {
-                self.exceptional(ctx, subject, "policy_unavailable").await;
+                self.exceptional(site, ctx, subject, "policy_unavailable", None)
+                    .await;
                 return Err(Err(ToolError::Unavailable("policy")));
             }
         };
@@ -167,16 +296,39 @@ impl Dispatcher {
         if let Some(reason) = deny_reason {
             let _ = s
                 .audit
-                .record(AuditEvent::Denied {
-                    call_id: ctx.call_id().clone(),
-                    principal: ctx.principal().clone(),
-                    ops: summaries(&ops),
-                    reason: reason.clone(),
-                    policy_version: decision.policy_version,
-                })
+                .record_with(
+                    AuditEvent::Denied {
+                        call_id: ctx.call_id().clone(),
+                        principal: ctx.principal().clone(),
+                        ops: summaries(&ops),
+                        reason: reason.clone(),
+                        policy_version: decision.policy_version,
+                    },
+                    site.aux(ctx, None),
+                )
                 .await;
             return Err(Err(ToolError::Denied { reason }));
         }
+
+        // Admission limit (PS-6): after Allow, before protection and any attempt row.
+        // The permit is dropped on every early return below and, on success, lives
+        // in `Admitted` until the caller has rendered.
+        let permit = match &self.limiter {
+            None => AdmissionPermit::unlimited(),
+            Some(limiter) => match limiter.admit(Admission::new(ctx, site.tool, &ops, kind)) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.exceptional(site, ctx, subject, e.code, None).await;
+                    return Err(Err(ToolError::RateLimited {
+                        scope: e.scope,
+                        retry_after_secs: e.retry_after.map(|d| {
+                            let secs = d.as_secs() + u64::from(d.subsec_nanos() > 0);
+                            u32::try_from(secs).unwrap_or(u32::MAX)
+                        }),
+                    }));
+                }
+            },
+        };
 
         let pinned = if s.protector.is_passthrough() {
             None
@@ -188,7 +340,7 @@ impl Dispatcher {
             {
                 Ok(p) => p,
                 Err(_) => {
-                    self.exceptional(ctx, subject, "protector_unavailable")
+                    self.exceptional(site, ctx, subject, "protector_unavailable", None)
                         .await;
                     return Err(Err(ToolError::Unavailable("data protection")));
                 }
@@ -198,13 +350,16 @@ impl Dispatcher {
             if ops.has_execute() && pinned.on_unanalyzable != OnUnanalyzable::PatternsOnly {
                 let _ = s
                     .audit
-                    .record(AuditEvent::Denied {
-                        call_id: ctx.call_id().clone(),
-                        principal: ctx.principal().clone(),
-                        ops: summaries(&ops),
-                        reason: EXECUTE_UNDER_PROTECTION.into(),
-                        policy_version: decision.policy_version,
-                    })
+                    .record_with(
+                        AuditEvent::Denied {
+                            call_id: ctx.call_id().clone(),
+                            principal: ctx.principal().clone(),
+                            ops: summaries(&ops),
+                            reason: EXECUTE_UNDER_PROTECTION.into(),
+                            policy_version: decision.policy_version,
+                        },
+                        site.aux(ctx, dp_of(Some(&pinned))),
+                    )
                     .await;
                 return Err(Err(ToolError::Denied {
                     reason: EXECUTE_UNDER_PROTECTION.into(),
@@ -213,19 +368,27 @@ impl Dispatcher {
             match s.protector.guard_input(&pinned, args).await {
                 Ok(InputVerdict::Allow) => {}
                 Ok(InputVerdict::Block { reason }) => {
-                    self.exceptional(ctx, subject, "input_blocked").await;
+                    self.exceptional(site, ctx, subject, "input_blocked", dp_of(Some(&pinned)))
+                        .await;
                     return Err(Err(ToolError::Denied { reason }));
                 }
                 // Fail closed on a verdict this dispatcher does not know.
                 Ok(_) => {
-                    self.exceptional(ctx, subject, "input_blocked").await;
+                    self.exceptional(site, ctx, subject, "input_blocked", dp_of(Some(&pinned)))
+                        .await;
                     return Err(Err(ToolError::Denied {
                         reason: "unrecognized input verdict".into(),
                     }));
                 }
                 Err(_) => {
-                    self.exceptional(ctx, subject, "protector_unavailable")
-                        .await;
+                    self.exceptional(
+                        site,
+                        ctx,
+                        subject,
+                        "protector_unavailable",
+                        dp_of(Some(&pinned)),
+                    )
+                    .await;
                     return Err(Err(ToolError::Unavailable("data protection")));
                 }
             }
@@ -236,12 +399,25 @@ impl Dispatcher {
         let binding = match s.credentials.prepare(ctx, need).await {
             Ok(b) => b,
             Err(CredentialError::ConnectRequired { connect_url }) => {
-                self.exceptional(ctx, subject, "connect_required").await;
+                self.exceptional(
+                    site,
+                    ctx,
+                    subject,
+                    "connect_required",
+                    dp_of(pinned.as_ref()),
+                )
+                .await;
                 return Err(Ok(DispatchOutcome::ConnectRequired { connect_url }));
             }
             Err(e) => {
-                self.exceptional(ctx, subject, "credential_unavailable")
-                    .await;
+                self.exceptional(
+                    site,
+                    ctx,
+                    subject,
+                    "credential_unavailable",
+                    dp_of(pinned.as_ref()),
+                )
+                .await;
                 let e = ToolError::Credential(e);
                 let e = match &pinned {
                     Some(p) => s.protector.protect_error(p, e).await,
@@ -263,17 +439,23 @@ impl Dispatcher {
             ctx: ctx.admitted(&self.key, binding, pinned.clone(), progress),
             pinned,
             policy_version: decision.policy_version,
+            _permit: permit,
         })
     }
 
     /// Bounded retry; on exhaustion the attempt stays pending (reconciled later).
     /// Never changes the response.
-    async fn finalize(&self, pending: &PendingAttempt, terminal: TerminalOutcome) {
+    async fn finalize(
+        &self,
+        pending: &PendingAttempt,
+        terminal: TerminalOutcome,
+        aux: AuditAux<'_>,
+    ) {
         for _ in 0..AUDIT_COMPLETE_RETRIES {
             if self
                 .services
                 .audit
-                .complete(pending, terminal.clone())
+                .complete_with(pending, terminal.clone(), aux.clone())
                 .await
                 .is_ok()
             {
@@ -294,6 +476,7 @@ impl Dispatcher {
             .get_tool(name)
             .ok_or_else(|| ToolError::InvalidParams(format!("Unknown tool: {name}")))?;
         let subject = Subject::Tool(tool.name);
+        let site = Site::new(tool.name);
         if let Some(usage) = &s.usage {
             usage.record(tool.name);
         }
@@ -303,16 +486,20 @@ impl Dispatcher {
         if let Err(msg) = s.validator.validate(tool, &args)
             && !tool.handler_validates_input
         {
-            self.exceptional(ctx, &subject, "invalid_params").await;
+            self.exceptional(&site, ctx, &subject, "invalid_params", None)
+                .await;
             return Err(ToolError::InvalidParams(msg));
         }
+        // From here on the arguments are the validated ones.
+        let site = site.with_args(&args);
         // 6.2.0 `resolveClient`: a per-call `instance` the registry does not know is
         // a tool error with the `getInstance` text, never a fallback to the
         // default. The adapter interpreted the argument once, at admission.
         if tool.needs_instance
             && let Some(miss) = ctx.instance_miss()
         {
-            self.exceptional(ctx, &subject, "unknown_instance").await;
+            self.exceptional(&site, ctx, &subject, "unknown_instance", None)
+                .await;
             return Err(ToolError::Message(miss.to_owned()));
         }
         let classification = s.classification.snapshot(ctx.instance());
@@ -328,21 +515,25 @@ impl Dispatcher {
                 // A normalizer's `InvalidParams` text is fixed and names only the
                 // argument (CO-2/TF-1), so it passes through; anything else is
                 // reduced to "Invalid arguments".
-                self.exceptional(ctx, &subject, "normalize_failed").await;
+                self.exceptional(&site, ctx, &subject, "normalize_failed", None)
+                    .await;
                 return Err(match e {
                     ToolError::InvalidParams(msg) => ToolError::InvalidParams(msg),
                     _ => ToolError::InvalidParams("Invalid arguments".into()),
                 });
             }
         };
+        let site = site.with_ops(&ops);
         if !tool.access.floor_satisfied(&ops) {
-            self.exceptional(ctx, &subject, "access_floor_violated")
+            self.exceptional(&site, ctx, &subject, "access_floor_violated", None)
                 .await;
             return Err(ToolError::Internal("operation classification".into()));
         }
 
         let admitted = match self
             .admit(
+                &site,
+                AdmissionKind::ToolCall,
                 ctx,
                 &subject,
                 ops.clone(),
@@ -358,8 +549,14 @@ impl Dispatcher {
         let actx = &admitted.ctx;
 
         if !actx.is_live() {
-            self.exceptional(actx, &subject, "cancelled_before_send")
-                .await;
+            self.exceptional(
+                &site,
+                actx,
+                &subject,
+                "cancelled_before_send",
+                dp_of(admitted.pinned.as_ref()),
+            )
+            .await;
             return Err(ToolError::Cancelled);
         }
 
@@ -372,10 +569,18 @@ impl Dispatcher {
                 admitted.policy_version,
                 admitted.pinned.as_ref().map_or(0, |p| p.rules.version),
             );
-            match s.audit.begin_attempt(record).await {
+            let aux = site.aux(actx, dp_of(admitted.pinned.as_ref()));
+            match s.audit.begin_attempt_with(record, aux).await {
                 Ok(p) => Some(p),
                 Err(_) if s.audit.failure_policy() == SinkFailurePolicy::FailClosedForMutations => {
-                    self.exceptional(actx, &subject, "audit_unavailable").await;
+                    self.exceptional(
+                        &site,
+                        actx,
+                        &subject,
+                        "audit_unavailable",
+                        dp_of(admitted.pinned.as_ref()),
+                    )
+                    .await;
                     return Err(ToolError::Unavailable("audit"));
                 }
                 Err(_) => None,
@@ -390,7 +595,7 @@ impl Dispatcher {
             ops: op_facts,
             result,
             ..
-        } = tool.handler.call(actx, args).await;
+        } = tool.handler.call(actx, args.clone()).await;
 
         // Protection changes visibility only; `outcome`/`op_facts` stay as reported.
         let (visible, withheld): (Result<Option<ResultBody>, ToolError>, u32) =
@@ -404,6 +609,8 @@ impl Dispatcher {
                 (Err(e), Some(p)) => (Err(s.protector.protect_error(p, e).await), 0),
             };
 
+        // After the last protector hook: the tally is final.
+        let dp = dp_of(admitted.pinned.as_ref());
         match &pending {
             Some(p) => {
                 self.finalize(
@@ -413,25 +620,35 @@ impl Dispatcher {
                         ops: op_facts,
                         withheld,
                     },
+                    site.aux(actx, dp),
                 )
                 .await
             }
-            None if visible.is_err() => self.exceptional(actx, &subject, "handler_error").await,
+            None if visible.is_err() => {
+                self.exceptional(&site, actx, &subject, "handler_error", dp)
+                    .await
+            }
             None if s.audit.audits_reads() => {
                 let _ = s
                     .audit
-                    .record(AuditEvent::Read {
-                        call_id: actx.call_id().clone(),
-                        principal: actx.principal().clone(),
-                        ops: summaries(&ops),
-                        withheld,
-                    })
+                    .record_with(
+                        AuditEvent::Read {
+                            call_id: actx.call_id().clone(),
+                            principal: actx.principal().clone(),
+                            ops: summaries(&ops),
+                            withheld,
+                        },
+                        site.aux(actx, dp),
+                    )
                     .await;
             }
             None => {}
         }
 
-        render(tool.render, outcome, visible)
+        // `admitted` (and its admission permit) outlives `render`.
+        let rendered = render(tool.render, outcome, visible);
+        drop(admitted);
+        rendered
     }
 
     /// `resources/read` through the same admission path (edit 9). The caller
@@ -448,8 +665,11 @@ impl Dispatcher {
             Operation::new(subject.clone(), Action::Read)
                 .instance_id(ctx.instance().map(|i| i.instance_id.clone())),
         ]));
+        let site = Site::new("").with_ops(&ops);
         let admitted = match self
             .admit(
+                &site,
+                AdmissionKind::ResourceRead,
                 ctx,
                 &subject,
                 ops.clone(),
@@ -472,8 +692,14 @@ impl Dispatcher {
         };
         let actx = &admitted.ctx;
         if !actx.is_live() {
-            self.exceptional(actx, &subject, "cancelled_before_send")
-                .await;
+            self.exceptional(
+                &site,
+                actx,
+                &subject,
+                "cancelled_before_send",
+                dp_of(admitted.pinned.as_ref()),
+            )
+            .await;
             return Err(ToolError::Cancelled);
         }
         let (body, withheld) = match (res.handler.read(actx).await, &admitted.pinned) {
@@ -481,13 +707,26 @@ impl Dispatcher {
             (Ok(b), Some(p)) => match s.protector.protect_resource(p, b).await {
                 Ok(pr) => (pr.value, pr.withheld),
                 Err(_) => {
-                    self.exceptional(actx, &subject, "output_protect_failed")
-                        .await;
+                    self.exceptional(
+                        &site,
+                        actx,
+                        &subject,
+                        "output_protect_failed",
+                        dp_of(admitted.pinned.as_ref()),
+                    )
+                    .await;
                     return Err(ToolError::Unavailable("data protection"));
                 }
             },
             (Err(e), pinned) => {
-                self.exceptional(actx, &subject, "handler_error").await;
+                self.exceptional(
+                    &site,
+                    actx,
+                    &subject,
+                    "handler_error",
+                    dp_of(pinned.as_ref()),
+                )
+                .await;
                 return Err(match pinned {
                     Some(p) => s.protector.protect_error(p, e).await,
                     None => e,
@@ -497,12 +736,15 @@ impl Dispatcher {
         if s.audit.audits_reads() {
             let _ = s
                 .audit
-                .record(AuditEvent::Read {
-                    call_id: actx.call_id().clone(),
-                    principal: actx.principal().clone(),
-                    ops: summaries(&ops),
-                    withheld,
-                })
+                .record_with(
+                    AuditEvent::Read {
+                        call_id: actx.call_id().clone(),
+                        principal: actx.principal().clone(),
+                        ops: summaries(&ops),
+                        withheld,
+                    },
+                    site.aux(actx, dp_of(admitted.pinned.as_ref())),
+                )
                 .await;
         }
         Ok(body)
