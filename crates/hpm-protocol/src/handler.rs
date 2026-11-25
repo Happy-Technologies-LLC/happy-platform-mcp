@@ -275,6 +275,11 @@ pub(crate) fn error_text(e: &ToolError) -> String {
         ToolError::Message(m) | ToolError::Upstream { message: m, .. } => format!("Error: {m}"),
         ToolError::Credential(c) => format!("Error: {c}"),
         ToolError::Text(t) => t.clone(),
+        // PS-6: an admission refusal renders its scope plus the retry hint.
+        ToolError::RateLimited {
+            scope,
+            retry_after_secs,
+        } => hpm_types::limits::rate_limited_text(scope, *retry_after_secs),
         other => other.to_string(),
     }
 }
@@ -680,6 +685,24 @@ mod error_text_tests {
         assert_eq!(
             error_text(&ToolError::Text("❌ Script reported errors".into())),
             "❌ Script reported errors"
+        );
+    }
+
+    #[test]
+    fn rate_limited_renders_the_code_scope_and_retry_hint() {
+        assert_eq!(
+            error_text(&ToolError::RateLimited {
+                scope: "rate",
+                retry_after_secs: Some(7),
+            }),
+            "RATE_LIMITED: rate (retry after 7 s)"
+        );
+        assert_eq!(
+            error_text(&ToolError::RateLimited {
+                scope: "inflight",
+                retry_after_secs: None,
+            }),
+            "RATE_LIMITED: inflight"
         );
     }
 
