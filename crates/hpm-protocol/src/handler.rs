@@ -472,11 +472,16 @@ impl ServerHandler for McpHandler {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        // Listing is a per-caller filter (spec §5.5, §9 item 4), never authorization:
+        // `call_tool` still decides. Admission failure fails closed (the same error
+        // class `call_tool` returns), never the unfiltered list.
+        let ctx = self.admit(&context, None, CancellationToken::new())?;
         let mut result = ListToolsResult::with_all_items(
             self.inner
                 .dispatcher
-                .tools()
-                .iter()
+                .visible_tools(&ctx)
+                .await
+                .into_iter()
                 .map(to_rmcp_tool)
                 .collect(),
         );
@@ -491,6 +496,8 @@ impl ServerHandler for McpHandler {
 
     /// rmcp's default `get_tool` returns `None` and bypasses lookup-based validation;
     /// it must delegate to the same registry as `call_tool`/`list_tools` (RFC §2.1).
+    /// Deliberately unfiltered: it takes no request context, and `call_tool` decides
+    /// authorization, so an unlisted tool stays callable-if-allowed.
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.inner.dispatcher.get_tool(name).map(to_rmcp_tool)
     }
@@ -512,13 +519,16 @@ impl ServerHandler for McpHandler {
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        // Same contract as `list_tools`: a per-caller filter, failing closed on admission.
+        let ctx = self.admit(&context, None, CancellationToken::new())?;
         Ok(ListResourcesResult::with_all_items(
             self.inner
                 .dispatcher
-                .resources()
-                .iter()
+                .visible_resources(&ctx)
+                .await
+                .into_iter()
                 .map(|r| {
                     Resource::new(r.uri, r.name)
                         .with_description(r.description)

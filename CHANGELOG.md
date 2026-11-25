@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `hpm-protocol`: `tools/list` and `resources/list` now go through `Dispatcher::visible_tools` and `visible_resources` (the 7.2.0 seam), so `PolicyEngine::visible` filters them per caller. The handler listed the whole registry, so a multi-user principal that is allowed nothing still saw all 60 tools. Both lists admit the request first, as `call_tool` does, and fail with the same error class when admission fails (never the unfiltered list). With the single-user `AllowAll` policy the lists, and the `ttlMs`/`cacheScope` fields, are unchanged. `get_tool` stays unfiltered; `call_tool` decides.
+
 ## 7.2.1 - 2026-11-25 (npm `next` only; `latest` stays 6.2.0)
 
 ### Fixed
