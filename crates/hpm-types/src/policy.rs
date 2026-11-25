@@ -46,3 +46,15 @@ pub trait PolicyEngine: Send + Sync {
     /// table classification fails closed only when policy or protection applies.
     fn enforces(&self) -> bool;
 }
+
+/// Source of "tools/list or resources/list may have changed" events (public seam
+/// PS-2). One epoch serves every caller: a notification is only a hint, the client
+/// re-lists, and each list is filtered per caller, so a spurious notification costs
+/// one request. Attach with `McpHandlerBuilder::list_changes`.
+pub trait ListChangeSource: Send + Sync {
+    /// Strictly increases whenever any caller's `tools/list` or `resources/list`
+    /// may differ.
+    fn epoch(&self) -> u64;
+    /// Resolves when `epoch() > seen`. Cancel-safe; holds no lock across the await.
+    fn changed<'a>(&'a self, seen: u64) -> BoxFut<'a, ()>;
+}
