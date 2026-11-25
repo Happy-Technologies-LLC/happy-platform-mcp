@@ -31,7 +31,7 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use super::expiry::StreamDeadline;
 use super::json_error;
-use super::limits::HttpLimits;
+use super::limits::{HttpLimits, StreamPermit};
 use crate::handler::McpHandler;
 
 /// 6.2.0 `keepaliveIntervalMs` default.
@@ -150,6 +150,8 @@ struct Session {
     activity: Notify,
     /// T-K02: the stream (and with it this session) ends at the credential expiry.
     deadline: StreamDeadline,
+    /// PS-7: the admission slot, released when the session closes.
+    permit: Mutex<Option<StreamPermit>>,
 }
 
 /// Process-wide request accounting shared by the SSE and Streamable paths.
@@ -232,6 +234,8 @@ impl SseSessions {
             s.remove(&session.id);
         }
         session.closed.cancel();
+        // Exactly when the session ends (LIM-S-06).
+        drop(session.permit.lock().ok().and_then(|mut p| p.take()));
         session.posts.close();
         let n = session.outstanding.lock().map_or(0, |mut o| {
             o.closed = true;
@@ -275,6 +279,16 @@ impl SseSessions {
 
     /// `GET /mcp` with `Accept: text/event-stream`.
     pub fn open(self: &Arc<Self>, identity: VerifiedHttpIdentity) -> Response {
+        self.open_with(identity, None)
+    }
+
+    /// [`SseSessions::open`] with the session's admission permit, kept until the
+    /// session is closed and dropped on every refusal path.
+    pub(crate) fn open_with(
+        self: &Arc<Self>,
+        identity: VerifiedHttpIdentity,
+        permit: Option<StreamPermit>,
+    ) -> Response {
         if self.is_shutting_down() {
             return json_error(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down");
         }
@@ -292,6 +306,7 @@ impl SseSessions {
             closed: CancellationToken::new(),
             activity: Notify::new(),
             deadline: StreamDeadline::new(&identity),
+            permit: Mutex::new(permit),
         });
         {
             let Ok(mut map) = self.sessions.lock() else {

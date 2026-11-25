@@ -6,6 +6,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use axum::http::{HeaderMap, header};
+use hpm_types::context::{Principal, TransportKind};
+use hpm_types::limits::LimitExceeded;
 use serde_json::Value;
 
 use super::auth::ApiToken;
@@ -135,6 +137,68 @@ impl HttpLimits {
         }
         Ok(l)
     }
+}
+
+/// Which kind of long-lived HTTP resource is about to be created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StreamKind {
+    /// A legacy HTTP+SSE session (`GET /mcp` with `Accept: text/event-stream`).
+    LegacySseSession,
+    /// A Streamable HTTP session (the `initialize` that creates it).
+    StreamableSession,
+    /// A stream that outlives a single call: a session's standalone `GET` stream
+    /// (or its resume) and a `2026-07-28` `subscriptions/listen` response.
+    ListenStream,
+}
+
+/// One session or stream about to be created. Build with [`StreamOpen::new`].
+#[non_exhaustive]
+pub struct StreamOpen<'a> {
+    pub principal: &'a Principal,
+    pub kind: StreamKind,
+    pub transport: TransportKind,
+}
+
+impl<'a> StreamOpen<'a> {
+    pub fn new(principal: &'a Principal, kind: StreamKind, transport: TransportKind) -> Self {
+        Self {
+            principal,
+            kind,
+            transport,
+        }
+    }
+}
+
+/// RAII: dropping it releases the session or stream slot. The listener keeps it
+/// with the session or stream and drops it exactly when that ends.
+pub struct StreamPermit(#[allow(dead_code)] Box<dyn std::any::Any + Send + Sync>);
+
+impl StreamPermit {
+    /// Wraps a guard whose `Drop` releases the admission's slot.
+    pub fn new<T: Send + Sync + 'static>(guard: T) -> Self {
+        Self(Box::new(guard))
+    }
+
+    /// A permit that holds nothing.
+    pub fn unlimited() -> Self {
+        Self(Box::new(()))
+    }
+}
+
+impl std::fmt::Debug for StreamPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StreamPermit")
+    }
+}
+
+/// Per-principal budget for sessions and long-lived streams (public seam PS-7).
+/// Set with `HttpApp::with_session_admission`. A refusal answers
+/// `429 Too Many Requests` with `Retry-After` and creates nothing.
+pub trait SessionAdmission: Send + Sync {
+    /// Called after authentication, when a session or a long-lived stream is about
+    /// to be created. Synchronous and non-blocking: refuse, never wait.
+    fn open(&self, req: StreamOpen<'_>) -> Result<StreamPermit, LimitExceeded>;
 }
 
 const MAX_AUTHORITY_LENGTH: usize = 262;

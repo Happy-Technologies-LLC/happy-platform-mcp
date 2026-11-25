@@ -15,6 +15,7 @@ use hpm_types::continuation::{
 };
 use hpm_types::dispatch::DispatchOutcome;
 use hpm_types::operation::Subject;
+use hpm_types::policy::ListChangeSource;
 use hpm_types::registry::RegistryStore;
 use hpm_types::tool::{ToolDescriptor, ToolError};
 use rmcp::model::{
@@ -22,10 +23,10 @@ use rmcp::model::{
     DiscoverResult, Implementation, InitializeResult, JsonObject, ListPromptsRequestMethod,
     ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
     ProgressNotificationParam, ProgressToken, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
+    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig,
+    SubscriptionFilter, Tool, ToolAnnotations,
 };
-use rmcp::service::{Peer, RequestContext};
+use rmcp::service::{NotificationContext, Peer, RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -45,6 +46,7 @@ struct Inner {
     dispatcher: Arc<Dispatcher>,
     continuations: Arc<dyn ContinuationStore>,
     registry: Option<Arc<dyn RegistryStore>>,
+    list_changes: Option<Arc<dyn ListChangeSource>>,
 }
 
 /// Cheap to clone: Streamable HTTP builds one per session from a factory.
@@ -65,6 +67,7 @@ pub struct McpHandlerBuilder {
     dispatcher: Arc<Dispatcher>,
     continuations: Option<Arc<dyn ContinuationStore>>,
     registry: Option<Arc<dyn RegistryStore>>,
+    list_changes: Option<Arc<dyn ListChangeSource>>,
 }
 
 impl McpHandlerBuilder {
@@ -81,6 +84,18 @@ impl McpHandlerBuilder {
         self
     }
 
+    /// Advertises `tools.listChanged` and `resources.listChanged` and pushes
+    /// `notifications/tools/list_changed` and `notifications/resources/list_changed`
+    /// whenever `source`'s epoch rises: to every `2026-07-28` `subscriptions/listen`
+    /// stream that asked for them, and to every legacy session (stdio, legacy SSE,
+    /// `2025-*` Streamable HTTP) once it is initialized. Without this call no
+    /// list-changed capability is advertised and `subscriptions/listen` answers
+    /// `-32601`.
+    pub fn list_changes(mut self, source: Arc<dyn ListChangeSource>) -> Self {
+        self.list_changes = Some(source);
+        self
+    }
+
     pub fn build(self) -> McpHandler {
         McpHandler {
             inner: Arc::new(Inner {
@@ -90,6 +105,7 @@ impl McpHandlerBuilder {
                     .continuations
                     .unwrap_or_else(|| Arc::new(MemoryContinuationStore::default())),
                 registry: self.registry,
+                list_changes: self.list_changes,
             }),
             session_identity: None,
             session_closed: None,
@@ -104,6 +120,7 @@ impl McpHandler {
             dispatcher,
             continuations: None,
             registry: None,
+            list_changes: None,
         }
     }
 
@@ -258,6 +275,11 @@ pub(crate) fn error_text(e: &ToolError) -> String {
         ToolError::Message(m) | ToolError::Upstream { message: m, .. } => format!("Error: {m}"),
         ToolError::Credential(c) => format!("Error: {c}"),
         ToolError::Text(t) => t.clone(),
+        // PS-6: an admission refusal renders its scope plus the retry hint.
+        ToolError::RateLimited {
+            scope,
+            retry_after_secs,
+        } => hpm_types::limits::rate_limited_text(scope, *retry_after_secs),
         other => other.to_string(),
     }
 }
@@ -321,16 +343,115 @@ async fn until_cancelled<T>(
     work.await
 }
 
+/// How often a legacy session's push task checks that its peer is still there.
+const PEER_POLL: Duration = Duration::from_secs(2);
+
+/// Notifies one legacy session of every epoch bump until the peer closes, the
+/// session is torn down or a send fails.
+async fn push_list_changes(
+    source: Arc<dyn ListChangeSource>,
+    peer: Peer<RoleServer>,
+    closed: Option<CancellationToken>,
+) {
+    let mut seen = source.epoch();
+    loop {
+        let torn_down = async {
+            match &closed {
+                Some(c) => c.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            () = torn_down => return,
+            () = source.changed(seen) => {}
+            () = tokio::time::sleep(PEER_POLL) => {
+                if peer.is_transport_closed() {
+                    return;
+                }
+                continue;
+            }
+        }
+        seen = source.epoch();
+        if peer.notify_tool_list_changed().await.is_err()
+            || peer.notify_resource_list_changed().await.is_err()
+        {
+            return;
+        }
+    }
+}
+
 impl ServerHandler for McpHandler {
     fn get_info(&self) -> ServerConfig {
         // C9: tools and resources; no logging/prompts/sampling/roots.
-        InitializeResult::new(
+        let capabilities = if self.inner.list_changes.is_some() {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .enable_resources()
+                .enable_resources_list_changed()
+                .build()
+        } else {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
-                .build(),
-        )
-        .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
+                .build()
+        };
+        InitializeResult::new(capabilities)
+            .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
+    }
+
+    /// PS-2: only the two list-changed categories, and only when a
+    /// [`ListChangeSource`] is attached; otherwise `subscriptions/listen` stays
+    /// `-32601` as in 7.1.0.
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        self.inner.list_changes.as_ref()?;
+        let mut filter = SubscriptionFilter::new();
+        filter.tools_list_changed = (requested.tools_list_changed == Some(true)).then_some(true);
+        filter.resources_list_changed =
+            (requested.resources_list_changed == Some(true)).then_some(true);
+        Some(filter)
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        let Some(source) = self.inner.list_changes.clone() else {
+            context.cancelled().await;
+            return Ok(());
+        };
+        let accepted = context.accepted().clone();
+        let sink = context.sink().clone();
+        let mut seen = source.epoch();
+        loop {
+            tokio::select! {
+                () = context.cancelled() => return Ok(()),
+                () = source.changed(seen) => {}
+            }
+            // Read before notifying: a bump during the send is picked up next round.
+            seen = source.epoch();
+            if accepted.tools_list_changed == Some(true)
+                && sink.notify_tool_list_changed().await.is_err()
+            {
+                return Ok(());
+            }
+            if accepted.resources_list_changed == Some(true)
+                && sink.notify_resource_list_changed().await.is_err()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    /// PS-2: one push task per initialized legacy session.
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if let Some(source) = self.inner.list_changes.clone() {
+            tokio::spawn(push_list_changes(
+                source,
+                context.peer,
+                self.session_closed.clone(),
+            ));
+        }
     }
 
     async fn discover(
@@ -564,6 +685,24 @@ mod error_text_tests {
         assert_eq!(
             error_text(&ToolError::Text("❌ Script reported errors".into())),
             "❌ Script reported errors"
+        );
+    }
+
+    #[test]
+    fn rate_limited_renders_the_code_scope_and_retry_hint() {
+        assert_eq!(
+            error_text(&ToolError::RateLimited {
+                scope: "rate",
+                retry_after_secs: Some(7),
+            }),
+            "RATE_LIMITED: rate (retry after 7 s)"
+        );
+        assert_eq!(
+            error_text(&ToolError::RateLimited {
+                scope: "inflight",
+                retry_after_secs: None,
+            }),
+            "RATE_LIMITED: inflight"
         );
     }
 

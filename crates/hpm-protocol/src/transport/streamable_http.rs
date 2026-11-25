@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::serve::IncomingStream;
 use axum::{Json, Router};
-use hpm_types::context::{Principal, VerifiedHttpIdentity};
+use hpm_types::context::{Principal, TransportKind, VerifiedHttpIdentity};
+use hpm_types::limits::LimitExceeded;
 use hyper::body::{Frame, Incoming, SizeHint};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -43,7 +44,10 @@ use tower::Service;
 use super::auth::{AuthFailureLimiter, AuthRequest, HttpAuthenticator, StaticBearerAuthenticator};
 use super::expiry::StreamDeadline;
 use super::json_error;
-use super::limits::{HttpLimits, HttpSecurity, host_allowed, origin_allowed};
+use super::limits::{
+    HttpLimits, HttpSecurity, SessionAdmission, StreamKind, StreamOpen, StreamPermit, host_allowed,
+    origin_allowed,
+};
 use super::sse::{
     Acquire, DEFAULT_KEEPALIVE, GlobalLimits, SESSION_REFUSED, SseSessions, json_rpc_request_key,
 };
@@ -64,6 +68,14 @@ pub type JsonFn = Arc<dyn Fn() -> Value + Send + Sync>;
 /// `{"error":"Internal server error"}`.
 pub type InstancesFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Value, ()>> + Send>> + Send + Sync>;
+
+/// `/instances` list for one verified identity (public seam PS-3). Same `Err(())`
+/// meaning as [`InstancesFn`].
+pub type PrincipalInstancesFn = Arc<
+    dyn Fn(&VerifiedHttpIdentity) -> Pin<Box<dyn Future<Output = Result<Value, ()>> + Send>>
+        + Send
+        + Sync,
+>;
 
 pub struct HttpConfig {
     pub security: HttpSecurity,
@@ -123,6 +135,8 @@ struct FrontDoor {
 struct Binding {
     principal: Principal,
     deadline: StreamDeadline,
+    /// PS-7: released when the binding is removed (session ended).
+    _permit: Option<StreamPermit>,
 }
 
 struct AppState {
@@ -143,6 +157,8 @@ struct AppState {
     sse: Arc<SseSessions>,
     health: JsonFn,
     instances: InstancesFn,
+    principal_instances: OnceLock<PrincipalInstancesFn>,
+    admission: OnceLock<Arc<dyn SessionAdmission>>,
 }
 
 /// The HTTP application. `streamable` must come from
@@ -238,8 +254,31 @@ impl HttpApp {
             global,
             health,
             instances,
+            principal_instances: OnceLock::new(),
+            admission: OnceLock::new(),
         });
         Self { state, shutdown }
+    }
+
+    /// `GET /instances` answers from `f` with the verified identity instead of the
+    /// process-global [`InstancesFn`] (public seam PS-3). `Err(())` keeps the
+    /// [`InstancesFn`] meaning (500 error boundary). Without this call the global
+    /// function answers, unchanged. The setting is shared by every clone of this
+    /// app and the first call wins.
+    pub fn with_principal_instances(self, f: PrincipalInstancesFn) -> Self {
+        let _ = self.state.principal_instances.set(f);
+        self
+    }
+
+    /// Budgets sessions and long-lived streams per `admission` (public seam PS-7):
+    /// legacy SSE sessions, Streamable sessions, a session's standalone `GET`
+    /// stream and `2026-07-28` `subscriptions/listen` responses. A refusal answers
+    /// `429` with `Retry-After` and creates nothing. Without this call nothing is
+    /// checked. The setting is shared by every clone of this app and the first
+    /// call wins.
+    pub fn with_session_admission(self, admission: Arc<dyn SessionAdmission>) -> Self {
+        let _ = self.state.admission.set(admission);
+        self
     }
 
     pub fn router(&self) -> Router {
@@ -624,6 +663,8 @@ async fn forward(st: &AppState, parts: axum::http::request::Parts, body: Body) -
 struct RequestGuard {
     _permit: OwnedSemaphorePermit,
     reserved: Option<Arc<GlobalLimits>>,
+    /// PS-7 permit of a `subscriptions/listen` response, if any.
+    _stream: Option<StreamPermit>,
 }
 
 impl Drop for RequestGuard {
@@ -634,12 +675,12 @@ impl Drop for RequestGuard {
     }
 }
 
-struct GuardedBody {
+struct GuardedBody<G> {
     inner: Body,
-    _guard: RequestGuard,
+    _guard: G,
 }
 
-impl HttpBody for GuardedBody {
+impl<G: Unpin> HttpBody for GuardedBody<G> {
     type Data = Bytes;
     type Error = axum::Error;
 
@@ -694,7 +735,13 @@ fn live_sessions(st: &AppState) -> usize {
 
 /// Records the initializing principal and enforces the 6.2.0 lifetime cap; the
 /// binding is dropped once rmcp no longer holds the session (idle, DELETE, close).
-fn bind_session(st: &Arc<AppState>, sid: String, principal: Principal, deadline: StreamDeadline) {
+fn bind_session(
+    st: &Arc<AppState>,
+    sid: String,
+    principal: Principal,
+    deadline: StreamDeadline,
+    permit: Option<StreamPermit>,
+) {
     let Ok(mut b) = st.bindings.lock() else {
         return;
     };
@@ -703,6 +750,7 @@ fn bind_session(st: &Arc<AppState>, sid: String, principal: Principal, deadline:
         Binding {
             principal,
             deadline,
+            _permit: permit,
         },
     )
     .is_none()
@@ -741,6 +789,39 @@ fn too_many_sessions() -> Response {
     let mut r = json_error(StatusCode::TOO_MANY_REQUESTS, "Too many sessions");
     r.headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    r
+}
+
+/// PS-7: asks the configured [`SessionAdmission`] (if any) for a session or stream
+/// slot; a refusal is answered with [`stream_refused`].
+fn admit_stream(
+    st: &AppState,
+    identity: &VerifiedHttpIdentity,
+    kind: StreamKind,
+    transport: TransportKind,
+) -> Result<Option<StreamPermit>, LimitExceeded> {
+    let Some(admission) = st.admission.get() else {
+        return Ok(None);
+    };
+    admission
+        .open(StreamOpen::new(&identity.principal, kind, transport))
+        .map(Some)
+}
+
+/// LIM-S-07: 429, `Retry-After` in whole seconds (at least 1, 1 when unknown) and a
+/// body that carries only the scope word.
+fn stream_refused(e: &LimitExceeded) -> Response {
+    let secs = e
+        .retry_after
+        .map_or(1, |d| d.as_millis().div_ceil(1000).max(1));
+    let mut r = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": "RATE_LIMITED", "scope": e.scope })),
+    )
+        .into_response();
+    if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
+        r.headers_mut().insert(header::RETRY_AFTER, v);
+    }
     r
 }
 
@@ -815,14 +896,40 @@ async fn post(
         .and_then(|sid| session_deadline(st, sid, &identity));
     // Review F2: rmcp opens a session for every initialize, `_meta` or not, so
     // each one is admitted against the cap and bound.
-    let creates_session =
-        sid.is_none() && value.get("method").and_then(Value::as_str) == Some("initialize");
+    let method = value.get("method").and_then(Value::as_str);
+    let creates_session = sid.is_none() && method == Some("initialize");
+    // PS-7: a `2026-07-28` `subscriptions/listen` holds its response open
+    // indefinitely; its permit lives with the response body.
+    let stream_permit = if modern && method == Some("subscriptions/listen") {
+        match admit_stream(
+            st,
+            &identity,
+            StreamKind::ListenStream,
+            TransportKind::StreamableHttp,
+        ) {
+            Ok(p) => p,
+            Err(e) => return stream_refused(&e),
+        }
+    } else {
+        None
+    };
     // Serialized so concurrent initializes cannot overshoot the shared cap.
+    let mut session_permit = None;
     let _admit = if creates_session {
         let lock = st.admit_lock.lock().await;
         if live_sessions(st) >= st.limits.max_active_sessions {
             return too_many_sessions();
         }
+        // PS-7: kept with the binding; dropped here when rmcp opens no session.
+        session_permit = match admit_stream(
+            st,
+            &identity,
+            StreamKind::StreamableSession,
+            TransportKind::StreamableHttp,
+        ) {
+            Ok(p) => p,
+            Err(e) => return stream_refused(&e),
+        };
         Some(lock)
     } else {
         None
@@ -853,15 +960,26 @@ async fn post(
     let guard = RequestGuard {
         _permit: permit,
         reserved,
+        _stream: stream_permit,
     };
     let resp = forward(st, parts, Body::from(bytes)).await;
     // T-K02: a session's streams share its deadline; a stateless response gets one
     // from this request's identity.
     let deadline = session.unwrap_or_else(|| StreamDeadline::new(&identity));
     if creates_session && let Some(new_sid) = session_header(resp.headers()) {
-        bind_session(st, new_sid, identity.principal.clone(), deadline.clone());
+        bind_session(
+            st,
+            new_sid,
+            identity.principal.clone(),
+            deadline.clone(),
+            session_permit.take(),
+        );
     }
-    let resp = deadline.bound(resp);
+    hold(deadline.bound(resp), guard)
+}
+
+/// Keeps `guard` alive until `resp`'s body ends or is dropped.
+fn hold<G: Send + Unpin + 'static>(resp: Response, guard: G) -> Response {
     let (parts, body) = resp.into_parts();
     Response::from_parts(
         parts,
@@ -899,18 +1017,42 @@ async fn mcp(State(st): State<Arc<AppState>>, req: Request) -> Response {
         }
         Method::GET => {
             if header_sid {
-                // Rule 5.
+                // Rule 5. A session's standalone stream (or its resume) is a
+                // long-lived stream: budgeted per principal (PS-7).
                 let deadline = sid
                     .as_deref()
                     .and_then(|sid| session_deadline(&st, sid, &identity));
+                let stream = match admit_stream(
+                    &st,
+                    &identity,
+                    StreamKind::ListenStream,
+                    TransportKind::StreamableHttp,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => return stream_refused(&e),
+                };
                 let resp = forward(&st, parts, body).await;
-                return match deadline {
+                let resp = match deadline {
                     Some(d) => d.bound(resp),
+                    None => resp,
+                };
+                return match stream {
+                    Some(p) => hold(resp, p),
                     None => resp,
                 };
             }
             if accepts_sse(&parts.headers) {
-                return st.sse.open(identity); // Rule 6.
+                // Rule 6.
+                let permit = match admit_stream(
+                    &st,
+                    &identity,
+                    StreamKind::LegacySseSession,
+                    TransportKind::LegacySse,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => return stream_refused(&e),
+                };
+                return st.sse.open_with(identity, permit);
             }
             json_error(
                 StatusCode::NOT_ACCEPTABLE,
@@ -931,8 +1073,16 @@ async fn health(State(st): State<Arc<AppState>>) -> Response {
     Json((st.health)()).into_response()
 }
 
-async fn instances(State(st): State<Arc<AppState>>) -> Response {
-    match (st.instances)().await {
+async fn instances(State(st): State<Arc<AppState>>, req: Request) -> Response {
+    let listed = match st.principal_instances.get() {
+        // The guard always inserts the identity; absence is a bug, so fail closed.
+        Some(per_principal) => match req.extensions().get::<VerifiedHttpIdentity>() {
+            Some(identity) => per_principal(identity).await,
+            None => return json_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
+        },
+        None => (st.instances)().await,
+    };
+    match listed {
         Ok(list) => Json(json!({ "instances": list })).into_response(),
         Err(()) => (
             StatusCode::INTERNAL_SERVER_ERROR,
