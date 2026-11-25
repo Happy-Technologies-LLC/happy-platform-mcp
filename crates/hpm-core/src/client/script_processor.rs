@@ -22,13 +22,6 @@ const EXECUTION_ERROR_PREFIXES: [&str; 2] =
     ["Script execution error: ", "Script compilation error: "];
 const SCOPED_SYNTAX_ERROR_PREFIX: &str = "SyntaxError: ";
 const READ_ONLY_DENIAL: &str = "ReadOnlyRoleAccessHandler";
-const PRE_SEND_ERROR_CODES: [&str; 5] = [
-    "ECONNREFUSED",
-    "ENOTFOUND",
-    "EAI_AGAIN",
-    "EHOSTUNREACH",
-    "ENETUNREACH",
-];
 const TIMEOUT_ERROR_CODES: [&str; 2] = ["ECONNABORTED", "ETIMEDOUT"];
 
 pub fn not_run_error(reason: &str) -> ClientError {
@@ -527,7 +520,7 @@ pub fn classify_processor_outcome(
             let code = error.code.as_deref();
             // A connect-phase failure (even a connect timeout, live smoke D1)
             // sent nothing, so the script did not run.
-            if error.connect || code.is_some_and(|c| PRE_SEND_ERROR_CODES.contains(&c)) {
+            if error.request_not_sent() {
                 let suffix = code.map(|c| format!(" ({c})")).unwrap_or_default();
                 return ProcessorOutcome::NotRun(format!(
                     "connection error before the request was sent{suffix}"

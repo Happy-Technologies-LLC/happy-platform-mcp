@@ -168,7 +168,30 @@ pub struct TransportError {
     pub connect: bool,
 }
 
+/// Codes that prove no byte of the request was sent: the connection (DNS, TCP)
+/// failed outright.
+const PRE_SEND_ERROR_CODES: [&str; 5] = [
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+];
+
 impl TransportError {
+    /// The request provably never left: a connect-phase failure (even a connect
+    /// timeout, [`Self::connect`]) or a connection-refusing code. A timeout or
+    /// reset after the connection opened is not: the server may have acted on
+    /// it. The single place that decides this, for the REST outcome mapping
+    /// and the script processor alike.
+    pub fn request_not_sent(&self) -> bool {
+        self.connect
+            || self
+                .code
+                .as_deref()
+                .is_some_and(|c| PRE_SEND_ERROR_CODES.contains(&c))
+    }
+
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: Some(code.to_owned()),
@@ -430,6 +453,15 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_not_sent_only_before_the_connection_opened() {
+        assert!(TransportError::connect("ETIMEDOUT", "connect timed out").request_not_sent());
+        assert!(TransportError::new("ECONNREFUSED", "refused").request_not_sent());
+        assert!(TransportError::new("ENOTFOUND", "dns").request_not_sent());
+        assert!(!TransportError::new("ETIMEDOUT", "read timed out").request_not_sent());
+        assert!(!TransportError::new("ECONNRESET", "reset").request_not_sent());
+    }
 
     #[test]
     fn utc_formatting() {

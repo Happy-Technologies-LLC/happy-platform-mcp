@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
+use super::http::TransportError;
+
 /// Stale generation detected before the request left (never sent).
 pub const STALE_INSTANCE_CODE: &str = "INSTANCE_STALE_DURING_REQUEST";
 /// Stale generation detected after the request left (outcome unknown).
@@ -67,6 +69,11 @@ pub struct ClientError {
     pub field: Option<&'static str>,
     /// Script-processor reason / cicd detail.
     pub reason: Option<Box<str>>,
+    /// The transport proved the request never left
+    /// ([`super::http::TransportError::request_not_sent`]). Only ever set from
+    /// the failure of the one request that produced this error, never carried
+    /// across a later request of a multi-step operation.
+    pub pre_send: bool,
 }
 
 impl ClientError {
@@ -79,6 +86,7 @@ impl ClientError {
             response_data: None,
             field: None,
             reason: None,
+            pre_send: false,
         }
     }
 
@@ -421,6 +429,8 @@ pub struct RawError {
     pub code: Option<String>,
     pub status: Option<u16>,
     pub data: Option<Value>,
+    /// See [`ClientError::pre_send`].
+    pub pre_send: bool,
 }
 
 /// Unredacted: `Debug` shows only the classification fields.
@@ -431,6 +441,7 @@ impl std::fmt::Debug for RawError {
             .field("message", &"<redacted>")
             .field("code", &self.code)
             .field("status", &self.status)
+            .field("pre_send", &self.pre_send)
             .field("data", &self.data.as_ref().map(|_| "<redacted>"))
             .finish()
     }
@@ -440,6 +451,16 @@ impl RawError {
     pub fn message(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            ..Self::default()
+        }
+    }
+
+    /// A failure before any HTTP status was received.
+    pub fn from_transport(error: TransportError) -> Self {
+        Self {
+            pre_send: error.request_not_sent(),
+            message: error.message,
+            code: error.code,
             ..Self::default()
         }
     }
@@ -461,6 +482,7 @@ impl RawError {
             code: error.code.clone(),
             status: error.status,
             data: None,
+            pre_send: error.pre_send,
         }
     }
 
@@ -502,6 +524,7 @@ impl RawError {
         };
         let mut safe = ClientError::new(name, redactor.redact(&message), None);
         safe.status = self.status;
+        safe.pre_send = self.pre_send;
         safe.code = match self.status {
             Some(401) => Some("AUTHENTICATION_FAILED".into()),
             Some(403) => Some("AUTHORIZATION_FAILED".into()),
@@ -532,6 +555,7 @@ impl RawError {
         );
         safe.code = self.code;
         safe.status = self.status;
+        safe.pre_send = self.pre_send;
         safe.response_data = self.data.as_ref().map(|d| Box::new(redactor.sanitize(d)));
         safe
     }
@@ -549,6 +573,7 @@ impl RawError {
         let mut safe = ClientError::new("Error", redactor.redact(&message), None);
         safe.code = self.code;
         safe.status = self.status;
+        safe.pre_send = self.pre_send;
         safe
     }
 }

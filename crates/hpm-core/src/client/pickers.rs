@@ -181,16 +181,8 @@ impl ServiceNowClient {
         if self.assert_current(&session.state).is_err() {
             return Err(ClientError::stale_after_send());
         }
-        let response = response.map_err(|e| {
-            self.sanitize(
-                &session.state,
-                RawError {
-                    message: e.message,
-                    code: e.code,
-                    ..RawError::default()
-                },
-            )
-        })?;
+        let response =
+            response.map_err(|e| self.sanitize(&session.state, RawError::from_transport(e)))?;
         if !(200..300).contains(&response.status) {
             return Err(session.fail(RawError::http(response.status, response.data())));
         }
@@ -258,10 +250,12 @@ impl ServiceNowClient {
                 Box::new((e, change))
             })?;
         self.sleep_ms(500).await;
-        let current = session
-            .get(UPDATE_SET_PICKER)
-            .await
-            .map_err(|e| Box::new((e, PickerChange::Unknown)))?;
+        let current = session.get(UPDATE_SET_PICKER).await.map_err(|mut e| {
+            // The PUT was already sent: this read's connect failure says
+            // nothing about it.
+            e.pre_send = false;
+            Box::new((e, PickerChange::Unknown))
+        })?;
         let current_id =
             str_at(&current, &["result", "current", "sysId"]).filter(|s| !s.is_empty());
         if current_id != Some(sys_id) {

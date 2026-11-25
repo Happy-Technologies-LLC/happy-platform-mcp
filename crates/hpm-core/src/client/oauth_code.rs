@@ -56,11 +56,11 @@ impl TokenPoster for HttpTokenPoster {
             request.set_header("Content-Type", "application/x-www-form-urlencoded");
             request.set_header("Accept", "application/json, text/plain, */*");
             request.body = Some(form_encode(&pairs).into_bytes());
-            let response = self.transport.send(request).await.map_err(|e| RawError {
-                message: e.message,
-                code: e.code,
-                ..RawError::default()
-            })?;
+            let response = self
+                .transport
+                .send(request)
+                .await
+                .map_err(RawError::from_transport)?;
             if (200..300).contains(&response.status) {
                 Ok(response.data())
             } else {
