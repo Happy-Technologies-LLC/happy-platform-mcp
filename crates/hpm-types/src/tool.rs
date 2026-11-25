@@ -200,6 +200,14 @@ pub enum ToolError {
     Unavailable(&'static str),
     #[error("internal: {0}")]
     Internal(String),
+    /// An admission limit refused the call (PS-6). `scope` is a static word
+    /// (`inflight`, `rate`, ...). The retry text lives in the rendered message:
+    /// [`crate::limits::rate_limited_text`] appends ` (retry after N s)`.
+    #[error("RATE_LIMITED: {scope}")]
+    RateLimited {
+        scope: &'static str,
+        retry_after_secs: Option<u32>,
+    },
 }
 
 pub trait ToolHandler: Send + Sync {

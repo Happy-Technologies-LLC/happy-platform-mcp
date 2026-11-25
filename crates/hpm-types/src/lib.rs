@@ -16,6 +16,7 @@ pub mod context;
 pub mod continuation;
 pub mod credential;
 pub mod dispatch;
+pub mod limits;
 pub mod operation;
 pub mod policy;
 pub mod protect;
