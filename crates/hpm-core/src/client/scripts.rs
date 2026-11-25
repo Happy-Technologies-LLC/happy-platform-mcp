@@ -632,6 +632,9 @@ impl ServiceNowClient {
                 });
                 wrapped.status = e.status;
                 wrapped.code = e.code;
+                // Only the insert itself can still be known not to have been
+                // sent; once the trigger exists no later failure says so.
+                wrapped.pre_send = e.pre_send && !created;
                 // Trigger identity ("sys_id …" / "name …") for result-unknown text.
                 wrapped.reason = e.reason;
                 wrapped
@@ -903,14 +906,7 @@ impl ServiceNowClient {
         if self.assert_current(&state).is_err() {
             return match self.deps().transport.send(req).await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(self.sanitize(
-                    &state,
-                    RawError {
-                        message: e.message,
-                        code: e.code,
-                        ..RawError::default()
-                    },
-                )),
+                Err(e) => Err(self.sanitize(&state, RawError::from_transport(e))),
             };
         }
         let header = self.auth_header_for(&state).await?;

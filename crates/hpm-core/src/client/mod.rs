@@ -1511,16 +1511,7 @@ impl ServiceNowClient {
         if self.assert_current(st).is_err() {
             return Err(ClientError::stale_after_send());
         }
-        result.map_err(|e| {
-            self.sanitize(
-                st,
-                RawError {
-                    message: e.message,
-                    code: e.code,
-                    ..RawError::default()
-                },
-            )
-        })
+        result.map_err(|e| self.sanitize(st, RawError::from_transport(e)))
     }
 
     /// `getRecords`.
