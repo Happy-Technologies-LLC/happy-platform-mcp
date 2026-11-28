@@ -73,7 +73,10 @@ async fn instance_resource_does_not_disclose_url_or_username() {
         "service-now.com",
         "svc-secret-account",
     ] {
-        assert!(!text.contains(secret), "{secret} leaked: {text}");
+        assert!(
+            !text.contains(secret),
+            "servicenow://instance leaked an instance identity value"
+        );
     }
     assert!(
         payload["capabilities"]["tools"].as_u64().unwrap() > 0,
