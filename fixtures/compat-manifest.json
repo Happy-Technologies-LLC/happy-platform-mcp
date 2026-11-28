@@ -865,7 +865,13 @@
       {
         "uri": "servicenow://instance",
         "behaviour": "JSON {server_info{name \"Happy MCP Server (Consolidated)\", version}, instance_info{url: process.env.SERVICENOW_INSTANCE_URL, username: process.env.SERVICENOW_USERNAME} (undefined => omitted when the registry/keychain config is used), capabilities{total_tables, operations, tools: count from tools/list}}",
-        "source": "src/mcp-server-consolidated.js:3385-3410"
+        "source": "src/mcp-server-consolidated.js:3385-3410",
+        "deviation": {
+          "since": "7.2.3",
+          "decision": "GHSA-cmrc-rrgj-4v7m (CWE-200)",
+          "was": "instance_info{url, username} echoed from SERVICENOW_INSTANCE_URL and SERVICENOW_USERNAME (7.0.0 to 7.2.2 showed the URL without any user:password@ part)",
+          "now": "instance_info is always {}: the instance address and the account name are never disclosed. Enforced by crates/hpm-cli/tests/instance_resource_disclosure.rs."
+        }
       },
       {
         "uri": "servicenow://tables/all",

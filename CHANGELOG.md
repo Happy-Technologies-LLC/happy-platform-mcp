@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- `hpm-tools`: `servicenow://instance` no longer discloses the instance address or the account name (GHSA-cmrc-rrgj-4v7m, CWE-200, low). `instance_info` carried `url` (from `SERVICENOW_INSTANCE_URL`) and `username` (from `SERVICENOW_USERNAME`) in 6.2.0 and in every 7.x release up to 7.2.2, so any client allowed to read the resource learned both. `instance_info` is now always `{}`; the key stays so a client that reads it keeps working. This is a deliberate divergence from the 6.2.0 behaviour, recorded in `fixtures/compat-manifest.json` and `docs/MIGRATING_TO_7.md`. `crates/hpm-cli/tests/instance_resource_disclosure.rs` sets both variables and asserts neither value, nor `url`/`username`, is in the resource.
+
 ## 7.2.2 - 2026-11-25 (npm `next` only; `latest` stays 6.2.0)
 
 ### Fixed
