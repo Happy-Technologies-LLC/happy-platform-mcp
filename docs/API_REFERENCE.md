@@ -927,10 +927,7 @@ Returns information about the currently connected ServiceNow instance.
     "version": "2.0.0",
     "description": "Consolidated ServiceNow integration with metadata-driven schema lookups"
   },
-  "instance_info": {
-    "url": "https://dev123.service-now.com",
-    "username": "admin"
-  },
+  "instance_info": {},
   "capabilities": {
     "total_tables": 94,
     "operations": ["create", "read", "update", "query", "schema_lookup"],

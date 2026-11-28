@@ -5,6 +5,8 @@
 //!
 //! Every exchange is compared exactly, except:
 //! - [`DEVIATIONS`]: documented 7.0 behavior that replaces the recorded one;
+//! - `servicenow://instance`: `instance_info` is `{}` (GHSA-cmrc-rrgj-4v7m), and the
+//!   version is this package's;
 //! - `initialize`: `serverInfo.version` is this package's version (7.0 reports
 //!   its own version; 6.2.0 reported `6.2.0`), and 7.0 does not advertise the
 //!   empty `prompts` capability (see [`DEVIATIONS`] for `prompts/*`);
@@ -251,6 +253,14 @@ async fn check(world: &World, file: &std::path::Path) -> Vec<String> {
                     let text = text.replacen(
                         "\"version\": \"6.2.0\"",
                         &format!("\"version\": \"{}\"", env!("CARGO_PKG_VERSION")),
+                        1,
+                    );
+                    // GHSA-cmrc-rrgj-4v7m (7.2.3): 6.2.0 echoed the instance URL and user
+                    // name in `instance_info`; 7.x never does, so the recorded block is
+                    // replaced by the empty object (the key stays).
+                    let text = text.replacen(
+                        "\"instance_info\": {\n    \"url\": \"{{INSTANCE_URL}}\",\n    \"username\": \"golden.user\"\n  }",
+                        "\"instance_info\": {}",
                         1,
                     );
                     want_response["result"]["contents"][0]["text"] = json!(text);
