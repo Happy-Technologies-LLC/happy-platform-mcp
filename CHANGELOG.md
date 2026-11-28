@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 7.2.3 - 2026-11-27 (npm `next` only; `latest` stays 6.2.0)
 
 ### Security
 
